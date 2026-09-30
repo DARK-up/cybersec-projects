@@ -271,6 +271,7 @@ class HttpClient:
             self.sess.proxies = {"http": proxy, "https": proxy}
         self.timeout = timeout
         self.delay = delay
+        self.last_error: Optional[str] = None
 
     def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
         if self.delay:
@@ -278,12 +279,47 @@ class HttpClient:
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
         try:
-            return self.sess.request(method, url, **kw)
-        except requests.RequestException:
+            resp = self.sess.request(method, url, **kw)
+            self.last_error = None
+            return resp
+        except requests.RequestException as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             return None
 
     def get(self, url: str, **kw):
         return self.request("GET", url, **kw)
+
+
+def ensure_scheme(url: str) -> str:
+    """Prepend http:// when the user forgets the scheme (e.g. 'target.com')."""
+    url = url.strip()
+    if "://" not in url:
+        return "http://" + url
+    return url
+
+
+def diagnose_error(err: str) -> str:
+    """Translate a requests exception into actionable hints."""
+    low = err.lower()
+    if "nameresolutionerror" in low or "getaddrinfo" in low:
+        return ("DNS lookup failed — check the domain name spelling and your "
+                "internet/DNS settings (try: ping or nslookup on the host).")
+    if "connecttimeout" in low or "newconnectionerror" in low or \
+       "connection refused" in low or "max retries" in low:
+        return ("Could not establish a connection — the host may be down, a "
+                "firewall may be blocking you, or the port is wrong.")
+    if "readtimeout" in low:
+        return ("The server accepted the TCP connection but never sent an HTTP "
+                "response — this often means the site is filtering/blocking your "
+                "IP (cloud IPs are often blocked by WAFs) or the service is hung.")
+    if "ssl" in low or "certificate" in low:
+        return ("TLS/SSL problem — the site may have a broken certificate. "
+                "(WebVulnX already runs with verification disabled.)")
+    if "missingschema" in low or "invalidurl" in low or "invalid schema" in low:
+        return "The URL is malformed — use a full URL like http://target.com"
+    if "proxy" in low:
+        return "Proxy error — check the --proxy value and that the proxy is running."
+    return "See the error above for details."
 
 
 def normalize_url(u: str) -> str:
@@ -861,12 +897,26 @@ def main() -> None:
 
     client = HttpClient(timeout=args.timeout, delay=args.delay,
                         cookies=cookies, headers=extra_headers, proxy=args.proxy)
+    args.url = ensure_scheme(args.url)
     state = ScanState(base_url=args.url, start_ts=time.time())
 
-    # Reachability check
+    # Reachability check (with real diagnostics instead of a blind error)
     probe = client.get(args.url)
     if probe is None:
         fail(f"Cannot reach {args.url}")
+        err = client.last_error or "unknown error"
+        warn(f"Underlying error: {err}")
+        warn(f"Hint: {diagnose_error(err)}")
+        if not args.url.startswith("https://"):
+            warn(f"Trying https:// fallback ...")
+            probe = client.get(args.url.replace("http://", "https://"))
+            if probe is not None:
+                args.url = args.url.replace("http://", "https://")
+                state.base_url = args.url
+                warn("Note: only https:// works for this target — using it.")
+    if probe is None:
+        fail("Giving up. Common fixes: use a full URL (http://target.com), "
+             "check connectivity (curl -I <url>), or raise --timeout.")
         sys.exit(1)
     ok(f"Target alive: {probe.status_code} | Server: {probe.headers.get('Server','?')}")
 
