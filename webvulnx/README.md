@@ -10,6 +10,53 @@ detector + XSS + directory brute-force + security misconfiguration auditing.
 - Automatic form & parameter discovery
 - Static asset filtering (images, CSS, ...)
 
+### 🌐 Automatic Scope Expansion (why sub-page URLs no longer return nothing)
+Handing a scanner a deep URL such as `http://site/login.jsp` used to produce
+*"1 URL crawled, 0 forms, 0 findings"* — not because the site was secure, but
+because nothing was ever discovered. WebVulnX now expands the scope itself:
+
+| Step | What it does |
+|------|--------------|
+| **Site root** | Always adds `scheme://host/` and follows its redirect chain |
+| **robots.txt** | Harvests every advertised `Disallow:` / `Allow:` path |
+| **sitemap.xml** | Follows `Sitemap:` directives and pulls `<loc>` URLs |
+| **Entry points** | Probes 25 common paths (`/login`, `/admin`, `/search`, `/api`, `/index.php`, …) and keeps the ones that answer — including `401/403` (protected login walls are attack surface too) |
+
+Disable it when you want a strict single-URL scope:
+`--no-root-expansion` and/or `--no-probe-paths`.
+
+### 📈 Scan Coverage — proof of work
+Every run prints (and stores in the JSON report) exactly what was tested, so an
+empty result is never ambiguous:
+
+```
+────── Scan Coverage (proof of work) ──────
+  Seed URLs          : 6
+  URLs crawled       : 20
+  Forms found        : 22
+  Parameters seen    : 40
+  Modules executed   : 4 (param-discovery, misconfig-audit, sqli, xss)
+  HTTP requests sent : 2418
+  Connection errors  : 0
+  Blocked (4xx/5xx)  : 0  | WAF/challenge pages: 0
+  Status codes       : 200×2139, 405×219, 404×59, 500×1
+```
+
+Two honest verdicts are emitted automatically:
+
+- **`Scan degraded — WAF / rate-limit blocking`** — raised when challenge pages
+  (Cloudflare, Akamai, Incapsula, Sucuri, captcha…) are detected or more than
+  35% of requests were blocked/failed. A clean result in this state is **not**
+  proof the target is secure, and the report says so.
+- **`No attack surface discovered`** — raised when the crawl reached ≤2 URLs
+  with 0 parameters and 0 forms, i.e. the injection engines literally had
+  nothing to test (SPA/JS app, auth wall, blocked crawl). The report tells you
+  which knob to turn (scan the root, raise `--depth`/`--max-urls`, pass
+  `--cookie`, enable `--dirs`).
+
+Otherwise a zero-finding run is reported as **tested-clean**, together with the
+request count that backs the claim.
+
 ### 💉 SQL Injection Engine (3 techniques)
 | Technique | Description |
 |-----------|-------------|

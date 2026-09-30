@@ -9,3 +9,11 @@ alerts.jsonl
 
 # Keep report samples but ignore future clutter
 reports/*.tmp
+
+# large wordlists are never committed (GitHub rejects files >100 MB)
+hashbreaker/wordlists/rockyou.txt
+hashbreaker/wordlists/rockyou.txt.gz
+*.gz
+# runtime state
+dark/jobs_state.json
+dark/jobs_state.tmp

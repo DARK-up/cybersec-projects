@@ -35,7 +35,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from html.parser import HTMLParser
 
 import requests
@@ -198,6 +198,28 @@ class ScanState:
     forms: List[Dict] = field(default_factory=list)
     params: Dict[str, Set[str]] = field(default_factory=dict)   # url -> params
     start_ts: float = 0.0
+    # --- proof-of-work: what the scanner actually did ----------------------
+    modules_run: List[str] = field(default_factory=list)
+    tests_run: int = 0
+    seeds_used: List[str] = field(default_factory=list)
+    diagnostics: List[str] = field(default_factory=list)        # why 0 findings
+    degraded: bool = False                                      # blocked/WAF
+
+    def note(self, msg: str) -> None:
+        if msg not in self.diagnostics:
+            self.diagnostics.append(msg)
+
+    def coverage(self) -> Dict[str, Any]:
+        n_params = sum(len(v) for v in self.params.values())
+        return {
+            "urls_crawled": len(self.crawled_urls),
+            "forms_found": len(self.forms),
+            "parameters": n_params,
+            "modules_run": list(self.modules_run),
+            "tests_run": self.tests_run,
+            "seed_urls": list(self.seeds_used),
+            "degraded": self.degraded,
+        }
 
     def add(self, f: Finding) -> None:
         key = (f.vuln_type, f.url, f.parameter, f.payload)
@@ -274,6 +296,14 @@ class HttpClient:
         self.timeout = timeout
         self.delay = delay
         self.last_error: Optional[str] = None
+        # --- coverage / anti-block telemetry -------------------------------
+        # This is what lets the scanner PROVE it actually tested the target
+        # instead of silently returning "no findings".
+        self.stats: Dict[str, Any] = {
+            "requests": 0, "errors": 0, "blocked": 0, "waf_hits": 0,
+            "statuses": {}, "by_module": {},
+        }
+        self.module: str = "crawl"
 
     def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
         if self.delay:
@@ -281,15 +311,25 @@ class HttpClient:
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
         last_exc = None
+        self.stats["requests"] += 1
+        self.stats["by_module"][self.module] = \
+            self.stats["by_module"].get(self.module, 0) + 1
         for attempt in range(2):          # retry once on transient failures
             try:
                 resp = self.sess.request(method, url, **kw)
                 self.last_error = None
+                sc = str(resp.status_code)
+                self.stats["statuses"][sc] = self.stats["statuses"].get(sc, 0) + 1
+                if resp.status_code in (401, 403, 406, 429, 451, 503, 999):
+                    self.stats["blocked"] += 1
                 # WAF / challenge detection (so users see WHY results are empty)
                 if resp.status_code in (403, 429, 503) and any(
                         k in resp.text[:2000].lower()
                         for k in ("cloudflare", "captcha", "access denied",
-                                  "unusual traffic", "blocked", "akamai")):
+                                  "unusual traffic", "blocked", "akamai",
+                                  "attention required", "request blocked",
+                                  "incapsula", "sucuri", "f5 big-ip", "barracuda")):
+                    self.stats["waf_hits"] += 1
                     self.last_error = (f"WAF/challenge page detected (HTTP {resp.status_code}) "
                                        f"— the target is filtering automated scanners")
                 return resp
@@ -297,6 +337,7 @@ class HttpClient:
                 last_exc = e
                 if attempt == 0:
                     time.sleep(1.0)
+        self.stats["errors"] += 1
         self.last_error = f"{type(last_exc).__name__}: {last_exc}"
         return None
 
@@ -358,6 +399,138 @@ def same_origin(a: str, b: str) -> bool:
 
 
 # ============================================================================
+# Scope expansion — turn any single URL into a real crawl of the whole site
+# ============================================================================
+COMMON_ENTRY_PATHS = [
+    "/", "/index.html", "/index.php", "/index.jsp", "/index.asp", "/index.aspx",
+    "/home", "/main", "/login", "/signin", "/logon", "/admin", "/administrator",
+    "/search", "/register", "/signup", "/user", "/profile", "/portal",
+    "/dashboard", "/api", "/app", "/shop", "/products", "/news", "/blog",
+]
+MAX_ROBOTS_SEEDS = 12
+MAX_SITEMAP_SEEDS = 20
+
+
+def origin_root(url: str) -> str:
+    p = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, "/", "", ""))
+
+
+def _harvest_robots(client: HttpClient, root: str, state: ScanState) -> List[str]:
+    """Pull crawlable paths + sitemaps out of robots.txt."""
+    out: List[str] = []
+    resp = client.get(root.rstrip("/") + "/robots.txt")
+    if resp is None or resp.status_code >= 400:
+        return out
+    for raw in resp.text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key, val = key.strip().lower(), val.strip()
+        if not val:
+            continue
+        if key == "sitemap":
+            out.extend(_harvest_sitemap(client, val, state))
+        elif key in ("disallow", "allow") and val.startswith("/"):
+            if any(c in val for c in "*$") or len(val) > 120:
+                continue
+            out.append(normalize_url(urllib.parse.urljoin(root, val)))
+        if len(out) >= MAX_ROBOTS_SEEDS * 2:
+            break
+    return out[:MAX_ROBOTS_SEEDS * 2]
+
+
+def _harvest_sitemap(client: HttpClient, sm_url: str, state: ScanState) -> List[str]:
+    out: List[str] = []
+    resp = client.get(sm_url)
+    if resp is None or resp.status_code >= 400:
+        return out
+    for m in re.findall(r"<loc>\s*(.*?)\s*</loc>", resp.text, re.I):
+        u = html.unescape(m).strip()
+        if u.startswith("http") and same_origin(sm_url, u):
+            out.append(normalize_url(u))
+        if len(out) >= MAX_SITEMAP_SEEDS:
+            break
+    return out
+
+
+def discover_seeds(client: HttpClient, url: str, state: ScanState,
+                   expand_root: bool = True, probe_paths: bool = True) -> List[str]:
+    """Build the seed list for the crawler.
+
+    Fixes the classic "user scanned http://site/login.jsp -> 1 URL crawled ->
+    0 findings" failure: we always add the site ROOT, everything robots.txt
+    and sitemap.xml advertise, and the common entry points that actually
+    answer on this server.
+    """
+    client.module = "scope"
+    root = origin_root(url)
+    seeds: List[str] = [url]
+    reasons: List[str] = []
+
+    parsed = urllib.parse.urlsplit(url)
+    is_root = (parsed.path in ("", "/")) and not parsed.query
+    if expand_root and not is_root:
+        r = client.get(root)
+        if r is not None and r.status_code < 400:
+            final = normalize_url(r.url)
+            seeds.append(final)
+            if final != root:
+                reasons.append(f"site root redirects to {final}")
+            else:
+                reasons.append("added site root (you gave a sub-page URL)")
+        elif r is not None:
+            reasons.append(f"site root returned HTTP {r.status_code}")
+        else:
+            reasons.append(f"site root unreachable ({client.last_error})")
+
+    if expand_root:
+        rob = _harvest_robots(client, root, state)
+        if rob:
+            seeds.extend(rob)
+            reasons.append(f"robots.txt/sitemap advertised {len(rob)} path(s)")
+
+    if probe_paths:
+        base = seeds[1] if len(seeds) > 1 and not is_root else root
+        base_root = origin_root(base)
+        added = 0
+        for p in COMMON_ENTRY_PATHS:
+            cand = normalize_url(base_root.rstrip("/") + p)
+            if cand in seeds:
+                continue
+            resp = client.get(cand)
+            if resp is None:
+                continue
+            if resp.status_code < 400:
+                seeds.append(normalize_url(resp.url))
+                added += 1
+            elif resp.status_code in (401, 403):
+                # protected entry point — still worth crawling (login forms,
+                # auth headers, redirect behaviour)
+                seeds.append(cand)
+                added += 1
+            if added >= 14:
+                break
+        if added:
+            reasons.append(f"probed {added} common entry point(s) that answered")
+
+    # de-dup, keep order
+    uniq: List[str] = []
+    for s in seeds:
+        s = normalize_url(s)
+        if s and s not in uniq:
+            uniq.append(s)
+    state.seeds_used = uniq
+    for r in reasons:
+        state.note(f"Scope: {r}")
+    if len(uniq) > 1:
+        ok(f"Scope expansion: {len(uniq)} seed URLs -> {', '.join(uniq[:6])}"
+           + (" …" if len(uniq) > 6 else ""))
+    return uniq
+
+
+# ============================================================================
 # Module 1 — Crawler
 # ============================================================================
 class Crawler:
@@ -368,9 +541,19 @@ class Crawler:
         self.max_depth = max_depth
         self.max_urls = max_urls
 
-    def run(self, start: str) -> None:
+    def run(self, start: str, seeds: Optional[List[str]] = None) -> None:
         info(f"Crawling {start} (depth={self.max_depth}, max_urls={self.max_urls})")
+        self.client.module = "crawl"
         queue: List[Tuple[str, int]] = [(normalize_url(start), 0)]
+        # Auto-scope expansion: always seed the site ROOT and discovered
+        # entry points, even when the user handed us a deep sub-page URL.
+        # This is the single biggest fix for "0 findings on a vulnerable site".
+        for s in (seeds or []):
+            ns = normalize_url(s)
+            if ns != normalize_url(start):
+                queue.append((ns, 0))
+        if len(queue) > 1:
+            info(f"Scope expanded with {len(queue) - 1} extra seed URL(s)")
         seen: Set[str] = set()
 
         while queue and len(self.state.crawled_urls) < self.max_urls:
@@ -1460,17 +1643,32 @@ class AdvancedScanner:
 # ============================================================================
 # Reporting
 # ============================================================================
-def write_json_report(state: ScanState, path: str) -> None:
+def write_json_report(state: ScanState, path: str,
+                      client_stats: Optional[Dict[str, Any]] = None) -> None:
+    cs = client_stats or {}
+    cov = state.coverage()
     data = {
         "tool": "WebVulnX v2.0",
         "target": state.base_url,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "duration_s": round(time.time() - state.start_ts, 2),
         "stats": {
-            "urls_crawled": len(state.crawled_urls),
-            "forms": len(state.forms),
+            "urls_crawled": cov["urls_crawled"],
+            "forms": cov["forms_found"],
+            "parameters": cov["parameters"],
             "findings": len(state.findings),
+            "actionable_findings": len([f for f in state.findings
+                                        if f.severity != "Info"]),
+            "requests_sent": cs.get("requests", 0),
+            "connection_errors": cs.get("errors", 0),
+            "blocked_responses": cs.get("blocked", 0),
+            "waf_challenge_pages": cs.get("waf_hits", 0),
+            "status_codes": cs.get("statuses", {}),
+            "modules_run": cov["modules_run"],
+            "seed_urls": cov["seed_urls"],
+            "degraded": state.degraded,
         },
+        "diagnostics": state.diagnostics,
         "findings": [asdict(f) for f in state.findings],
     }
     with open(path, "w", encoding="utf-8") as fh:
@@ -1574,6 +1772,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help='Extra header "Name: Value" (repeatable)')
     p.add_argument("--proxy", help="HTTP proxy, e.g. http://127.0.0.1:8080")
     p.add_argument("--no-crawl", action="store_true", help="Skip crawling (test base URL only)")
+    p.add_argument("--no-root-expansion", action="store_true",
+                   help="Do NOT auto-add the site root / robots.txt / sitemap "
+                        "when a sub-page URL is given (strict single-URL scope)")
+    p.add_argument("--no-probe-paths", action="store_true",
+                   help="Skip probing common entry points (/login, /admin, /search …)")
     p.add_argument("--json", metavar="FILE", help="JSON report path")
     p.add_argument("--html", metavar="FILE", help="HTML report path")
     return p
@@ -1626,48 +1829,125 @@ def main() -> None:
         sys.exit(1)
     ok(f"Target alive: {probe.status_code} | Server: {probe.headers.get('Server','?')}")
 
-    # Crawl
+    # ---- module bookkeeping (so the report can PROVE what was tested) ------
+    def run_module(name: str, fn, *a, **kw):
+        client.module = name
+        state.modules_run.append(name)
+        info(f"── module: {name} ──")
+        try:
+            return fn(*a, **kw)
+        except Exception as e:            # one broken module must not kill the scan
+            warn(f"module {name} crashed: {type(e).__name__}: {e}")
+            state.note(f"Module {name} failed: {type(e).__name__}: {e}")
+            return None
+
+    # ---- Scope expansion + crawl ------------------------------------------
+    seeds: List[str] = [args.url]
     if not args.no_crawl:
-        Crawler(client, state, max_depth=args.depth, max_urls=args.max_urls).run(args.url)
+        if not args.no_root_expansion:
+            seeds = discover_seeds(client, args.url, state,
+                                   expand_root=True,
+                                   probe_paths=not args.no_probe_paths)
+        Crawler(client, state, max_depth=args.depth,
+                max_urls=args.max_urls).run(args.url, seeds=seeds)
         state.crawled_urls.add(args.url)
     else:
         state.crawled_urls.add(args.url)
+        state.note("Crawling disabled (--no-crawl): only the given URL was tested")
 
     # Modules
     if not args.no_param_fuzz:
-        ParamFuzzer(client, state).run()
+        run_module("param-discovery", ParamFuzzer(client, state).run)
     if args.full or args.audit:
-        MisconfigAudit(client, state).run(args.url)
+        run_module("misconfig-audit", MisconfigAudit(client, state).run, args.url)
     if args.full or args.sqli:
-        SqliScanner(client, state,
-                    time_delay=None if args.no_time_blind else args.time_blind).run()
+        run_module("sqli", SqliScanner(
+            client, state,
+            time_delay=None if args.no_time_blind else args.time_blind).run)
     if args.full or args.xss:
-        XssScanner(client, state).run()
+        run_module("xss", XssScanner(client, state).run)
     if args.full or args.dirs:
-        DirBuster(client, state, load_wordlist(args.wordlist)).run(args.url)
+        run_module("dirbuster", DirBuster(
+            client, state, load_wordlist(args.wordlist)).run, args.url)
     adv = AdvancedScanner(client, state)
     if args.full or args.advanced or args.lfi:
-        adv.scan_lfi()
+        run_module("lfi", adv.scan_lfi)
     if args.full or args.advanced or args.ssti:
-        adv.scan_ssti()
+        run_module("ssti", adv.scan_ssti)
     if args.full or args.advanced or args.cmdi:
-        adv.scan_cmdi()
+        run_module("cmdi", adv.scan_cmdi)
     if args.full or args.advanced:
-        adv.scan_open_redirect()
-        adv.scan_cors()
-        adv.scan_crlf()
-        adv.scan_dir_listing()
-        adv.scan_js_libs()
-        adv.scan_sensitive()
-        adv.scan_known_vulns()
-        adv.scan_csrf()
-        adv.scan_xxe()
-        adv.scan_ssrf()
-        adv.scan_host_header()
-        adv.scan_jwt()
-        adv.scan_stored_xss()
+        for nm, fn in (("open-redirect", adv.scan_open_redirect),
+                       ("cors", adv.scan_cors),
+                       ("crlf", adv.scan_crlf),
+                       ("dir-listing", adv.scan_dir_listing),
+                       ("js-libs", adv.scan_js_libs),
+                       ("sensitive-data", adv.scan_sensitive),
+                       ("known-cves", adv.scan_known_vulns),
+                       ("csrf", adv.scan_csrf),
+                       ("xxe", adv.scan_xxe),
+                       ("ssrf", adv.scan_ssrf),
+                       ("host-header", adv.scan_host_header),
+                       ("jwt", adv.scan_jwt),
+                       ("stored-xss", adv.scan_stored_xss)):
+            run_module(nm, fn)
     if args.default_creds:
-        adv.scan_default_creds()
+        run_module("default-creds", adv.scan_default_creds)
+
+    # ---- Coverage / why-nothing-found diagnosis ---------------------------
+    st = client.stats
+    total = max(st["requests"], 1)
+    block_ratio = (st["blocked"] + st["errors"]) / total
+    n_params = sum(len(v) for v in state.params.values())
+    state.tests_run = st["requests"]
+
+    print(colorize("\n────── Scan Coverage (proof of work) ──────", "bold"))
+    print(f"  Seed URLs          : {len(state.seeds_used)}")
+    print(f"  URLs crawled       : {len(state.crawled_urls)}")
+    print(f"  Forms found        : {len(state.forms)}")
+    print(f"  Parameters seen    : {n_params}")
+    print(f"  Modules executed   : {len(state.modules_run)} "
+          f"({', '.join(state.modules_run[:8])}{' …' if len(state.modules_run) > 8 else ''})")
+    print(f"  HTTP requests sent : {st['requests']}")
+    print(f"  Connection errors  : {st['errors']}")
+    print(f"  Blocked (4xx/5xx)  : {st['blocked']}  | WAF/challenge pages: {st['waf_hits']}")
+    top = sorted(st["statuses"].items(), key=lambda kv: -kv[1])[:6]
+    print(f"  Status codes       : " + ", ".join(f"{k}×{v}" for k, v in top))
+
+    if st["waf_hits"] or block_ratio > 0.35:
+        state.degraded = True
+        msg = (f"SCAN DEGRADED — {st['waf_hits']} WAF/challenge page(s) and "
+               f"{round(block_ratio * 100)}% of requests were blocked or failed. "
+               f"The target is filtering this scanner, so a clean result here is "
+               f"NOT proof the site is secure.")
+        warn(msg)
+        state.note(msg)
+        state.findings.append(Finding(
+            vuln_type="Scan degraded — WAF / rate-limit blocking",
+            severity="Info", url=args.url,
+            evidence=f"{st['blocked']} blocked, {st['errors']} errors, "
+                     f"{st['waf_hits']} WAF pages of {st['requests']} requests",
+            detail="Re-run with --delay 0.5, a browser User-Agent (--header "
+                   "'User-Agent: Mozilla/5.0 …'), authenticated cookies "
+                   "(--cookie), or through an allowed source IP."))
+    if len(state.crawled_urls) <= 2 and n_params == 0 and not state.forms:
+        msg = ("NO ATTACK SURFACE FOUND — the crawler reached only "
+               f"{len(state.crawled_urls)} URL(s) with 0 parameters and 0 forms, "
+               "so injection modules had nothing to test. This usually means the "
+               "site is a SPA/JS app, needs authentication, or blocked the crawl.")
+        warn(msg)
+        state.note(msg)
+        state.findings.append(Finding(
+            vuln_type="No attack surface discovered (nothing was testable)",
+            severity="Info", url=args.url,
+            evidence=f"urls={len(state.crawled_urls)} forms={len(state.forms)} "
+                     f"params={n_params} requests={st['requests']}",
+            detail="Try: scan the site ROOT url, raise --depth/--max-urls, pass "
+                   "session cookies (--cookie), enable --dirs, or point the scan "
+                   "at a URL that already has query parameters."))
+    if n_params == 0 and state.forms and not state.degraded:
+        state.note("Forms were found but no parameter names could be extracted "
+                   "— injection modules tested the raw form actions only.")
 
     # Summary
     print(colorize("\n────── Findings Summary ──────", "bold"))
@@ -1679,11 +1959,24 @@ def main() -> None:
             tag = {"Critical": "red", "High": "red", "Medium": "yellow",
                    "Low": "cyan", "Info": "blue"}[sev]
             print(f"  {colorize(sev, tag):<25} {counts[sev]}")
-    ok(f"Total findings: {len(state.findings)} | Duration: "
+    real = [f for f in state.findings if f.severity != "Info"]
+    ok(f"Total findings: {len(state.findings)} "
+       f"({len(real)} actionable) | Duration: "
        f"{round(time.time() - state.start_ts, 2)}s")
+    if not real and not state.degraded:
+        print(colorize(
+            "  No exploitable vulnerability was confirmed on the tested surface. "
+            f"{st['requests']} requests across {len(state.modules_run)} modules "
+            f"and {n_params} parameter(s) were actually sent and verified — "
+            "this is a tested-clean result, not an empty scan.", "dim"))
+
+    if state.diagnostics:
+        print(colorize("\n────── Diagnostics ──────", "bold"))
+        for d in state.diagnostics:
+            print(f"  • {d}")
 
     if args.json:
-        write_json_report(state, args.json)
+        write_json_report(state, args.json, client_stats=st)
     if args.html:
         write_html_report(state, args.html)
 

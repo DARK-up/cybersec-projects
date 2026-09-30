@@ -50,6 +50,55 @@ python3 hashbreaker.py crack -f pwdump.txt -w wordlists/common-pass.txt --rules 
 python3 hashbreaker.py benchmark
 ```
 
+## 📚 Wordlists
+
+| File | Words | Purpose |
+|------|-------|---------|
+| `wordlists/common-pass.txt` | ~160 | Instant smoke test — **will not crack real passwords** |
+| `wordlists/rockyou.txt` | 14,344,392 | The real thing. Not in git (GitHub rejects files >100 MB) |
+
+Get rockyou (one command, Kali/Linux or Windows):
+
+```bash
+# Kali / Linux / macOS  — reuses /usr/share/wordlists/rockyou.txt.gz when present
+./get-rockyou.sh
+```
+
+```bat
+:: Windows — double-click, or run from cmd
+get-rockyou.bat
+```
+
+Kali ships it already, so this also works with no download:
+
+```bash
+sudo apt install wordlists
+gunzip -k /usr/share/wordlists/rockyou.txt.gz
+ln -s /usr/share/wordlists/rockyou.txt wordlists/rockyou.txt
+```
+
+Then crack with it:
+
+```bash
+python3 hashbreaker.py crack -x 5f4dcc3b5aa765d61d8327deb882cf99 \
+  -w wordlists/rockyou.txt --workers 4
+# [+] CRACKED  5f4dcc3b5aa765d61d8327deb882cf99  ->  password
+```
+
+**Performance notes**
+
+- rockyou is streamed line-by-line; it is never loaded into RAM (139 MB as a
+  Python list would need several GB). Observed throughput: **~740 kH/s** for
+  MD5/SHA-1 on 4 workers, and cracking stops the moment every target is found.
+- **Mangling rules are skipped automatically** for wordlists above 250 k words
+  (`14.3 M × ~10 rules = 100 M+ attempts`, i.e. hours). Rules stay on for small
+  lists and for mask attacks.
+- If a hash survives the full rockyou pass it is reported as *not present in
+  this wordlist* — that usually means the hash is **salted**, the password is
+  strong/random, or the digest is not a plain unsalted password hash. Next
+  steps: supply the salt (`-s`), run a mask attack (`--mask '?l?l?l?l?d?d'`),
+  or move to `hashcat` on a GPU.
+
 ### Mask Tokens
 | Token | Charset |
 |-------|---------|

@@ -54,8 +54,16 @@
   th{background:var(--panel2);color:var(--cyan)}
   .status{padding:3px 10px;border-radius:999px;font-size:11px}
   .s-running{background:#0d2e3b;color:var(--cyan)}
+  .s-waiting{background:#3b320d;color:var(--yellow)}
   .s-done{background:#0d3b2a;color:var(--green)}
   .s-error{background:#3b0d16;color:#ff8796}
+  .s-timeout{background:#3b1f0d;color:#ffb27d}
+  .s-interrupted{background:#2b2440;color:#c3b0ff}
+  .crack-word{font-size:26px;font-weight:800;color:var(--green);letter-spacing:.5px;
+              background:#0d3b2a;border:1px solid #1d6b4c;border-radius:10px;
+              padding:14px 18px;margin:10px 0;display:inline-block;word-break:break-all}
+  .crack-miss{font-size:14px;font-weight:700;color:#ff8796;background:#3b0d16;
+              border:1px solid #7a2233;border-radius:10px;padding:12px 16px;margin:10px 0;display:block}
   footer{padding:18px 28px;color:var(--muted);font-size:11px;border-top:1px solid var(--border)}
   a{color:var(--cyan)}
 </style>
@@ -132,6 +140,7 @@
     <label><input type="checkbox" id="web-dirs" checked> DirBuster</label>
     <label><input type="checkbox" id="web-audit" checked> Misconfig audit</label>
     <label><input type="checkbox" id="web-creds"> Default creds</label>
+    <label><input type="checkbox" id="web-fast" checked> ⚡ Fast (skip time-based SQLi)</label>
   </div>
   <button class="run" onclick="runWeb()">▶ RUN SCAN</button>
   <button class="run" onclick="maxScan()" style="background:var(--red);color:#fff">🔥 MAX SCAN (everything)</button>
@@ -150,9 +159,12 @@
   <div class="row">
     <label>Wordlist
       <select id="hash-wordlist">
-        <option value="common" selected>built-in: common-pass.txt</option>
+        <option value="auto" selected>auto (biggest available)</option>
+        <option value="rockyou">rockyou.txt — 14.3M words (strongest)</option>
+        <option value="common">common-pass.txt — small &amp; instant</option>
         <option value="none">none (mask only)</option>
       </select>
+      <span id="wl-info" style="font-size:11px;color:var(--dim)"></span>
     </label>
     <label>Mask (optional)
       <input id="hash-mask" placeholder="?l?l?l?d?d">
@@ -196,10 +208,15 @@
 <!-- ============ JOBS ============ -->
 <section id="tab-jobs">
   <h2>Job Queue</h2>
-  <p class="desc">Every scan runs as a background job — click one to view its result.</p>
-  <button class="run" onclick="loadJobs()">🔄 REFRESH</button>
+  <p class="desc">Jobs run <b>one at a time</b> (queued jobs show <span class="status s-waiting">waiting</span>)
+    so their output can never mix. The list refreshes itself every 3&nbsp;s — statuses below are always live.</p>
+  <button class="run" onclick="loadJobs()">🔄 REFRESH NOW</button>
   <button class="run" onclick="loadHealth()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🩺 HEALTH</button>
-  <div class="out" id="jobs-out">No jobs yet…</div>
+  <label style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;font-size:12px;color:var(--dim)">
+    <input type="checkbox" id="jobs-autorefresh" checked onchange="toggleAutoRefresh()"> auto-refresh
+  </label>
+  <div class="out" id="jobs-table">No jobs yet…</div>
+  <div class="out" id="job-detail">Click “view” on a job to see its result here.</div>
 </section>
 
 </main>
@@ -234,27 +251,48 @@ async function api(path, opts) {
 function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
 async function pollJob(jobId, outEl) {
-  outEl.textContent = 'Job ' + jobId + ' running…';
+  const t0 = Date.now();
+  outEl.textContent = 'Job ' + jobId + ' queued…';
   while (true) {
     await new Promise(r => setTimeout(r, 1200));
-    const j = await api('/api/jobs/' + jobId);
-    if (j.status === 'running') {
-      outEl.textContent = 'Job ' + jobId + ' running… (' + j.kind + ')';
+    let j;
+    try { j = await api('/api/jobs/' + jobId); }
+    catch (e) {
+      outEl.textContent = 'Lost contact with the API (' + e.message +
+        ') — the server may have restarted. Check the Jobs tab.';
+      return null;
+    }
+    if (j.status === 'running' || j.status === 'waiting') {
+      const secs = Math.round((Date.now() - t0) / 1000);
+      outEl.textContent = 'Job ' + jobId + ' ' + j.status + '… (' + j.kind + ', ' + secs + 's' +
+        (j.status === 'waiting' ? ' — queued behind another job' : '') + ')';
+      if (secs > 4 * 3600) {          // never poll forever in the browser
+        outEl.textContent = 'Job ' + jobId + ' is still ' + j.status + ' after 4h — ' +
+          'open the Jobs tab to keep watching it.';
+        return null;
+      }
       continue;
     }
     renderJob(j, outEl);
+    loadJobs();          // keep the queue table in sync the moment a job ends
     return j;
   }
 }
 
 function renderJob(j, outEl) {
-  if (j.status === 'error') {
-    outEl.innerHTML = '<span class="status s-error">ERROR</span> ' + esc(j.error || '') +
-      (j.result && j.result.hint ? '\n\nHint: ' + esc(j.result.hint) : '');
+  const BAD = {error: 'ERROR', timeout: 'TIMEOUT', interrupted: 'INTERRUPTED'};
+  if (BAD[j.status]) {
+    const r = j.result || {};
+    outEl.innerHTML = '<span class="status s-' + esc(j.status) + '">' + BAD[j.status] +
+      '</span> ' + esc(j.kind) + ' — ' + esc(j.error || '') +
+      (r.hint ? '\n\nHint: ' + esc(r.hint) : '') +
+      (r.log ? '\n\n── log captured before it stopped ──\n' + esc(r.log.slice(-3000)) : '');
     return;
   }
   const r = j.result || {};
-  let html = '<span class="status s-done">DONE</span> ' + esc(j.kind) + '\n';
+  const secs = (j.finished_at && j.started_at) ? Math.round(j.finished_at - j.started_at) + 's' : '';
+  let html = '<span class="status s-done">DONE</span> ' + esc(j.kind) +
+             (secs ? ' in ' + secs : '') + '\n';
 
   if (r.report && r.report.hosts) {                       // network scan
     for (const h of r.report.hosts) {
@@ -279,14 +317,55 @@ function renderJob(j, outEl) {
     html += '\nTotal open ports: ' + r.report.hosts.reduce((a, h) => a + h.open_ports.length, 0);
   } else if (r.findings) {                                // web scan
     const st = r.stats || {};
-    html += '\nTarget: ' + esc(r.target || '') +
-            '\nURLs crawled: ' + (st.urls_crawled || 0) + ' | Forms: ' + (st.forms || 0) +
-            ' | Findings: ' + (st.findings || 0) + '\n';
+    html += '\nTarget: ' + esc(r.target || '');
+    if (st.degraded)
+      html += '  <span class="status s-error">⚠ SCAN DEGRADED (blocked/WAF)</span>';
+    html += '\n\n<b>── Coverage (proof the scan really ran) ──</b>\n' +
+            'Seed URLs: ' + (st.seed_urls || []).length +
+            ' | URLs crawled: ' + (st.urls_crawled || 0) +
+            ' | Forms: ' + (st.forms || 0) +
+            ' | Parameters: ' + (st.parameters || 0) + '\n' +
+            'Modules executed: ' + (st.modules_run || []).length + ' → ' +
+              esc((st.modules_run || []).join(', ')) + '\n' +
+            'HTTP requests sent: ' + (st.requests_sent || 0).toLocaleString() +
+            ' | connection errors: ' + (st.connection_errors || 0) +
+            ' | blocked (401/403/429/5xx): ' + (st.blocked_responses || 0) +
+            ' | WAF pages: ' + (st.waf_challenge_pages || 0) + '\n' +
+            'Duration: ' + (st.duration_s || 0) + 's';
+    const codes = Object.entries(st.status_codes || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (codes.length)
+      html += '\nStatus codes: ' + codes.map(([k, v]) => k + '×' + v).join(', ');
+    if ((st.seed_urls || []).length)
+      html += '\nSeeds: ' + esc((st.seed_urls || []).slice(0, 8).join('  '));
+    html += '\n\n<b>── Findings: ' + (st.findings || 0) + ' total (' +
+            (st.actionable !== undefined ? st.actionable : r.findings.length) +
+            ' actionable) ──</b>\n';
     for (const sev in (st.by_severity || {}))
       html += '  <span class="badge b-' + sev + '">' + sev + ': ' + st.by_severity[sev] + '</span>';
-    if (!r.findings.length)
-      html += '\n\nNo vulnerabilities found on this target.\n'
-           +  'Hints: try 🔥 MAX SCAN, raise "Max pages", or the site may be blocking scanners (WAF).';
+    if (r.diagnostics && r.diagnostics.length) {
+      html += '\n\n<b>── Diagnostics ──</b>\n';
+      for (const d of r.diagnostics) html += ' • ' + esc(d) + '\n';
+    }
+    if (!r.findings.length) {
+      html += '\n\n<b>No vulnerability was confirmed on the tested surface.</b>\n';
+      if (st.degraded)
+        html += '⚠ This result is NOT trustworthy: the target blocked most requests ' +
+                '(WAF / rate-limit / IP block). Re-scan with delay, a browser ' +
+                'User-Agent, session cookies, or from an allowed IP.\n';
+      else if (!(st.parameters || 0) && !(st.forms || 0))
+        html += '⚠ Nothing was testable — 0 parameters and 0 forms were discovered, ' +
+                'so SQLi/XSS/etc. had no injection point. Scan the site ROOT url, ' +
+                'raise Max pages/Depth, pass login cookies, or enable Dir brute-force.\n';
+      else
+        html += '✔ This is a TESTED-CLEAN result: ' +
+                (st.requests_sent || 0).toLocaleString() + ' requests across ' +
+                (st.modules_run || []).length + ' modules and ' +
+                (st.parameters || 0) + ' parameter(s) were actually sent and verified.\n';
+      if (r.debug)
+        html += '\nPage received: HTTP ' + r.debug.probe_status + ' | server: ' + esc(r.debug.server)
+             +  ' | size: ' + r.debug.content_length + ' bytes | final URL: ' + esc(r.debug.final_url) + '\n'
+             +  'Preview: ' + esc((r.debug.preview || '').slice(0, 160)) + '\n';
+    }
     html += '\n\n<table><tr><th>Severity</th><th>Type</th><th>Param</th><th>URL</th><th>Evidence</th></tr>';
     for (const f of r.findings) {
       html += '<tr><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td><td>' +
@@ -295,21 +374,43 @@ function renderJob(j, outEl) {
     }
     html += '</table>';
   } else if (r.results && r.results.length && r.results[0].hash_type !== undefined) {  // hash crack (new format)
-    html += '\nAttempts: ' + (r.attempts || 0).toLocaleString() + '\n';
+    const s = r.summary || {};
+    html += '\n<b>── CRACK RESULT ──</b>\n';
+    // the plaintext FIRST and BIG — this is what the user actually wants to see
+    for (const t of r.results) {
+      if (t.cracked) {
+        html += '<div class="crack-word">🔓 ' + esc(t.password) + '</div>' +
+                '<div style="color:var(--dim);font-size:12px;margin-bottom:8px">' +
+                'plaintext for <code>' + esc(t.hash) + '</code> · algo: ' +
+                esc(t.used_algo || '-') + (t.salt ? ' · salt: ' + esc(t.salt) : '') +
+                (t.attempts ? ' · found after ' + Number(t.attempts).toLocaleString() + ' attempts' : '') +
+                '</div>';
+      }
+    }
+    if (s.verdict) {
+      html += (s.cracked_count ? '<div style="color:var(--green);font-weight:700">'
+                               : '<div class="crack-miss">') + esc(s.verdict) + '</div>';
+    }
     html += '<table><tr><th>Hash</th><th>Hash Type</th><th>Algo Used</th><th>Status</th><th>Decrypted Password</th></tr>';
     for (const t of r.results) {
       html += '<tr><td><code>' + esc(t.hash.slice(0, 42)) + (t.hash.length > 42 ? '…' : '') + '</code></td>' +
               '<td>' + esc(t.hash_type) + (t.candidates && t.candidates.length > 1 ?
                 '<br><span style="color:#7d90a8">or: ' + esc(t.candidates.slice(1).join(', ')) + '</span>' : '') + '</td>' +
               '<td>' + esc(t.used_algo || '-') + (t.salt ? ' (salt)' : '') + '</td>' +
-              '<td>' + (t.cracked ? '<span class="status s-done">CRACKED</span>'
+              '<td>' + (t.cracked ? '<span class="status s-done">CRACKED ✅</span>'
                                   : '<span class="status s-error">NOT FOUND</span>') + '</td>' +
-              '<td style="color:var(--green);font-weight:700">' + esc(t.password || '—') + '</td></tr>';
+              '<td style="color:var(--green);font-weight:800;font-size:14px">' +
+                (t.cracked ? esc(t.password) : '<span style="color:#ff8796">— not cracked —</span>') + '</td></tr>';
     }
     html += '</table>';
-    if (r.results.some(t => !t.cracked))
-      html += '\nTip: hashes not found need a bigger wordlist or a longer mask '
-            + '(weak hashes like MD5/NTLM crack fast; bcrypt/argon2 are intentionally slow).';
+    html += '\n<b>Work done:</b> wordlist <code>' + esc(s.wordlist || '-') + '</code> (' +
+            (s.wordlist_words || 0).toLocaleString() + ' words) · rules ' + (s.rules ? 'ON' : 'OFF') +
+            ' · ' + (r.attempts || 0).toLocaleString() + ' candidate hashes computed · ' +
+            (s.rate_hps || 0).toLocaleString() + ' H/s · ' + (s.duration_s || 0) + 's\n';
+    if (s.rules_note) html += 'ℹ️ ' + esc(s.rules_note) + '\n';
+    for (const t of r.results)
+      if (!t.cracked && t.not_found_reason)
+        html += '\n⚠️ ' + esc(t.not_found_reason);
   } else if (r.cracked !== undefined) {                   // hash crack (old format)
     html += '\nAttempts: ' + (r.attempts || 0).toLocaleString() + ' | Cracked: ' + r.cracked.length + '\n';
     for (const c of r.cracked)
@@ -353,6 +454,7 @@ async function runWeb() {
     xss: $('web-xss').checked, dirs: $('web-dirs').checked, audit: $('web-audit').checked,
     advanced: $('web-advanced').checked, param_fuzz: $('web-paramfuzz').checked,
     default_creds: $('web-creds').checked,
+    fast: $('web-fast').checked,
     time_blind: +$('web-blind').value, max_urls: +$('web-max').value
   };
   try {
@@ -383,18 +485,41 @@ async function runIdentify() {
 
 async function runCrack() {
   const hashes = $('hash-input').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const wl = $('hash-wordlist').value;
   const body = {
     hashes, rules: $('hash-rules').checked,
-    wordlist: $('hash-wordlist').value === 'common' ? 'common' : null,
+    wordlist: wl === 'none' ? null : wl,
     mask: $('hash-mask').value || null,
     algo: $('hash-algo').value || null
   };
+  if ((wl === 'rockyou' || wl === 'auto') && WL_HAS_ROCKYOU)
+    $('hash-out').textContent = 'Cracking against rockyou.txt (14.3M words) — this can take a few minutes.\nWatch live progress in the Jobs tab…';
   try {
     const { job_id } = await api('/api/jobs/hash-crack', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    loadJobs();
     await pollJob(job_id, $('hash-out'));
   } catch (e) { $('hash-out').textContent = 'Error: ' + e.message; }
 }
+
+let WL_HAS_ROCKYOU = false;
+async function loadWordlistInfo() {
+  try {
+    const r = await api('/api/wordlists');
+    const w = r.wordlists || {};
+    WL_HAS_ROCKYOU = !!w['rockyou'];
+    const parts = Object.entries(w).filter(([k]) => !k.startsWith('dirs:'))
+      .map(([k, v]) => k + ': ' + (v.lines || 0).toLocaleString() + ' words' +
+                      (v.size_mb ? ' (' + v.size_mb + ' MB)' : ''));
+    $('wl-info').textContent = parts.length ? 'available → ' + parts.join(' · ')
+      : 'no wordlists found next to hashbreaker/';
+    if (!WL_HAS_ROCKYOU) {
+      const opt = document.querySelector('#hash-wordlist option[value="rockyou"]');
+      if (opt) { opt.textContent = 'rockyou.txt — NOT DOWNLOADED (see hashbreaker/README)'; opt.disabled = true; }
+    }
+  } catch (e) { /* non-fatal */ }
+}
+loadWordlistInfo();
 
 async function runDemo() {
   try {
@@ -429,34 +554,62 @@ async function runLive() {
   } catch (e) { $('mon-out').textContent = 'Error: ' + e.message; }
 }
 
+let VIEWED_JOB = null;          // job currently shown in the detail pane
+let JOBS_TIMER = null;
+
 async function loadJobs() {
   try {
     const r = await api('/api/jobs');
-    if (!r.jobs.length) { $('jobs-out').textContent = 'No jobs yet…'; return; }
-    let html = '<table><tr><th>Job</th><th>Kind</th><th>Status</th><th>Started</th><th></th></tr>';
+    if (!r.jobs.length) { $('jobs-table').textContent = 'No jobs yet…'; return; }
+    let html = '<table><tr><th>Job</th><th>Kind</th><th>Status</th><th>Started</th>' +
+               '<th>Duration</th><th></th></tr>';
     for (const j of r.jobs) {
+      const dur = (j.finished_at && j.started_at)
+        ? Math.round(j.finished_at - j.started_at) + 's'
+        : (j.status === 'running' || j.status === 'waiting'
+            ? Math.round(Date.now() / 1000 - j.started_at) + 's…' : '—');
       html += '<tr><td>' + esc(j.id) + '</td><td>' + esc(j.kind) + '</td>' +
               '<td><span class="status s-' + esc(j.status) + '">' + esc(j.status) + '</span></td>' +
               '<td>' + new Date(j.started_at * 1000).toLocaleTimeString() + '</td>' +
+              '<td>' + dur + '</td>' +
               '<td><button class="run" style="padding:4px 12px;font-size:11px" ' +
               "onclick=\"viewJob('" + j.id + "')\">view</button></td></tr>";
     }
-    html += '</table><div class="out" id="job-detail">Click "view" to see a result.</div>';
-    $('jobs-out').innerHTML = html;
-  } catch (e) { $('jobs-out').textContent = 'Error: ' + e.message; }
+    html += '</table>';
+    $('jobs-table').innerHTML = html;
+    // keep the open detail pane in sync with the live status
+    if (VIEWED_JOB) {
+      const j = r.jobs.find(x => x.id === VIEWED_JOB);
+      if (j) renderJob(j, $('job-detail'));
+    }
+  } catch (e) { $('jobs-table').textContent = 'Error: ' + e.message; }
 }
 
+function toggleAutoRefresh() {
+  if ($('jobs-autorefresh').checked) startJobsTimer(); else stopJobsTimer();
+}
+function startJobsTimer() {
+  stopJobsTimer();
+  JOBS_TIMER = setInterval(() => {
+    const sec = $('tab-jobs');
+    if (sec && sec.classList.contains('active')) loadJobs();
+  }, 3000);
+}
+function stopJobsTimer() { if (JOBS_TIMER) { clearInterval(JOBS_TIMER); JOBS_TIMER = null; } }
+startJobsTimer();
+
 async function viewJob(id) {
+  VIEWED_JOB = id;
   const j = await api('/api/jobs/' + id);
-  renderJob(j, document.getElementById('job-detail'));
+  renderJob(j, $('job-detail'));
 }
 
 async function loadHealth() {
   try {
     const h = await api('/api/health');
-    $('jobs-out').innerHTML = '<b>' + esc(h.name) + ' v' + esc(h.version) + '</b> — ' + esc(h.status) +
+    $('job-detail').innerHTML = '<b>' + esc(h.name) + ' v' + esc(h.version) + '</b> — ' + esc(h.status) +
       ' on ' + esc(h.platform) + '\nTools: ' + esc(JSON.stringify(h.tools)) + '\n\n' + esc(h.legal);
-  } catch (e) { $('jobs-out').textContent = 'Error: ' + e.message; }
+  } catch (e) { $('job-detail').textContent = 'Error: ' + e.message; }
 }
 </script>
 </body>

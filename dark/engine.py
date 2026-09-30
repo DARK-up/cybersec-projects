@@ -123,56 +123,131 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         return {"error": f"Cannot reach {url}", "detail": err,
                 "hint": wx.diagnose_error(err)}
 
+    debug = {
+        "probe_status": probe.status_code,
+        "server": probe.headers.get("Server", "?"),
+        "content_length": len(probe.content),
+        "content_type": probe.headers.get("Content-Type", "?"),
+        "final_url": probe.url,
+        "preview": probe.text[:200].replace("\n", " "),
+    }
+
+    def run_module(name, fn, *a, **kw):
+        client.module = name
+        state.modules_run.append(name)
+        try:
+            return fn(*a, **kw)
+        except Exception as e:      # one broken module must not kill the scan
+            print(f"[!] module {name} crashed: {type(e).__name__}: {e}")
+            state.note(f"Module {name} failed: {type(e).__name__}: {e}")
+            return None
+
+    seeds = [url]
     with _Capture() as cap:
         if do_crawl:
-            wx.Crawler(client, state, max_depth=depth, max_urls=max_urls).run(url)
+            seeds = wx.discover_seeds(client, url, state, expand_root=True,
+                                      probe_paths=True)
+            wx.Crawler(client, state, max_depth=depth,
+                       max_urls=max_urls).run(url, seeds=seeds)
             state.crawled_urls.add(url)
         else:
             state.crawled_urls.add(url)
+            state.note("Crawling disabled: only the given URL was tested")
         if do_param_fuzz:
-            wx.ParamFuzzer(client, state).run()
+            run_module("param-discovery", wx.ParamFuzzer(client, state).run)
         if do_audit:
-            wx.MisconfigAudit(client, state).run(url)
+            run_module("misconfig-audit", wx.MisconfigAudit(client, state).run, url)
         if do_sqli:
-            wx.SqliScanner(client, state, time_delay=time_blind).run()
+            run_module("sqli", wx.SqliScanner(client, state, time_delay=time_blind).run)
         if do_xss:
-            wx.XssScanner(client, state).run()
+            run_module("xss", wx.XssScanner(client, state).run)
         if do_dirs:
             wordlist = wx.load_wordlist(wordlist_path)
-            wx.DirBuster(client, state, wordlist).run(url)
+            run_module("dirbuster",
+                       wx.DirBuster(client, state, wordlist).run, url)
         if do_advanced:
             adv = wx.AdvancedScanner(client, state)
-            adv.scan_lfi()
-            adv.scan_ssti()
-            adv.scan_cmdi()
-            adv.scan_open_redirect()
-            adv.scan_cors()
-            adv.scan_crlf()
-            adv.scan_dir_listing()
-            adv.scan_js_libs()
-            adv.scan_sensitive()
-            adv.scan_known_vulns()
-            adv.scan_csrf()
-            adv.scan_xxe()
-            adv.scan_ssrf()
-            adv.scan_host_header()
-            adv.scan_jwt()
-            adv.scan_stored_xss()
+            for nm, fn in (("lfi", adv.scan_lfi), ("ssti", adv.scan_ssti),
+                           ("cmdi", adv.scan_cmdi),
+                           ("open-redirect", adv.scan_open_redirect),
+                           ("cors", adv.scan_cors), ("crlf", adv.scan_crlf),
+                           ("dir-listing", adv.scan_dir_listing),
+                           ("js-libs", adv.scan_js_libs),
+                           ("sensitive-data", adv.scan_sensitive),
+                           ("known-cves", adv.scan_known_vulns),
+                           ("csrf", adv.scan_csrf), ("xxe", adv.scan_xxe),
+                           ("ssrf", adv.scan_ssrf),
+                           ("host-header", adv.scan_host_header),
+                           ("jwt", adv.scan_jwt),
+                           ("stored-xss", adv.scan_stored_xss)):
+                run_module(nm, fn)
         if do_default_creds:
-            wx.AdvancedScanner(client, state).scan_default_creds()
+            run_module("default-creds",
+                       wx.AdvancedScanner(client, state).scan_default_creds)
+
+    # ---- coverage + honest diagnosis of an empty result -------------------
+    st = client.stats
+    total = max(st["requests"], 1)
+    block_ratio = (st["blocked"] + st["errors"]) / total
+    n_params = sum(len(v) for v in state.params.values())
+    state.tests_run = st["requests"]
+
+    if st["waf_hits"] or block_ratio > 0.35:
+        state.degraded = True
+        msg = (f"SCAN DEGRADED — {st['waf_hits']} WAF/challenge page(s), "
+               f"{round(block_ratio * 100)}% of {st['requests']} requests were "
+               f"blocked or failed. A clean result here is NOT proof the site "
+               f"is secure.")
+        state.note(msg)
+        state.findings.append(wx.Finding(
+            vuln_type="Scan degraded — WAF / rate-limit blocking", severity="Info",
+            url=url,
+            evidence=f"{st['blocked']} blocked, {st['errors']} errors, "
+                     f"{st['waf_hits']} WAF pages of {st['requests']} requests",
+            detail="Re-run with delay=0.5, a browser User-Agent, authenticated "
+                   "cookies, or from an allowed source IP."))
+    if len(state.crawled_urls) <= 2 and n_params == 0 and not state.forms:
+        msg = (f"NO ATTACK SURFACE FOUND — only {len(state.crawled_urls)} URL(s) "
+               f"reachable, 0 parameters, 0 forms: injection modules had nothing "
+               f"to test (SPA/JS app, auth wall, or blocked crawl).")
+        state.note(msg)
+        state.findings.append(wx.Finding(
+            vuln_type="No attack surface discovered (nothing was testable)",
+            severity="Info", url=url,
+            evidence=f"urls={len(state.crawled_urls)} forms={len(state.forms)} "
+                     f"params={n_params} requests={st['requests']}",
+            detail="Scan the site ROOT url, raise depth/max_urls, pass session "
+                   "cookies, enable dir brute-force, or target a URL that "
+                   "already has query parameters."))
 
     counts: Dict[str, int] = {}
     for f in state.findings:
         counts[f.severity] = counts.get(f.severity, 0) + 1
+    actionable = [f for f in state.findings if f.severity != "Info"]
 
     return {
         "target": url,
+        "debug": debug,
         "stats": {
             "urls_crawled": len(state.crawled_urls),
             "forms": len(state.forms),
+            "parameters": n_params,
             "findings": len(state.findings),
+            "actionable": len(actionable),
             "by_severity": counts,
+            "seed_urls": state.seeds_used,
+            "modules_run": state.modules_run,
+            "requests_sent": st["requests"],
+            "connection_errors": st["errors"],
+            "blocked_responses": st["blocked"],
+            "waf_challenge_pages": st["waf_hits"],
+            "status_codes": st["statuses"],
+            "requests_by_module": st["by_module"],
+            "degraded": state.degraded,
+            "duration_s": round(time.time() - state.start_ts, 2),
         },
+        "coverage": state.coverage(),
+        "diagnostics": state.diagnostics,
         "findings": [asdict(f) for f in state.findings],
         "log": cap.text,
     }
@@ -198,11 +273,41 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
                  workers: Optional[int] = None) -> Dict:
     import hashbreaker as hb
 
+    def _count_lines(p: str) -> int:
+        n = 0
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                n += chunk.count(b"\n")
+        return n
+
+    stream = None
+    wl_name = "inline word list"
+    wl_words = len(words) if words else 0
     if not words and wordlist_path:
-        with open(wordlist_path, "r", encoding="utf-8", errors="ignore") as fh:
-            words = fh.readlines()
-    if not words and not mask:
+        if not Path(wordlist_path).is_file():
+            return {"error": f"wordlist not found: {wordlist_path}"}
+        wl_name = Path(wordlist_path).name
+        wl_words = _count_lines(wordlist_path)
+
+        def _lines(p=wordlist_path):
+            # streamed lazily — rockyou.txt is ~139 MB / 14.3 M lines and
+            # must never be loaded into RAM as a list of Python strings
+            with open(p, "r", encoding="utf-8", errors="ignore") as fh:
+                for ln in fh:
+                    yield ln.rstrip("\r\n")
+
+        stream = _lines()
+    if not words and stream is None and not mask:
         return {"error": "provide words (or a wordlist file) and/or a mask"}
+
+    # Mangling rules multiply every word ~10x. On a 14 M-word list that means
+    # 100 M+ attempts (hours), so rules are auto-disabled for big wordlists.
+    use_rules = bool(rules)
+    rules_note = None
+    if use_rules and wl_words > 250_000:
+        use_rules = False
+        rules_note = (f"Rules auto-disabled: mangling {wl_words:,} words would "
+                      f"need 100M+ attempts. Raw wordlist is used instead.")
 
     targets = []
     identified = []
@@ -218,14 +323,17 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
         targets.append(t)
 
     cracker = hb.Cracker(
-        targets=targets, wordlist=words or [], workers=workers,
-        use_rules=rules, mask=mask,
+        targets=targets, wordlist=(words if words else stream), workers=workers,
+        use_rules=use_rules, mask=mask,
     )
+    t0 = time.time()
     with _Capture() as cap:
         try:
             cracker.run()
         except KeyboardInterrupt:
             pass
+    elapsed = max(time.time() - t0, 0.001)
+    rate = int(cracker.attempts / elapsed)
 
     cracked_map = {c["hash_str"]: c for c in cracker.cracked}
     results = []
@@ -239,10 +347,40 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
             "salt": t.salt or None,
             "cracked": bool(c),
             "password": (c or {}).get("plain"),
+            "attempts": (c or {}).get("attempts"),
+            "not_found_reason": None if c else (
+                "Password is not present in this wordlist "
+                f"({wl_words:,} words tried, {cracker.attempts:,} candidate "
+                "hashes computed). It may be salted, a strong/random password, "
+                "or not a plain unsalted hash of a password at all."),
         })
+
+    n_cracked = len(cracker.cracked)
+    summary = {
+        "wordlist": wl_name,
+        "wordlist_words": wl_words,
+        "rules": use_rules,
+        "rules_note": rules_note,
+        "attempts": cracker.attempts,
+        "rate_hps": rate,
+        "duration_s": round(elapsed, 2),
+        "cracked_count": n_cracked,
+        "total": len(targets),
+    }
+    if n_cracked == len(targets) and n_cracked:
+        summary["verdict"] = "ALL HASHES CRACKED ✅"
+    elif n_cracked:
+        summary["verdict"] = f"PARTIAL — {n_cracked}/{len(targets)} cracked"
+    else:
+        summary["verdict"] = (
+            "NOT CRACKED — the plaintext is not in this wordlist. "
+            "Next steps: try the rockyou wordlist (14.3 M words), enable rules "
+            "on a smaller list, run a mask attack (?l?l?l?l?d?d), supply the "
+            "salt if the format is salted, or move to hashcat on a GPU.")
 
     return {
         "results": results,
+        "summary": summary,
         "targets": [asdict(t) for t in targets],
         "cracked": cracker.cracked,
         "attempts": cracker.attempts,
