@@ -130,6 +130,12 @@
     <label>Max pages
       <input id="web-max" type="number" value="80" min="10" max="500">
     </label>
+    <label>Crawl depth
+      <input id="web-depth" type="number" value="3" min="1" max="6">
+    </label>
+    <label>Delay (s) <span style="color:#7d90a8">anti-WAF</span>
+      <input id="web-delay" type="number" value="0" min="0" max="5" step="0.1">
+    </label>
   </div>
   <div class="checks">
     <label><input type="checkbox" id="web-crawl" checked> Crawl</label>
@@ -142,8 +148,20 @@
     <label><input type="checkbox" id="web-creds"> Default creds</label>
     <label><input type="checkbox" id="web-fast" checked> ⚡ Fast (skip time-based SQLi)</label>
   </div>
+  <div class="row" style="align-items:center">
+    <span style="font-size:12px;color:var(--dim)">Preset:</span>
+    <button class="run" style="background:var(--panel2);color:var(--green);border:1px solid var(--border);padding:6px 12px"
+            onclick="preset('quick')">🐇 QUICK (~1–2 min)</button>
+    <button class="run" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:6px 12px"
+            onclick="preset('balanced')">⚖️ BALANCED (~3–6 min)</button>
+    <button class="run" style="background:var(--panel2);color:var(--yellow);border:1px solid var(--border);padding:6px 12px"
+            onclick="preset('deep')">🔬 DEEP (~10–25 min)</button>
+  </div>
   <button class="run" onclick="runWeb()">▶ RUN SCAN</button>
   <button class="run" onclick="maxScan()" style="background:var(--red);color:#fff">🔥 MAX SCAN (everything)</button>
+  <span style="font-size:11px;color:#7d90a8;margin-left:10px">
+    Watch live progress in the <b>Jobs</b> tab — a long scan is not a stuck scan.
+  </span>
   <div class="out" id="web-out">Results will appear here…</div>
 </section>
 
@@ -208,8 +226,8 @@
 <!-- ============ JOBS ============ -->
 <section id="tab-jobs">
   <h2>Job Queue</h2>
-  <p class="desc">Jobs run <b>one at a time</b> (queued jobs show <span class="status s-waiting">waiting</span>)
-    so their output can never mix. The list refreshes itself every 3&nbsp;s — statuses below are always live.</p>
+  <p class="desc">Jobs run <b>in parallel</b> — no ordering, no waiting for each other. Every job keeps its
+    <b>own</b> output (isolated per execution context), and the list refreshes itself every 2&nbsp;s with live progress.</p>
   <button class="run" onclick="loadJobs()">🔄 REFRESH NOW</button>
   <button class="run" onclick="loadHealth()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🩺 HEALTH</button>
   <label style="display:inline-flex;align-items:center;gap:6px;margin-left:12px;font-size:12px;color:var(--dim)">
@@ -252,9 +270,9 @@ function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;
 
 async function pollJob(jobId, outEl) {
   const t0 = Date.now();
-  outEl.textContent = 'Job ' + jobId + ' queued…';
+  outEl.textContent = 'Job ' + jobId + ' starting…';
   while (true) {
-    await new Promise(r => setTimeout(r, 1200));
+    await new Promise(r => setTimeout(r, 1500));
     let j;
     try { j = await api('/api/jobs/' + jobId); }
     catch (e) {
@@ -263,12 +281,13 @@ async function pollJob(jobId, outEl) {
       return null;
     }
     if (j.status === 'running' || j.status === 'waiting') {
-      const secs = Math.round((Date.now() - t0) / 1000);
-      outEl.textContent = 'Job ' + jobId + ' ' + j.status + '… (' + j.kind + ', ' + secs + 's' +
-        (j.status === 'waiting' ? ' — queued behind another job' : '') + ')';
-      if (secs > 4 * 3600) {          // never poll forever in the browser
-        outEl.textContent = 'Job ' + jobId + ' is still ' + j.status + ' after 4h — ' +
-          'open the Jobs tab to keep watching it.';
+      const p = j.progress || {};
+      outEl.textContent = 'Job ' + jobId + ' ' + j.status + '… (' + j.kind + ', ' +
+        (p.elapsed_s !== undefined ? p.elapsed_s + 's' : Math.round((Date.now() - t0) / 1000) + 's') +
+        ', ' + (p.log_lines || 0) + ' log lines)\n▶ ' + (p.last_line || 'working…');
+      if ((Date.now() - t0) / 1000 > 4 * 3600) {   // never poll forever in the browser
+        outEl.textContent = 'Job ' + jobId + ' is still ' + j.status +
+          ' after 4h — open the Jobs tab to keep watching it.';
         return null;
       }
       continue;
@@ -455,18 +474,44 @@ async function runWeb() {
     advanced: $('web-advanced').checked, param_fuzz: $('web-paramfuzz').checked,
     default_creds: $('web-creds').checked,
     fast: $('web-fast').checked,
-    time_blind: +$('web-blind').value, max_urls: +$('web-max').value
+    time_blind: +$('web-blind').value, max_urls: +$('web-max').value,
+    depth: +$('web-depth').value, delay: +$('web-delay').value
   };
   try {
     const { job_id } = await api('/api/jobs/web-scan', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    loadJobs();
+    $('web-out').textContent = 'Job ' + job_id + ' started — running in parallel with any other job.\n' +
+      'Live progress appears below and in the Jobs tab…';
     await pollJob(job_id, $('web-out'));
   } catch (e) { $('web-out').textContent = 'Error: ' + e.message; }
+}
+
+const PRESETS = {
+  quick:    {max: 25,  depth: 1, delay: 0,   fast: true,
+             on: ['web-crawl','web-sqli','web-xss','web-audit'],
+             off: ['web-advanced','web-dirs','web-paramfuzz','web-creds']},
+  balanced: {max: 80,  depth: 3, delay: 0,   fast: true,
+             on: ['web-crawl','web-sqli','web-xss','web-audit','web-advanced','web-paramfuzz'],
+             off: ['web-dirs','web-creds']},
+  deep:     {max: 250, depth: 4, delay: 0.3, fast: false,
+             on: ['web-crawl','web-sqli','web-xss','web-audit','web-advanced','web-paramfuzz','web-dirs'],
+             off: ['web-creds']},
+};
+function preset(name) {
+  const p = PRESETS[name]; if (!p) return;
+  $('web-max').value = p.max; $('web-depth').value = p.depth;
+  $('web-delay').value = p.delay; $('web-fast').checked = p.fast;
+  p.on.forEach(id => $(id).checked = true);
+  p.off.forEach(id => $(id).checked = false);
+  $('web-out').textContent = 'Preset ' + name.toUpperCase() + ' applied — max ' + p.max +
+    ' pages, depth ' + p.depth + ', delay ' + p.delay + 's. Press ▶ RUN SCAN to start.';
 }
 
 function maxScan() {
   ['web-crawl','web-paramfuzz','web-sqli','web-xss','web-advanced','web-dirs','web-audit','web-creds']
     .forEach(id => $(id).checked = true);
+  $('web-max').value = 250; $('web-depth').value = 4; $('web-fast').checked = false;
   runWeb();
 }
 
@@ -562,16 +607,25 @@ async function loadJobs() {
     const r = await api('/api/jobs');
     if (!r.jobs.length) { $('jobs-table').textContent = 'No jobs yet…'; return; }
     let html = '<table><tr><th>Job</th><th>Kind</th><th>Status</th><th>Started</th>' +
-               '<th>Duration</th><th></th></tr>';
+               '<th>Duration</th><th>Live progress</th><th></th></tr>';
     for (const j of r.jobs) {
       const dur = (j.finished_at && j.started_at)
         ? Math.round(j.finished_at - j.started_at) + 's'
         : (j.status === 'running' || j.status === 'waiting'
             ? Math.round(Date.now() / 1000 - j.started_at) + 's…' : '—');
+      let prog = '—';
+      if (j.progress) {
+        prog = '<span style="color:var(--cyan)">' + j.progress.elapsed_s + 's</span> · ' +
+               (j.progress.log_lines || 0) + ' log lines<br>' +
+               '<span style="color:#7d90a8">' + esc(j.progress.last_line || '') + '</span>';
+      } else if (j.status === 'done') prog = '<span style="color:var(--green)">finished</span>';
+      else if (j.status === 'error' || j.status === 'timeout')
+               prog = '<span style="color:#ff8796">' + esc(j.status) + '</span>';
       html += '<tr><td>' + esc(j.id) + '</td><td>' + esc(j.kind) + '</td>' +
               '<td><span class="status s-' + esc(j.status) + '">' + esc(j.status) + '</span></td>' +
               '<td>' + new Date(j.started_at * 1000).toLocaleTimeString() + '</td>' +
               '<td>' + dur + '</td>' +
+              '<td style="font-size:11px">' + prog + '</td>' +
               '<td><button class="run" style="padding:4px 12px;font-size:11px" ' +
               "onclick=\"viewJob('" + j.id + "')\">view</button></td></tr>";
     }
@@ -593,7 +647,7 @@ function startJobsTimer() {
   JOBS_TIMER = setInterval(() => {
     const sec = $('tab-jobs');
     if (sec && sec.classList.contains('active')) loadJobs();
-  }, 3000);
+  }, 2000);
 }
 function stopJobsTimer() { if (JOBS_TIMER) { clearInterval(JOBS_TIMER); JOBS_TIMER = null; } }
 startJobsTimer();

@@ -49,9 +49,15 @@ LEGAL = ("Authorized security testing only — you must own the target or have "
 # ---------------------------------------------------------------------------
 JOBS: Dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
-JOB_EXEC_LOCK = threading.Lock()          # serializes job execution
 JOBS_FILE = APP_DIR / "jobs_state.json"
 MAX_JOBS_KEPT = 60
+# Jobs run IN PARALLEL — there is no queue and no ordering. Output isolation is
+# handled per execution context by engine.bind_job_log (a context-aware stdout
+# router), so two scans can never write into each other's log.
+# The cap below only protects the machine from thread exhaustion; raise it with
+# the DARK_MAX_PARALLEL environment variable (set it very high for "all at once").
+MAX_PARALLEL_JOBS = int(os.environ.get("DARK_MAX_PARALLEL", "16"))
+JOB_SLOTS = threading.Semaphore(MAX_PARALLEL_JOBS)
 # A job can NEVER stay "running" forever: the watchdog kills its status at
 # the deadline even if the underlying scanner thread is still alive.
 JOB_DEADLINES = {"web-scan": 3600, "network-scan": 1800, "hash-crack": 3600,
@@ -69,13 +75,14 @@ def _jobs_to_disk() -> None:
                            reverse=True)[:MAX_JOBS_KEPT]
             slim = []
             for j in items:
-                c = dict(j)
+                c = {k: v for k, v in j.items() if not k.startswith("_")}
                 r = c.get("result")
                 if isinstance(r, dict) and isinstance(r.get("log"), str) \
                         and len(r["log"]) > 200_000:
                     r = dict(r)
                     r["log"] = r["log"][:200_000] + "\n…[log truncated]…"
                     c["result"] = r
+                c.pop("progress", None)
                 slim.append(c)
         tmp = JOBS_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(slim, ensure_ascii=False, default=str),
@@ -107,12 +114,25 @@ def _jobs_from_disk() -> None:
 
 
 def _watchdog() -> None:
+    """Two jobs in one loop: (1) publish LIVE PROGRESS for running jobs so the
+    UI never looks frozen, (2) enforce deadlines so nothing runs forever."""
     while True:
-        time.sleep(5)
+        time.sleep(2)
         now = time.time()
         changed = False
         with JOBS_LOCK:
             for j in JOBS.values():
+                if j["status"] == "running":
+                    buf = j.get("_log")
+                    if buf is not None:
+                        text = buf.snapshot()
+                        lines = [l for l in text.splitlines() if l.strip()]
+                        j["progress"] = {
+                            "elapsed_s": round(now - (j.get("started_at") or now), 1),
+                            "log_lines": len(lines),
+                            "chars": len(text),
+                            "last_line": lines[-1][:180] if lines else "starting…",
+                        }
                 if j["status"] not in ("running", "waiting"):
                     continue
                 deadline = j.get("deadline") or (
@@ -120,9 +140,13 @@ def _watchdog() -> None:
                 if now > deadline:
                     j["status"] = "timeout"
                     j["finished_at"] = now
-                    j["error"] = (f"Job exceeded its {int(deadline - (j.get('started_at') or now))}s "
-                                  f"limit and was stopped by the watchdog. "
-                                  f"Narrow the scan (fewer targets/URLs) or raise the limit.")
+                    buf = j.get("_log")
+                    tail = buf.snapshot(tail_lines=25) if buf is not None else ""
+                    j["error"] = (f"Job exceeded its "
+                                  f"{int(JOB_DEADLINES.get(j['kind'], JOB_DEADLINE_DEFAULT))}s "
+                                  f"limit and was stopped by the watchdog. Narrow the scan "
+                                  f"(fewer targets/URLs) or raise the limit."
+                                  + (f"\n\nLast output before the stop:\n{tail}" if tail else ""))
                     changed = True
         if changed:
             _jobs_to_disk()
@@ -132,44 +156,68 @@ _jobs_from_disk()
 threading.Thread(target=_watchdog, daemon=True).start()
 
 
+def _public(job: dict) -> dict:
+    """Strip private runtime handles (log buffers) from API responses."""
+    return {k: v for k, v in job.items() if not k.startswith("_")}
+
+
 def start_job(kind: str, runner, **payload) -> str:
     job_id = uuid.uuid4().hex[:12]
     now = time.time()
-    deadline = now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT)
+    logbuf = engine.JobLog()
     with JOBS_LOCK:
         JOBS[job_id] = {
-            "id": job_id, "kind": kind, "status": "waiting",
-            "started_at": now, "finished_at": None, "deadline": deadline,
-            "result": None, "error": None,
+            "id": job_id, "kind": kind, "status": "running",
+            "started_at": now, "finished_at": None,
+            "deadline": now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT),
+            "result": None, "error": None, "progress": None,
+            "_log": logbuf,
         }
     _jobs_to_disk()
 
     def _run():
-        with JOB_EXEC_LOCK:                # one job at a time
+        # PARALLEL execution: grab a slot if one is free, otherwise wait for a
+        # free slot (only happens past DARK_MAX_PARALLEL concurrent jobs).
+        got_slot = JOB_SLOTS.acquire(timeout=0)
+        if not got_slot:
+            with JOBS_LOCK:
+                JOBS[job_id]["status"] = "waiting"
+                JOBS[job_id]["progress"] = {
+                    "elapsed_s": 0, "log_lines": 0, "chars": 0,
+                    "last_line": f"waiting for a free slot "
+                                 f"({MAX_PARALLEL_JOBS} jobs already running)"}
+            _jobs_to_disk()
+            JOB_SLOTS.acquire()
+        with JOBS_LOCK:
+            if JOBS[job_id]["status"] == "timeout":
+                JOB_SLOTS.release()
+                return                     # watchdog already gave up on it
+            JOBS[job_id]["status"] = "running"
+            JOBS[job_id]["started_at"] = time.time()
+            JOBS[job_id]["deadline"] = (
+                time.time() + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT))
+        _jobs_to_disk()
+        try:
+            with engine.bind_job_log(logbuf):
+                result = runner(**payload)
             with JOBS_LOCK:
                 if JOBS[job_id]["status"] == "timeout":
-                    return                 # watchdog already gave up on it
-                JOBS[job_id]["status"] = "running"
-                JOBS[job_id]["started_at"] = time.time()
-                JOBS[job_id]["deadline"] = (
-                    time.time() + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT))
-            _jobs_to_disk()
-            try:
-                result = runner(**payload)
-                with JOBS_LOCK:
-                    if JOBS[job_id]["status"] == "timeout":
-                        return
-                    if isinstance(result, dict) and result.get("error"):
-                        JOBS[job_id].update(status="error", error=result["error"],
-                                            result=result, finished_at=time.time())
-                    else:
-                        JOBS[job_id].update(status="done", result=result,
-                                            finished_at=time.time())
-            except Exception as e:  # never crash the server
-                with JOBS_LOCK:
-                    JOBS[job_id].update(status="error",
-                                        error=f"{type(e).__name__}: {e}",
+                    return
+                if isinstance(result, dict) and result.get("error"):
+                    JOBS[job_id].update(status="error", error=result["error"],
+                                        result=result, finished_at=time.time())
+                else:
+                    JOBS[job_id].update(status="done", result=result,
                                         finished_at=time.time())
+        except Exception as e:  # never crash the server
+            with JOBS_LOCK:
+                JOBS[job_id].update(status="error",
+                                    error=f"{type(e).__name__}: {e}",
+                                    finished_at=time.time())
+        finally:
+            with JOBS_LOCK:
+                JOBS[job_id]["progress"] = None
+            JOB_SLOTS.release()
             _jobs_to_disk()
 
     threading.Thread(target=_run, daemon=True).start()
@@ -271,16 +319,19 @@ def health():
 @app.get("/api/jobs")
 def list_jobs():
     with JOBS_LOCK:
-        return {"jobs": sorted(JOBS.values(), key=lambda j: j["started_at"], reverse=True)}
+        return {"jobs": [_public(j) for j in
+                         sorted(JOBS.values(), key=lambda x: x["started_at"],
+                                reverse=True)],
+                "max_parallel": MAX_PARALLEL_JOBS}
 
 
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-    if not job:
-        raise HTTPException(404, "job not found")
-    return job
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        return _public(job)
 
 
 # ---- jobs: network --------------------------------------------------------

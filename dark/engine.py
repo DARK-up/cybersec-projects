@@ -16,9 +16,13 @@ Works on Windows, Linux and macOS (Python 3.9+).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures as cf
 import contextlib
+import contextvars
+import functools
 import io
 import sys
+import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -43,24 +47,152 @@ def tools_status() -> Dict[str, bool]:
     return status
 
 
-class _Capture:
-    """Capture a tool's console output so the API can return it as a log."""
+class JobLog(io.StringIO):
+    """Thread-safe text buffer — several worker threads write to it while the
+    watchdog reads it to publish live progress."""
 
     def __init__(self):
-        self.buf = io.StringIO()
+        super().__init__()
+        self._lock = threading.Lock()
+
+    def write(self, s):
+        with self._lock:
+            return super().write(s)
+
+    def snapshot(self, tail_lines: int = 0) -> str:
+        with self._lock:
+            text = self.getvalue()
+        if tail_lines:
+            text = "\n".join(text.splitlines()[-tail_lines:])
+        return text
+
+
+# The API runs MANY JOBS IN PARALLEL. The old implementation swapped the global
+# sys.stdout, so two concurrent scans wrote into each other's log — that is why
+# jobs used to be serialized. Now stdout/stderr go through a context-aware
+# router: every job (and every nested capture) pushes its own buffer onto a
+# contextvar stack, and each write is tee'd only to the buffers of the CURRENT
+# execution context. Parallel jobs stay perfectly isolated.
+LOG_STACK: contextvars.ContextVar = contextvars.ContextVar(
+    "dark_log_stack", default=None)
+
+
+class _Router(io.TextIOBase):
+    def __init__(self, fallback):
+        self.fallback = fallback
+
+    def write(self, s):
+        stack = LOG_STACK.get()
+        if not stack:
+            return self.fallback.write(s)
+        for buf in stack:
+            try:
+                buf.write(s)
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self):
+        try:
+            self.fallback.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return False
+
+    def writable(self):
+        return True
+
+    @property
+    def encoding(self):
+        return getattr(self.fallback, "encoding", "utf-8") or "utf-8"
+
+    def fileno(self):
+        return self.fallback.fileno()
+
+
+def _propagate_context_to_threads() -> None:
+    """CPython does NOT inherit contextvars in new threads, and the tools use
+    threads internally (NetRecon scans with up to 800 workers). Without this
+    patch their output would escape the owning job's buffer."""
+    if getattr(threading.Thread.start, "_dark_patched", False):
+        return
+
+    orig_start = threading.Thread.start
+
+    def start(self):
+        ctx = contextvars.copy_context()
+        target = self._target
+        if target is not None and not getattr(target, "_dark_ctx", False):
+            def wrapped(*a, _ctx=ctx, _t=target, **kw):
+                _ctx.run(_t, *a, **kw)
+            wrapped._dark_ctx = True
+            self._target = wrapped
+        orig_start(self)
+
+    start._dark_patched = True
+    threading.Thread.start = start
+
+    orig_submit = cf.ThreadPoolExecutor.submit
+
+    def submit(self, fn, *args, **kwargs):
+        if getattr(fn, "_dark_ctx", False):
+            return orig_submit(self, fn, *args, **kwargs)
+        ctx = contextvars.copy_context()
+        part = functools.partial(ctx.run, fn)
+        part._dark_ctx = True
+        return orig_submit(self, part, *args, **kwargs)
+
+    submit._dark_patched = True
+    cf.ThreadPoolExecutor.submit = submit
+
+
+def install_log_router() -> None:
+    """Idempotent: route stdout/stderr through the context-aware proxy."""
+    if isinstance(sys.stdout, _Router):
+        return
+    real_out, real_err = sys.stdout, sys.stderr
+    sys.stdout = _Router(real_out)
+    sys.stderr = _Router(real_err)
+    _propagate_context_to_threads()
+
+
+install_log_router()
+
+
+@contextlib.contextmanager
+def bind_job_log(buf: JobLog):
+    """Outermost binding for a job: everything printed by the tool — including
+    nested captures and worker threads — is tee'd into `buf` for live progress."""
+    stack = list(LOG_STACK.get() or [])
+    stack.insert(0, buf)
+    token = LOG_STACK.set(stack)
+    try:
+        yield buf
+    finally:
+        LOG_STACK.reset(token)
+
+
+class _Capture:
+    """Capture a tool's console output for THIS execution context only."""
+
+    def __init__(self):
+        self.buf = JobLog()
 
     def __enter__(self):
-        self._stdout, self._stderr = sys.stdout, sys.stderr
-        sys.stdout = sys.stderr = self.buf
+        stack = list(LOG_STACK.get() or [])
+        stack.append(self.buf)
+        self._token = LOG_STACK.set(stack)
         return self
 
     def __exit__(self, *exc):
-        sys.stdout, sys.stderr = self._stdout, self._stderr
+        LOG_STACK.reset(self._token)
         return False
 
     @property
     def text(self) -> str:
-        return self.buf.getvalue()
+        return self.buf.snapshot()
 
 
 # ---------------------------------------------------------------------------

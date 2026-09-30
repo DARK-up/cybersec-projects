@@ -74,35 +74,65 @@ curl -X POST http://localhost:8000/api/jobs/monitor-demo -d '{}' -H "Content-Typ
 curl http://localhost:8000/api/jobs/<job_id>
 ```
 
-## 🧾 Job Queue — statuses, isolation and the watchdog
+## 🧾 Jobs — parallel execution, isolated output, live progress
 
-**Jobs execute one at a time.** Every submission goes into a serial queue, so
-two things can never happen again:
+**Every job starts immediately and jobs run in parallel.** There is no queue
+and no ordering: launch a web scan, a network scan and a hash crack at the same
+time and all three execute concurrently.
 
-- **Log mixing** — each job captures its own stdout; a network scan can no
-  longer show web-scan lines (`SQLi tests on …`) inside its console.
-- **Self-inflicted rate limiting** — five concurrent scans of the same host
-  used to trip its WAF and produce empty results.
+Output isolation is *not* achieved by serializing jobs. `engine.py` installs a
+**context-aware stdout/stderr router**: each job binds its own buffer through a
+`contextvars` stack, and every `print()` is tee'd only to the buffers of the
+current execution context. Because CPython does not inherit `contextvars` in
+new threads, the router also patches `threading.Thread.start` and
+`ThreadPoolExecutor.submit` to copy the calling context — which is what keeps
+NetRecon's 800 scan workers (and every other internal thread pool) writing into
+the right job's log. A network scan can therefore never contain
+`SQLi tests on …` lines, and two web scans of different hosts never mix.
+
+Concurrency is capped only to protect the machine from thread exhaustion:
+`DARK_MAX_PARALLEL` (default **16**). Beyond that a job briefly shows
+`waiting`. Raise it to run everything at once:
+
+```bash
+DARK_MAX_PARALLEL=64 python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+> Note: parallel scans of the **same** host multiply the request rate and can
+> trip its WAF. If a target starts blocking, the report says so explicitly
+> (`degraded: true`) — re-run that one target alone or with `delay`.
 
 | Status | Meaning |
 |--------|---------|
-| `waiting` | queued behind another job (shown as a yellow badge) |
-| `running` | executing right now |
+| `running` | executing right now (started immediately) |
+| `waiting` | all `DARK_MAX_PARALLEL` slots are busy — starts as soon as one frees |
 | `done` | finished with a result |
 | `error` | the tool reported a failure (message + hint included) |
 | `timeout` | the watchdog stopped it at its deadline |
 | `interrupted` | the API restarted while the job was in flight — result lost, re-run it |
 
-**No job can stay `running` forever.** A watchdog thread checks every 5 s and
-applies a per-kind deadline (`web-scan` 60 min, `network-scan` 30 min,
-`hash-crack` 60 min, monitors 15–60 min), then marks the job `timeout` with an
-explanation. Job metadata is persisted to `dark/jobs_state.json`, so a restart
-keeps the history and re-labels in-flight jobs as `interrupted` instead of
-leaving a ghost `running` row (this is also why a job id can no longer return
-an empty body after a restart).
+### Live progress
 
-The dashboard's Jobs tab **auto-refreshes every 3 s** and keeps the open result
-pane in sync — the list and the `view` pane can no longer disagree.
+The watchdog publishes progress for every running job every 2 s, so a long scan
+never looks frozen:
+
+```json
+"progress": {"elapsed_s": 96.0, "log_lines": 412, "chars": 38210,
+             "last_line": "[*] XSS tests on http://target/search?q=… params=['q']"}
+```
+
+The Jobs tab shows that line per job and auto-refreshes every 2 s, keeping the
+open result pane in sync — the list and the `view` pane can no longer disagree.
+
+### No job runs forever
+
+The same watchdog enforces a per-kind deadline (`web-scan` 60 min,
+`network-scan` 30 min, `hash-crack` 60 min, monitors 15–60 min) and then marks
+the job `timeout`, including the last 25 lines it produced. Job metadata is
+persisted to `dark/jobs_state.json`, so a restart keeps the history and
+re-labels in-flight jobs as `interrupted` instead of leaving a ghost `running`
+row (this is also why a job id can no longer return an empty body after a
+restart).
 
 ## 🔎 Web-scan results you can trust
 
@@ -134,8 +164,8 @@ report states which of these it is:
 
 ```
 dark/
-├── main.py          ← FastAPI app + serial job queue + watchdog + job persistence
-├── engine.py        ← adapters around the 4 tools (streams wordlists, adds coverage)
+├── main.py          ← FastAPI app + parallel job runner + watchdog + persistence
+├── engine.py        ← tool adapters + context-aware log router (parallel-safe capture)
 ├── dashboard.html   ← web UI (logo + tabs + auto-refreshing job queue)
 ├── jobs_state.json  ← persisted job history (created at runtime, git-ignored)
 ├── logo.png         ← DARK logo
