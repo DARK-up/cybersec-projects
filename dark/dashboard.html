@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DARK — Detection &amp; Attack Reconnaissance Kit</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --panel2:#1a2230; --border:#243044;
+    --cyan:#22d3ee; --red:#f43f5e; --green:#34d399; --yellow:#fbbf24;
+    --text:#dbe7f3; --muted:#7d90a8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:"Segoe UI",Roboto,Consolas,monospace}
+  header{display:flex;align-items:center;gap:16px;padding:18px 28px;
+         border-bottom:1px solid var(--border);background:linear-gradient(180deg,#0e1420,#0b0f14)}
+  header img{width:56px;height:56px;border-radius:12px;box-shadow:0 0 18px rgba(34,211,238,.35)}
+  header h1{margin:0;font-size:22px;letter-spacing:3px}
+  header h1 span{color:var(--cyan)}
+  header .tag{color:var(--muted);font-size:12px;letter-spacing:1px}
+  .legal{background:#2a1220;border:1px solid var(--red);color:#ffd7de;
+         padding:8px 28px;font-size:12px}
+  nav{display:flex;gap:4px;padding:12px 28px 0;flex-wrap:wrap}
+  nav button{background:var(--panel);color:var(--text);border:1px solid var(--border);
+             padding:10px 18px;border-radius:10px 10px 0 0;cursor:pointer;font-size:14px}
+  nav button.active{background:var(--panel2);border-bottom:2px solid var(--cyan);color:var(--cyan)}
+  main{padding:20px 28px 60px}
+  section{display:none;background:var(--panel);border:1px solid var(--border);
+          border-radius:0 12px 12px 12px;padding:22px}
+  section.active{display:block}
+  h2{margin:0 0 6px;font-size:18px;color:var(--cyan)}
+  p.desc{color:var(--muted);margin:0 0 18px;font-size:13px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+  label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--muted);flex:1;min-width:180px}
+  input,select,textarea{background:#0d1320;color:var(--text);border:1px solid var(--border);
+        border-radius:8px;padding:10px;font-family:inherit;font-size:14px}
+  textarea{min-height:90px;resize:vertical}
+  .checks{display:flex;gap:18px;flex-wrap:wrap;margin:6px 0 14px;font-size:13px;color:var(--text)}
+  .checks label{flex-direction:row;align-items:center;gap:8px;min-width:auto;color:var(--text)}
+  button.run{background:var(--cyan);color:#04222b;border:0;padding:12px 26px;
+             font-weight:700;border-radius:10px;cursor:pointer;font-size:14px;letter-spacing:1px}
+  button.run:hover{filter:brightness(1.1)}
+  .out{margin-top:18px;background:#0a0e15;border:1px solid var(--border);border-radius:10px;
+       padding:14px;font-size:12px;white-space:pre-wrap;max-height:420px;overflow:auto}
+  .badge{display:inline-block;padding:3px 12px;border-radius:999px;font-size:11px;
+         border:1px solid var(--border);margin:2px}
+  .b-Critical{background:#3b0d16;color:#ff8796;border-color:var(--red)}
+  .b-High{background:#3b1d0d;color:#ffb27d;border-color:#f97316}
+  .b-Medium{background:#3b320d;color:#ffe08a;border-color:var(--yellow)}
+  .b-Low{background:#0d2e3b;color:#8ee7f8;border-color:var(--cyan)}
+  .b-Info{background:#152238;color:#9db8ff;border-color:#3b82f6}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+  th,td{border:1px solid var(--border);padding:8px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--cyan)}
+  .status{padding:3px 10px;border-radius:999px;font-size:11px}
+  .s-running{background:#0d2e3b;color:var(--cyan)}
+  .s-done{background:#0d3b2a;color:var(--green)}
+  .s-error{background:#3b0d16;color:#ff8796}
+  footer{padding:18px 28px;color:var(--muted);font-size:11px;border-top:1px solid var(--border)}
+  a{color:var(--cyan)}
+</style>
+</head>
+<body>
+
+<header>
+  <img src="/static/logo.png" alt="DARK logo">
+  <div>
+    <h1>D<span>A</span>RK</h1>
+    <div class="tag">DETECTION &amp; ATTACK RECONNAISSANCE KIT — UNIFIED SECURITY SUITE</div>
+  </div>
+</header>
+
+<div class="legal">⚖️ Authorized security testing only — scan only systems you own or have explicit written permission to test.</div>
+
+<nav>
+  <button data-tab="net" class="active">🌐 Network Scan</button>
+  <button data-tab="web">🕸️ Web Scan</button>
+  <button data-tab="hash">🔐 Hashes</button>
+  <button data-tab="mon">📡 Monitor</button>
+  <button data-tab="jobs">🧾 Jobs</button>
+</nav>
+
+<main>
+
+<!-- ============ NETWORK ============ -->
+<section id="tab-net" class="active">
+  <h2>NetRecon — Network Reconnaissance</h2>
+  <p class="desc">Async port scanning with service/version fingerprinting. Targets: IPs, CIDR, ranges, hostnames.</p>
+  <div class="row">
+    <label>Targets (comma or space separated)
+      <input id="net-targets" value="127.0.0.1" placeholder="192.168.1.0/24, 10.0.0.5, scanme.nmap.org">
+    </label>
+    <label>Ports
+      <input id="net-ports" value="top100" placeholder="top100 | 22,80,443 | 1-1024 | all">
+    </label>
+    <label>Timing
+      <select id="net-timing">
+        <option>sneaky</option><option selected>normal</option>
+        <option>aggressive</option><option>insane</option>
+      </select>
+    </label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" id="net-probe" checked> Service fingerprinting</label>
+    <label><input type="checkbox" id="net-discover"> Host discovery (ping sweep)</label>
+  </div>
+  <button class="run" onclick="runNetwork()">▶ RUN SCAN</button>
+  <div class="out" id="net-out">Results will appear here…</div>
+</section>
+
+<!-- ============ WEB ============ -->
+<section id="tab-web">
+  <h2>WebVulnX — Web Application Scanner</h2>
+  <p class="desc">SQLi (error / boolean-blind / time-blind) + Reflected XSS + crawler + dirbuster + misconfig audit.</p>
+  <div class="row">
+    <label>Target URL
+      <input id="web-url" value="http://127.0.0.1:8080" placeholder="http://target.com  (http:// is added automatically)">
+    </label>
+    <label>Time-blind delay (s)
+      <input id="web-blind" type="number" value="5" min="2" max="15">
+    </label>
+    <label>Max pages
+      <input id="web-max" type="number" value="80" min="10" max="500">
+    </label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" id="web-crawl" checked> Crawl</label>
+    <label><input type="checkbox" id="web-sqli" checked> SQLi</label>
+    <label><input type="checkbox" id="web-xss" checked> XSS</label>
+    <label><input type="checkbox" id="web-dirs" checked> DirBuster</label>
+    <label><input type="checkbox" id="web-audit" checked> Misconfig audit</label>
+  </div>
+  <button class="run" onclick="runWeb()">▶ RUN SCAN</button>
+  <div class="out" id="web-out">Results will appear here…</div>
+</section>
+
+<!-- ============ HASHES ============ -->
+<section id="tab-hash">
+  <h2>HashBreaker — Identify &amp; Crack</h2>
+  <p class="desc">25+ hash formats. Dictionary + rules + mask attacks with multiprocessing.</p>
+  <div class="row">
+    <label>Hashes (one per line)
+      <textarea id="hash-input">098f6bcd4621d373cade4e832627b4f6</textarea>
+    </label>
+  </div>
+  <div class="row">
+    <label>Wordlist
+      <select id="hash-wordlist">
+        <option value="common" selected>built-in: common-pass.txt</option>
+        <option value="none">none (mask only)</option>
+      </select>
+    </label>
+    <label>Mask (optional)
+      <input id="hash-mask" placeholder="?l?l?l?d?d">
+    </label>
+    <label>Force algorithm
+      <input id="hash-algo" placeholder="auto | md5 | ntlm | sha256 ...">
+    </label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" id="hash-rules" checked> Mangling rules</label>
+  </div>
+  <button class="run" onclick="runIdentify()">🔎 IDENTIFY</button>
+  <button class="run" onclick="runCrack()" style="background:var(--red);color:#fff">💥 CRACK</button>
+  <div class="out" id="hash-out">Results will appear here…</div>
+</section>
+
+<!-- ============ MONITOR ============ -->
+<section id="tab-mon">
+  <h2>NetSentry — Network Threat Detection</h2>
+  <p class="desc">ARP spoofing, port scans, DNS tunneling, cleartext credentials. Try the synthetic demo — no root needed.</p>
+  <div class="row">
+    <label>Interface (live mode)
+      <input id="mon-iface" placeholder="eth0 / wlan0 / Wi-Fi">
+    </label>
+    <label>Gateway IP (optional)
+      <input id="mon-gw" placeholder="192.168.1.1">
+    </label>
+    <label>Live duration (s)
+      <input id="mon-secs" type="number" value="10" min="3" max="120">
+    </label>
+    <label>PCAP file (offline analysis)
+      <input id="mon-pcap" type="file" accept=".pcap,.pcapng,.cap">
+    </label>
+  </div>
+  <button class="run" onclick="runDemo()" style="background:var(--cyan)">▶ DEMO</button>
+  <button class="run" onclick="runPcap()" style="background:var(--yellow);color:#222">📂 ANALYZE PCAP</button>
+  <button class="run" onclick="runLive()" style="background:var(--red);color:#fff">📡 LIVE CAPTURE</button>
+  <div class="out" id="mon-out">Results will appear here…</div>
+</section>
+
+<!-- ============ JOBS ============ -->
+<section id="tab-jobs">
+  <h2>Job Queue</h2>
+  <p class="desc">Every scan runs as a background job — click one to view its result.</p>
+  <button class="run" onclick="loadJobs()">🔄 REFRESH</button>
+  <button class="run" onclick="loadHealth()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🩺 HEALTH</button>
+  <div class="out" id="jobs-out">No jobs yet…</div>
+</section>
+
+</main>
+
+<footer>
+  DARK v1.0 — Detection &amp; Attack Reconnaissance Kit &nbsp;|&nbsp;
+  API docs: <a href="/docs" target="_blank">/docs</a> &nbsp;|&nbsp;
+  Tools: NetRecon · WebVulnX · HashBreaker · NetSentry &nbsp;|&nbsp;
+  ⚖️ Authorized testing only
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// tabs
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+    $('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'jobs') loadJobs();
+  };
+});
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()));
+  return r.json();
+}
+
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+async function pollJob(jobId, outEl) {
+  outEl.textContent = 'Job ' + jobId + ' running…';
+  while (true) {
+    await new Promise(r => setTimeout(r, 1200));
+    const j = await api('/api/jobs/' + jobId);
+    if (j.status === 'running') {
+      outEl.textContent = 'Job ' + jobId + ' running… (' + j.kind + ')';
+      continue;
+    }
+    renderJob(j, outEl);
+    return j;
+  }
+}
+
+function renderJob(j, outEl) {
+  if (j.status === 'error') {
+    outEl.innerHTML = '<span class="status s-error">ERROR</span> ' + esc(j.error || '') +
+      (j.result && j.result.hint ? '\n\nHint: ' + esc(j.result.hint) : '');
+    return;
+  }
+  const r = j.result || {};
+  let html = '<span class="status s-done">DONE</span> ' + esc(j.kind) + '\n';
+
+  if (r.report && r.report.hosts) {                       // network scan
+    for (const h of r.report.hosts) {
+      html += '\n<b>' + esc(h.host) + '</b> ' + esc(h.hostname || '') + ' — OS hint: ' + esc(h.os_hint) + '\n';
+      if (!h.open_ports.length) html += '  (no open ports)\n';
+      for (const p of h.open_ports) {
+        html += '  ' + String(p.port).padEnd(6) + ' open  ' + esc(p.service + (p.version ? ' (' + p.version + ')' : '')) +
+                (p.banner ? '  | ' + esc(p.banner.slice(0, 70)) : '') + '\n';
+      }
+    }
+    html += '\nTotal open ports: ' + r.report.hosts.reduce((a, h) => a + h.open_ports.length, 0);
+  } else if (r.findings) {                                // web scan
+    const st = r.stats || {};
+    html += '\nTarget: ' + esc(r.target || '') +
+            '\nURLs crawled: ' + (st.urls_crawled || 0) + ' | Forms: ' + (st.forms || 0) +
+            ' | Findings: ' + (st.findings || 0) + '\n';
+    for (const sev in (st.by_severity || {}))
+      html += '  <span class="badge b-' + sev + '">' + sev + ': ' + st.by_severity[sev] + '</span>';
+    html += '\n\n<table><tr><th>Severity</th><th>Type</th><th>Param</th><th>URL</th><th>Evidence</th></tr>';
+    for (const f of r.findings) {
+      html += '<tr><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td><td>' +
+              esc(f.vuln_type) + '</td><td>' + esc(f.parameter || '-') + '</td><td>' + esc(f.url) +
+              '</td><td>' + esc((f.evidence || '-').slice(0, 90)) + '</td></tr>';
+    }
+    html += '</table>';
+  } else if (r.cracked !== undefined) {                   // hash crack
+    html += '\nAttempts: ' + (r.attempts || 0).toLocaleString() + ' | Cracked: ' + r.cracked.length + '\n';
+    for (const c of r.cracked)
+      html += '  <b>' + esc(c.user || '(anon)') + '</b> [' + esc(c.algo) + '] → ' + esc(c.plain) + '\n';
+  } else if (r.summary) {                                 // monitor
+    html += '\nPackets: ' + (r.packets !== undefined ? r.packets : r.summary.packets) +
+            ' | Alerts: ' + r.summary.alerts_total + '\n';
+    for (const sev in (r.summary.alerts_by_severity || {}))
+      html += '  <span class="badge b-' + (sev === 'CRITICAL' ? 'Critical' : sev === 'HIGH' ? 'High' : sev === 'MEDIUM' ? 'Medium' : 'Low') + '">' +
+              esc(sev) + ': ' + r.summary.alerts_by_severity[sev] + '</span>';
+    html += '\n\n<table><tr><th>Severity</th><th>Category</th><th>Src</th><th>Detail</th></tr>';
+    for (const a of (r.alerts || []).slice(0, 60)) {
+      const cls = a.severity === 'CRITICAL' ? 'Critical' : a.severity === 'HIGH' ? 'High' : a.severity === 'MEDIUM' ? 'Medium' : 'Low';
+      html += '<tr><td><span class="badge b-' + cls + '">' + esc(a.severity) + '</span></td><td>' +
+              esc(a.category) + '</td><td>' + esc(a.src) + '</td><td>' + esc((a.detail || '').slice(0, 90)) + '</td></tr>';
+    }
+    html += '</table>';
+  }
+  if (r.log) html += '\n\n--- console output ---\n' + esc(r.log.slice(-2500));
+  outEl.innerHTML = html;
+}
+
+// ---- actions ----
+async function runNetwork() {
+  const targets = $('net-targets').value.split(/[,\s]+/).filter(Boolean);
+  const body = {
+    targets, ports: $('net-ports').value, timing: $('net-timing').value,
+    probe: $('net-probe').checked, discover: $('net-discover').checked
+  };
+  try {
+    const { job_id } = await api('/api/jobs/network-scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    await pollJob(job_id, $('net-out'));
+  } catch (e) { $('net-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runWeb() {
+  const body = {
+    url: $('web-url').value,
+    crawl: $('web-crawl').checked, sqli: $('web-sqli').checked,
+    xss: $('web-xss').checked, dirs: $('web-dirs').checked, audit: $('web-audit').checked,
+    time_blind: +$('web-blind').value, max_urls: +$('web-max').value
+  };
+  try {
+    const { job_id } = await api('/api/jobs/web-scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    await pollJob(job_id, $('web-out'));
+  } catch (e) { $('web-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runIdentify() {
+  const hashes = $('hash-input').value.split('\n').map(s => s.trim()).filter(Boolean);
+  try {
+    const r = await api('/api/hash/identify', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({hashes})});
+    let html = '';
+    for (const h of r.results)
+      html += '<b>' + esc(h.digest.slice(0, 48)) + '</b>\n  Likely: ' + esc(h.name) +
+              ' | Length: ' + h.length + ' | Candidates: ' + esc(h.candidates.join(', ') || '-') + '\n\n';
+    $('hash-out').innerHTML = html;
+  } catch (e) { $('hash-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runCrack() {
+  const hashes = $('hash-input').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const body = {
+    hashes, rules: $('hash-rules').checked,
+    wordlist: $('hash-wordlist').value === 'common' ? 'common' : null,
+    mask: $('hash-mask').value || null,
+    algo: $('hash-algo').value || null
+  };
+  try {
+    const { job_id } = await api('/api/jobs/hash-crack', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    await pollJob(job_id, $('hash-out'));
+  } catch (e) { $('hash-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runDemo() {
+  try {
+    const { job_id } = await api('/api/jobs/monitor-demo', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    await pollJob(job_id, $('mon-out'));
+  } catch (e) { $('mon-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runPcap() {
+  const f = $('mon-pcap').files[0];
+  if (!f) { $('mon-out').textContent = 'Choose a .pcap/.pcapng file first.'; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  if ($('mon-gw').value) fd.append('gateway', $('mon-gw').value);
+  try {
+    const { job_id } = await api('/api/jobs/monitor-pcap', { method: 'POST', body: fd });
+    await pollJob(job_id, $('mon-out'));
+  } catch (e) { $('mon-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runLive() {
+  const body = {
+    seconds: +$('mon-secs').value,
+    interface: $('mon-iface').value || null,
+    gateway: $('mon-gw').value || null
+  };
+  try {
+    const { job_id } = await api('/api/jobs/monitor-live', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    await pollJob(job_id, $('mon-out'));
+  } catch (e) { $('mon-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadJobs() {
+  try {
+    const r = await api('/api/jobs');
+    if (!r.jobs.length) { $('jobs-out').textContent = 'No jobs yet…'; return; }
+    let html = '<table><tr><th>Job</th><th>Kind</th><th>Status</th><th>Started</th><th></th></tr>';
+    for (const j of r.jobs) {
+      html += '<tr><td>' + esc(j.id) + '</td><td>' + esc(j.kind) + '</td>' +
+              '<td><span class="status s-' + esc(j.status) + '">' + esc(j.status) + '</span></td>' +
+              '<td>' + new Date(j.started_at * 1000).toLocaleTimeString() + '</td>' +
+              '<td><button class="run" style="padding:4px 12px;font-size:11px" ' +
+              "onclick=\"viewJob('" + j.id + "')\">view</button></td></tr>";
+    }
+    html += '</table><div class="out" id="job-detail">Click "view" to see a result.</div>';
+    $('jobs-out').innerHTML = html;
+  } catch (e) { $('jobs-out').textContent = 'Error: ' + e.message; }
+}
+
+async function viewJob(id) {
+  const j = await api('/api/jobs/' + id);
+  renderJob(j, document.getElementById('job-detail'));
+}
+
+async function loadHealth() {
+  try {
+    const h = await api('/api/health');
+    $('jobs-out').innerHTML = '<b>' + esc(h.name) + ' v' + esc(h.version) + '</b> — ' + esc(h.status) +
+      ' on ' + esc(h.platform) + '\nTools: ' + esc(JSON.stringify(h.tools)) + '\n\n' + esc(h.legal);
+  } catch (e) { $('jobs-out').textContent = 'Error: ' + e.message; }
+}
+</script>
+</body>
+</html>

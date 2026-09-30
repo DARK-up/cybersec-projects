@@ -18,6 +18,7 @@
 | 3 | **[HashBreaker](hashbreaker/)** | Hash identification & cracking suite — dictionary + rules + mask attacks, multiprocessing, pure-Python MD4/NTLM | Python (multiprocessing) — zero dependencies |
 | 4 | **[NetSentry](netsentry/)** | Real-time network threat detection — ARP spoofing, port scans, DNS tunneling, cleartext credential leakage | Python (scapy) |
 | 5 | **[Demo Lab](demo-lab/)** | Intentionally vulnerable web app + fake services — practice the tools legally on your own machine | Python (stdlib) |
+| 6 | **[DARK](dark/)** | ⚡ Unified API + web dashboard that ties all 4 tools together — runs on **Windows**, Linux & macOS | Python (FastAPI) |
 
 ---
 

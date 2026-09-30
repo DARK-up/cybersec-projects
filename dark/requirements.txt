@@ -1,0 +1,7 @@
+# DARK API dependencies
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+requests>=2.28
+# Optional — needed for NetSentry (monitor tab). On Windows install Npcap first: https://npcap.com
+scapy>=2.5

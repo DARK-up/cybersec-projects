@@ -1,0 +1,68 @@
+{
+  "tool": "NetRecon v2.0",
+  "scanned_at": "2026-09-30T16:29:18.183807+00:00",
+  "duration_s": 1.83,
+  "timing": "normal",
+  "ports_per_host": 5,
+  "hosts": [
+    {
+      "host": "scanme.nmap.org",
+      "hostname": "",
+      "alive": true,
+      "os_hint": "Linux (Ubuntu/Debian)",
+      "scan_time": 1.83,
+      "open_ports": [
+        {
+          "port": 22,
+          "state": "open",
+          "service": "SSH",
+          "banner": "SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2.13",
+          "version": "2.0 OpenSSH_6.6.1p1",
+          "extra": {
+            "latency_ms": 120.2
+          }
+        },
+        {
+          "port": 80,
+          "state": "open",
+          "service": "HTTP/HTTPS",
+          "banner": "",
+          "version": "Apache/2.4.7 (Ubuntu)",
+          "extra": {
+            "latency_ms": 1344.3
+          }
+        },
+        {
+          "port": 443,
+          "state": "open",
+          "service": "unknown",
+          "banner": "",
+          "version": "",
+          "extra": {
+            "latency_ms": 1320.4
+          }
+        },
+        {
+          "port": 9929,
+          "state": "open",
+          "service": "unknown",
+          "banner": "",
+          "version": "",
+          "extra": {
+            "latency_ms": 1823.1
+          }
+        },
+        {
+          "port": 31337,
+          "state": "open",
+          "service": "unknown",
+          "banner": "",
+          "version": "",
+          "extra": {
+            "latency_ms": 80.2
+          }
+        }
+      ]
+    }
+  ]
+}
