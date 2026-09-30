@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Sensitive / runtime
+*.log
+alerts.jsonl
+
+# Keep report samples but ignore future clutter
+reports/*.tmp

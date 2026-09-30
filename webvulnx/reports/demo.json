@@ -1,0 +1,243 @@
+{
+  "tool": "WebVulnX v2.0",
+  "target": "http://127.0.0.1:8080",
+  "scanned_at": "2026-09-30T12:12:30.853841+00:00",
+  "duration_s": 10.55,
+  "stats": {
+    "urls_crawled": 6,
+    "forms": 2,
+    "findings": 23
+  },
+  "findings": [
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "Strict-Transport-Security",
+      "payload": "",
+      "evidence": "Strict-Transport-Security not present",
+      "detail": "Missing HSTS (session hijacking risk on HTTP)",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "Content-Security-Policy",
+      "payload": "",
+      "evidence": "Content-Security-Policy not present",
+      "detail": "Missing CSP (XSS impact increased)",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "X-Content-Type-Options",
+      "payload": "",
+      "evidence": "X-Content-Type-Options not present",
+      "detail": "Missing X-Content-Type-Options (MIME sniffing)",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "X-Frame-Options",
+      "payload": "",
+      "evidence": "X-Frame-Options not present",
+      "detail": "Missing X-Frame-Options (clickjacking)",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "Referrer-Policy",
+      "payload": "",
+      "evidence": "Referrer-Policy not present",
+      "detail": "Missing Referrer-Policy (information leak)",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Missing Security Header",
+      "severity": "Low",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "Permissions-Policy",
+      "payload": "",
+      "evidence": "Permissions-Policy not present",
+      "detail": "Missing Permissions-Policy",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Server Banner Disclosure",
+      "severity": "Info",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "",
+      "payload": "",
+      "evidence": "Server: Apache/2.4.49 (Unix) ",
+      "detail": "The server discloses its software/version — aids targeted attacks.",
+      "cvss_hint": 2.0
+    },
+    {
+      "vuln_type": "Technology Disclosure",
+      "severity": "Info",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "",
+      "payload": "",
+      "evidence": "X-Powered-By: PHP/7.4.21",
+      "detail": "Framework/technology fingerprint exposed.",
+      "cvss_hint": 2.0
+    },
+    {
+      "vuln_type": "Dangerous HTTP Method Enabled",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "TRACE",
+      "payload": "",
+      "evidence": "TRACE allowed (HTTP 501)",
+      "detail": "Verb tampering / cross-site tracing may be possible.",
+      "cvss_hint": 5.0
+    },
+    {
+      "vuln_type": "Dangerous HTTP Method Enabled",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "PUT",
+      "payload": "",
+      "evidence": "PUT allowed (HTTP 501)",
+      "detail": "Verb tampering / cross-site tracing may be possible.",
+      "cvss_hint": 5.0
+    },
+    {
+      "vuln_type": "Dangerous HTTP Method Enabled",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080",
+      "parameter": "DELETE",
+      "payload": "",
+      "evidence": "DELETE allowed (HTTP 501)",
+      "detail": "Verb tampering / cross-site tracing may be possible.",
+      "cvss_hint": 5.0
+    },
+    {
+      "vuln_type": "Information File Present",
+      "severity": "Info",
+      "url": "http://127.0.0.1:8080/robots.txt",
+      "parameter": "",
+      "payload": "",
+      "evidence": "55 bytes — may leak hidden paths",
+      "detail": "Review contents for sensitive directory disclosure.",
+      "cvss_hint": 1.0
+    },
+    {
+      "vuln_type": "SQL Injection (Error-Based)",
+      "severity": "Critical",
+      "url": "http://127.0.0.1:8080/page?id=1",
+      "parameter": "id",
+      "payload": "'",
+      "evidence": "DBMS signature: MySQL",
+      "detail": "Server returned a database error message indicating the input is concatenated into a SQL query unsafely.",
+      "cvss_hint": 9.8
+    },
+    {
+      "vuln_type": "SQL Injection (Boolean-Based Blind)",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/news?id=1",
+      "parameter": "id",
+      "payload": "TRUE=' OR 1=1--  / FALSE=' OR 1=2-- ",
+      "evidence": "similarity baseline/true=1.00 baseline/false=0.80 true/false=0.80",
+      "detail": "Responses differ significantly between TRUE and FALSE boolean conditions — classic blind SQLi behavior.",
+      "cvss_hint": 8.6
+    },
+    {
+      "vuln_type": "SQL Injection (Time-Based Blind)",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/news?id=1",
+      "parameter": "id",
+      "payload": "' OR SLEEP(3)-- ",
+      "evidence": "response delayed 5.0s (expected 3s) — engine hint: MySQL/PostgreSQL",
+      "detail": "The server response was delayed only when a time-based SQL payload was injected, indicating injectable query.",
+      "cvss_hint": 8.6
+    },
+    {
+      "vuln_type": "SQL Injection (Error-Based)",
+      "severity": "Critical",
+      "url": "http://127.0.0.1:8080/login",
+      "parameter": "user",
+      "payload": "'",
+      "evidence": "DBMS signature: MySQL",
+      "detail": "Server returned a database error message indicating the input is concatenated into a SQL query unsafely.",
+      "cvss_hint": 9.8
+    },
+    {
+      "vuln_type": "Reflected XSS (Executable)",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/search?q=hello",
+      "parameter": "q",
+      "payload": "<script>alert(\"XSS\")</script>",
+      "evidence": "payload reflected and rendered as active HTML/JS",
+      "detail": "The application reflects user input into the page without adequate encoding — script execution is possible.",
+      "cvss_hint": 7.4
+    },
+    {
+      "vuln_type": "Reflected XSS (Executable)",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/search",
+      "parameter": "q",
+      "payload": "<script>alert(\"XSS\")</script>",
+      "evidence": "payload reflected and rendered as active HTML/JS",
+      "detail": "The application reflects user input into the page without adequate encoding — script execution is possible.",
+      "cvss_hint": 7.4
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/.env",
+      "parameter": "",
+      "payload": "",
+      "evidence": "HTTP 200, 46 bytes",
+      "detail": "A potentially sensitive or hidden resource is accessible.",
+      "cvss_hint": 5.0
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080/robots.txt",
+      "parameter": "",
+      "payload": "",
+      "evidence": "HTTP 200, 55 bytes",
+      "detail": "A potentially sensitive or hidden resource is accessible.",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080/admin",
+      "parameter": "",
+      "payload": "",
+      "evidence": "HTTP 200, 244 bytes",
+      "detail": "A potentially sensitive or hidden resource is accessible.",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:8080/login",
+      "parameter": "",
+      "payload": "",
+      "evidence": "HTTP 200, 351 bytes",
+      "detail": "A potentially sensitive or hidden resource is accessible.",
+      "cvss_hint": 3.0
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "High",
+      "url": "http://127.0.0.1:8080/backup.sql",
+      "parameter": "",
+      "payload": "",
+      "evidence": "HTTP 200, 126 bytes",
+      "detail": "A potentially sensitive or hidden resource is accessible.",
+      "cvss_hint": 5.0
+    }
+  ]
+}

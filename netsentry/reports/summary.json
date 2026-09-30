@@ -1,0 +1,28 @@
+{
+  "tool": "NetSentry v2.0",
+  "generated_at": "2026-09-30T12:04:00.191321+00:00",
+  "packets": 128,
+  "bytes": 5382,
+  "protocols": {
+    "TCP": 81,
+    "ARP": 45,
+    "UDP": 2
+  },
+  "alerts_total": 28,
+  "alerts_by_severity": {
+    "CRITICAL": 21,
+    "HIGH": 5,
+    "MEDIUM": 1,
+    "LOW": 1
+  },
+  "alerts_by_category": {
+    "ARP-SPOOF(CONFLICT)": 20,
+    "ARP-SPOOF(GW-MAC-CHANGE)": 1,
+    "ARP-FLOOD": 2,
+    "PORT-SCAN(SYN)": 1,
+    "PORT-SCAN(XMAS)": 1,
+    "SUSPICIOUS-TLD": 1,
+    "DNS-TUNNEL": 1,
+    "CLEARTEXT-CRED": 1
+  }
+}

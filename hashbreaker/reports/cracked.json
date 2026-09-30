@@ -1,0 +1,14 @@
+{
+  "tool": "HashBreaker v2.0",
+  "cracked_at": "2026-09-30T12:01:17.288995+00:00",
+  "attempts": 4464,
+  "cracked": [
+    {
+      "user": "",
+      "hash_str": "098f6bcd4621d373cade4e832627b4f6",
+      "algo": "md5",
+      "salt": "",
+      "plain": "test"
+    }
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "tool": "NetRecon v2.0",
+  "scanned_at": "2026-09-30T12:07:11.922671+00:00",
+  "duration_s": 0.81,
+  "timing": "aggressive",
+  "ports_per_host": 8,
+  "hosts": [
+    {
+      "host": "127.0.0.1",
+      "hostname": "",
+      "alive": true,
+      "os_hint": "Linux/Unix (FTP server)",
+      "scan_time": 0.81,
+      "open_ports": [
+        {
+          "port": 1143,
+          "state": "open",
+          "service": "IMAP",
+          "banner": "* OK [CAPABILITY IMAP4rev1] Dovecot ready.",
+          "version": "",
+          "extra": {
+            "latency_ms": 3.1
+          }
+        },
+        {
+          "port": 2121,
+          "state": "open",
+          "service": "FTP",
+          "banner": "220 ProFTPD 1.3.5 Server (Debian) [::ffff:127.0.0.1]",
+          "version": "Pro",
+          "extra": {
+            "latency_ms": 3.4
+          }
+        },
+        {
+          "port": 2222,
+          "state": "open",
+          "service": "SSH",
+          "banner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
+          "version": "2.0 OpenSSH_8.9p1",
+          "extra": {
+            "latency_ms": 2.7
+          }
+        },
+        {
+          "port": 2525,
+          "state": "open",
+          "service": "SMTP",
+          "banner": "220 mail.demo.local ESMTP Postfix (Ubuntu)",
+          "version": "mail.demo.local",
+          "extra": {
+            "latency_ms": 2.8
+          }
+        },
+        {
+          "port": 6380,
+          "state": "open",
+          "service": "Redis",
+          "banner": "+PONG",
+          "version": "",
+          "extra": {
+            "latency_ms": 2.6
+          }
+        },
+        {
+          "port": 8080,
+          "state": "open",
+          "service": "HTTP/HTTPS",
+          "banner": "",
+          "version": "Apache/2.4.49 (Unix)",
+          "extra": {
+            "latency_ms": 806.0
+          }
+        }
+      ]
+    }
+  ]
+}
