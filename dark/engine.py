@@ -102,6 +102,9 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
     do_xss = modules.get("xss", True)
     do_dirs = modules.get("dirs", True)
     do_audit = modules.get("audit", True)
+    do_advanced = modules.get("advanced", True)
+    do_param_fuzz = modules.get("param_fuzz", True)
+    do_default_creds = modules.get("default_creds", False)
 
     url = wx.ensure_scheme(url)
     cookies = {}
@@ -126,6 +129,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             state.crawled_urls.add(url)
         else:
             state.crawled_urls.add(url)
+        if do_param_fuzz:
+            wx.ParamFuzzer(client, state).run()
         if do_audit:
             wx.MisconfigAudit(client, state).run(url)
         if do_sqli:
@@ -135,6 +140,26 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         if do_dirs:
             wordlist = wx.load_wordlist(wordlist_path)
             wx.DirBuster(client, state, wordlist).run(url)
+        if do_advanced:
+            adv = wx.AdvancedScanner(client, state)
+            adv.scan_lfi()
+            adv.scan_ssti()
+            adv.scan_cmdi()
+            adv.scan_open_redirect()
+            adv.scan_cors()
+            adv.scan_crlf()
+            adv.scan_dir_listing()
+            adv.scan_js_libs()
+            adv.scan_sensitive()
+            adv.scan_known_vulns()
+            adv.scan_csrf()
+            adv.scan_xxe()
+            adv.scan_ssrf()
+            adv.scan_host_header()
+            adv.scan_jwt()
+            adv.scan_stored_xss()
+        if do_default_creds:
+            wx.AdvancedScanner(client, state).scan_default_creds()
 
     counts: Dict[str, int] = {}
     for f in state.findings:
@@ -180,8 +205,13 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
         return {"error": "provide words (or a wordlist file) and/or a mask"}
 
     targets = []
+    identified = []
     for h in hashes:
-        t = hb.Target(hash_str=h.strip())
+        raw = h.strip()
+        hi = hb.identify_hash(raw)
+        identified.append({"hash": raw, "type": hi.name,
+                           "candidates": hi.candidates, "length": hi.length})
+        t = hb.Target(hash_str=raw)
         hb.resolve_algos(t, algo)
         if salt and not t.salt:
             t.salt = salt
@@ -197,7 +227,22 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
         except KeyboardInterrupt:
             pass
 
+    cracked_map = {c["hash_str"]: c for c in cracker.cracked}
+    results = []
+    for t, info_ in zip(targets, identified):
+        c = cracked_map.get(t.hash_str)
+        results.append({
+            "hash": t.hash_str,
+            "hash_type": info_["type"],
+            "candidates": info_["candidates"],
+            "used_algo": t.algo,
+            "salt": t.salt or None,
+            "cracked": bool(c),
+            "password": (c or {}).get("plain"),
+        })
+
     return {
+        "results": results,
         "targets": [asdict(t) for t in targets],
         "cracked": cracker.cracked,
         "attempts": cracker.attempts,

@@ -15,8 +15,7 @@
        font-family:"Segoe UI",Roboto,Consolas,monospace}
   header{display:flex;align-items:center;gap:16px;padding:18px 28px;
          border-bottom:1px solid var(--border);background:linear-gradient(180deg,#0e1420,#0b0f14)}
-  header img{width:56px;height:56px;border-radius:12px;box-shadow:0 0 18px rgba(34,211,238,.35)}
-  header h1{margin:0;font-size:22px;letter-spacing:3px}
+  header img{width:56px;height:56px;border-radius:12px;box-shadow:0 0 18px rgba(34,211,238,.35)}  header h1{margin:0;font-size:22px;letter-spacing:3px}
   header h1 span{color:var(--cyan)}
   header .tag{color:var(--muted);font-size:12px;letter-spacing:1px}
   .legal{background:#2a1220;border:1px solid var(--red);color:#ffd7de;
@@ -126,12 +125,16 @@
   </div>
   <div class="checks">
     <label><input type="checkbox" id="web-crawl" checked> Crawl</label>
+    <label><input type="checkbox" id="web-paramfuzz" checked> Param fuzz</label>
     <label><input type="checkbox" id="web-sqli" checked> SQLi</label>
     <label><input type="checkbox" id="web-xss" checked> XSS</label>
+    <label><input type="checkbox" id="web-advanced" checked> Advanced (LFI/SSTI/CMDi/Redirect/CORS...)</label>
     <label><input type="checkbox" id="web-dirs" checked> DirBuster</label>
     <label><input type="checkbox" id="web-audit" checked> Misconfig audit</label>
+    <label><input type="checkbox" id="web-creds"> Default creds</label>
   </div>
   <button class="run" onclick="runWeb()">▶ RUN SCAN</button>
+  <button class="run" onclick="maxScan()" style="background:var(--red);color:#fff">🔥 MAX SCAN (everything)</button>
   <div class="out" id="web-out">Results will appear here…</div>
 </section>
 
@@ -255,12 +258,23 @@ function renderJob(j, outEl) {
 
   if (r.report && r.report.hosts) {                       // network scan
     for (const h of r.report.hosts) {
-      html += '\n<b>' + esc(h.host) + '</b> ' + esc(h.hostname || '') + ' — OS hint: ' + esc(h.os_hint) + '\n';
-      if (!h.open_ports.length) html += '  (no open ports)\n';
+      html += '\n<b>' + esc(h.host) + '</b> ' + esc(h.hostname || '') +
+              ' — <span class="badge b-Low">OS: ' + esc(h.os_hint) + '</span>';
+      if (h.os_evidence && h.os_evidence.length)
+        html += '\n<span style="color:#7d90a8">OS evidence: ' + esc(h.os_evidence.join(' | ')) + '</span>';
+      html += '\n';
+      if (!h.open_ports.length) { html += '  (no open ports)\n'; continue; }
+      html += '<table><tr><th>Port</th><th>State</th><th>Service Type</th><th>Version</th><th>OS Hint</th><th>Banner</th></tr>';
       for (const p of h.open_ports) {
-        html += '  ' + String(p.port).padEnd(6) + ' open  ' + esc(p.service + (p.version ? ' (' + p.version + ')' : '')) +
-                (p.banner ? '  | ' + esc(p.banner.slice(0, 70)) : '') + '\n';
+        const osHint = (h.os_evidence || []).find(e => e.startsWith((p.service || 'port ' + p.port) + ' ->'));
+        html += '<tr><td><b>' + p.port + '</b></td>' +
+                '<td><span class="status s-done">OPEN</span></td>' +
+                '<td style="color:var(--cyan);font-weight:700">' + esc(p.service || 'unknown') + '</td>' +
+                '<td>' + esc(p.version || '-') + '</td>' +
+                '<td>' + esc(osHint ? osHint.split(' -> ')[1] : '-') + '</td>' +
+                '<td><code>' + esc((p.banner || '-').slice(0, 70)) + '</code></td></tr>';
       }
+      html += '</table>';
     }
     html += '\nTotal open ports: ' + r.report.hosts.reduce((a, h) => a + h.open_ports.length, 0);
   } else if (r.findings) {                                // web scan
@@ -270,6 +284,9 @@ function renderJob(j, outEl) {
             ' | Findings: ' + (st.findings || 0) + '\n';
     for (const sev in (st.by_severity || {}))
       html += '  <span class="badge b-' + sev + '">' + sev + ': ' + st.by_severity[sev] + '</span>';
+    if (!r.findings.length)
+      html += '\n\nNo vulnerabilities found on this target.\n'
+           +  'Hints: try 🔥 MAX SCAN, raise "Max pages", or the site may be blocking scanners (WAF).';
     html += '\n\n<table><tr><th>Severity</th><th>Type</th><th>Param</th><th>URL</th><th>Evidence</th></tr>';
     for (const f of r.findings) {
       html += '<tr><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td><td>' +
@@ -277,7 +294,23 @@ function renderJob(j, outEl) {
               '</td><td>' + esc((f.evidence || '-').slice(0, 90)) + '</td></tr>';
     }
     html += '</table>';
-  } else if (r.cracked !== undefined) {                   // hash crack
+  } else if (r.results && r.results.length && r.results[0].hash_type !== undefined) {  // hash crack (new format)
+    html += '\nAttempts: ' + (r.attempts || 0).toLocaleString() + '\n';
+    html += '<table><tr><th>Hash</th><th>Hash Type</th><th>Algo Used</th><th>Status</th><th>Decrypted Password</th></tr>';
+    for (const t of r.results) {
+      html += '<tr><td><code>' + esc(t.hash.slice(0, 42)) + (t.hash.length > 42 ? '…' : '') + '</code></td>' +
+              '<td>' + esc(t.hash_type) + (t.candidates && t.candidates.length > 1 ?
+                '<br><span style="color:#7d90a8">or: ' + esc(t.candidates.slice(1).join(', ')) + '</span>' : '') + '</td>' +
+              '<td>' + esc(t.used_algo || '-') + (t.salt ? ' (salt)' : '') + '</td>' +
+              '<td>' + (t.cracked ? '<span class="status s-done">CRACKED</span>'
+                                  : '<span class="status s-error">NOT FOUND</span>') + '</td>' +
+              '<td style="color:var(--green);font-weight:700">' + esc(t.password || '—') + '</td></tr>';
+    }
+    html += '</table>';
+    if (r.results.some(t => !t.cracked))
+      html += '\nTip: hashes not found need a bigger wordlist or a longer mask '
+            + '(weak hashes like MD5/NTLM crack fast; bcrypt/argon2 are intentionally slow).';
+  } else if (r.cracked !== undefined) {                   // hash crack (old format)
     html += '\nAttempts: ' + (r.attempts || 0).toLocaleString() + ' | Cracked: ' + r.cracked.length + '\n';
     for (const c of r.cracked)
       html += '  <b>' + esc(c.user || '(anon)') + '</b> [' + esc(c.algo) + '] → ' + esc(c.plain) + '\n';
@@ -318,6 +351,8 @@ async function runWeb() {
     url: $('web-url').value,
     crawl: $('web-crawl').checked, sqli: $('web-sqli').checked,
     xss: $('web-xss').checked, dirs: $('web-dirs').checked, audit: $('web-audit').checked,
+    advanced: $('web-advanced').checked, param_fuzz: $('web-paramfuzz').checked,
+    default_creds: $('web-creds').checked,
     time_blind: +$('web-blind').value, max_urls: +$('web-max').value
   };
   try {
@@ -325,6 +360,12 @@ async function runWeb() {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
     await pollJob(job_id, $('web-out'));
   } catch (e) { $('web-out').textContent = 'Error: ' + e.message; }
+}
+
+function maxScan() {
+  ['web-crawl','web-paramfuzz','web-sqli','web-xss','web-advanced','web-dirs','web-audit','web-creds']
+    .forEach(id => $(id).checked = true);
+  runWeb();
 }
 
 async function runIdentify() {

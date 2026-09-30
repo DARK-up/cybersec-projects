@@ -96,6 +96,9 @@ class WebScanReq(BaseModel):
     xss: bool = True
     dirs: bool = True
     audit: bool = True
+    advanced: bool = True          # LFI, SSTI, CMDi, open redirect, CORS, CRLF, ...
+    param_fuzz: bool = True        # hidden parameter discovery
+    default_creds: bool = False    # opt-in: tries admin:admin etc. on forms
     depth: int = 3
     max_urls: int = 80
     timeout: float = 10.0
@@ -198,7 +201,8 @@ def job_web_scan(req: WebScanReq):
     job_id = start_job(
         "web-scan", engine.run_web_scan, url=req.url,
         modules={"crawl": req.crawl, "sqli": req.sqli, "xss": req.xss,
-                 "dirs": req.dirs, "audit": req.audit},
+                 "dirs": req.dirs, "audit": req.audit, "advanced": req.advanced,
+                 "param_fuzz": req.param_fuzz, "default_creds": req.default_creds},
         depth=req.depth, max_urls=req.max_urls, timeout=req.timeout,
         delay=req.delay, time_blind=req.time_blind, cookie=req.cookie,
         proxy=req.proxy,

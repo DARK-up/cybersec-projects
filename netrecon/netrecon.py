@@ -115,15 +115,37 @@ HTTP_TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.I | re.S)
 HTTP_POWERED_RE = re.compile(rb"X-Powered-By:\s*([^\r\n]+)", re.I)
 
 OS_HINTS = [
+    # --- Windows family ---
+    (re.compile(r"Microsoft-IIS|Windows Server|Microsoft HTTPAPI|WinRM|MSRPC|"
+                r"Microsoft SQL Server|Microsoft-DS|Exchange|Smtpsvc|"
+                r"Microsoft\.NET|ASP\.NET", re.I), "Microsoft Windows"),
+    (re.compile(r"RDP.*Cookie|rdp|mstshash", re.I), "Microsoft Windows (RDP)"),
+    # --- Linux / Unix family ---
     (re.compile(r"OpenSSH.*?(Ubuntu|Debian)", re.I), "Linux (Ubuntu/Debian)"),
-    (re.compile(r"OpenSSH", re.I), "Linux/Unix (OpenSSH)"),
-    (re.compile(r"Microsoft-IIS|Windows Server|Microsoft HTTPAPI", re.I), "Microsoft Windows"),
+    (re.compile(r"OpenSSH.*?(RHEL|Red Hat|CentOS|Fedora|Rocky|Alma)", re.I), "Linux (Red Hat family)"),
+    (re.compile(r"OpenSSH.*?(Alpine)", re.I), "Linux (Alpine)"),
+    (re.compile(r"OpenSSH|Dropbear", re.I), "Linux/Unix (OpenSSH)"),
     (re.compile(r"Apache.*?(Ubuntu|Debian)", re.I), "Linux (Apache)"),
     (re.compile(r"nginx", re.I), "Linux/Unix (nginx)"),
-    (re.compile(r"ProFTPD|vsftpd", re.I), "Linux/Unix (FTP server)"),
+    (re.compile(r"ProFTPD|vsftpd|Pure-FTPd", re.I), "Linux/Unix (FTP server)"),
+    (re.compile(r"Postfix|Sendmail|Exim|Dovecot|Courier", re.I), "Linux/Unix (Mail server)"),
     (re.compile(r"Samba|SMB", re.I), "Linux/Unix or Windows (Samba)"),
+    (re.compile(r"PostgreSQL|MySQL|MariaDB|MongoDB|Redis", re.I), "Linux/Unix (Database server)"),
+    (re.compile(r"FreeBSD|OpenBSD|NetBSD", re.I), "BSD Unix"),
+    (re.compile(r"SunOS|Solaris", re.I), "Sun/Oracle Solaris"),
+    (re.compile(r"Darwin|Apple|Mac ?OS", re.I), "Apple macOS"),
+    # --- Network appliances ---
     (re.compile(r"cisco|Cisco", re.I), "Cisco IOS / Network appliance"),
     (re.compile(r"MikroTik|RouterOS", re.I), "MikroTik RouterOS"),
+    (re.compile(r"Juniper|JunOS", re.I), "Juniper JunOS"),
+    (re.compile(r"FortiGate|Fortinet", re.I), "Fortinet FortiGate"),
+    (re.compile(r"Palo Alto|PAN-OS", re.I), "Palo Alto PAN-OS"),
+    (re.compile(r"Ubiquiti|UniFi|EdgeOS", re.I), "Ubiquiti network device"),
+    # --- Virtualization / other ---
+    (re.compile(r"VMware|ESXi|vSphere", re.I), "VMware ESXi / vSphere"),
+    (re.compile(r"Proxmox|pve", re.I), "Proxmox VE"),
+    (re.compile(r"Android", re.I), "Android"),
+    (re.compile(r"ZyXEL|TP-Link|Huawei|ZTE", re.I), "Network appliance / router"),
 ]
 
 # Nmap-inspired top 100 TCP ports
@@ -169,6 +191,7 @@ class HostResult:
     hostname: str = ""
     alive: bool = False
     os_hint: str = "Unknown"
+    os_evidence: List[str] = field(default_factory=list)
     ports: List[PortResult] = field(default_factory=list)
     scan_time: float = 0.0
 
@@ -477,10 +500,26 @@ class NetRecon:
             sys.stdout.flush()
 
         hr.ports.sort(key=lambda p: p.port)
+
+        def _os_priority(hint: str) -> int:
+            if any(k in hint for k in ("Ubuntu", "Debian", "Red Hat", "Windows",
+                                       "Alpine", "BSD", "Solaris", "macOS", "Android")):
+                return 3
+            if "or Windows" in hint or "or Unix" in hint:
+                return 2
+            return 1
+
+        best = ("Unknown", 0)
         for pr in hr.ports:
             hint = self.os_hint_from_banner(pr.banner, pr.version)
-            if hint != "Unknown" and hr.os_hint == "Unknown":
-                hr.os_hint = hint
+            if hint != "Unknown":
+                ev = f"{pr.service or 'port ' + str(pr.port)} -> {hint}"
+                if ev not in hr.os_evidence:
+                    hr.os_evidence.append(ev)
+                if _os_priority(hint) > best[1]:
+                    best = (hint, _os_priority(hint))
+        if best[0] != "Unknown":
+            hr.os_hint = best[0]
         hr.scan_time = round(time.monotonic() - t0, 2)
         return hr
 
@@ -490,7 +529,9 @@ class NetRecon:
         ban = f" | {pr.banner[:70]}" if pr.banner else ""
         print(
             f"{colorize('[+]', 'green')} {host}:{pr.port:<6} "
-            f"{colorize('open', 'green')}  {colorize(svc + ver, 'cyan')}{colorize(ban, 'dim')}"
+            f"{colorize('open', 'green')}  {colorize(svc + ver, 'cyan')}"
+            f"{colorize(' [' + self.os_hint_from_banner(pr.banner, pr.version) + ']', 'magenta') if self.os_hint_from_banner(pr.banner, pr.version) != 'Unknown' else ''}"
+            f"{colorize(ban, 'dim')}"
         )
 
     # -- orchestration --------------------------------------------------------
@@ -626,6 +667,8 @@ def main() -> None:
         for h in scanner.results:
             state = "UP" if h.alive else "DOWN"
             print(f"  {h.host:<18} {state:<5} open={len(h.open_ports):<3} os_hint={h.os_hint}")
+            for ev in h.os_evidence:
+                print(colorize(f"      evidence: {ev}", "dim"))
         ok(f"Total open ports: {total_open} | Duration: "
            f"{round(time.time() - scanner.start_ts, 2)}s")
 

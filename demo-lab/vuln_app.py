@@ -36,6 +36,17 @@ INDEX = HTML_HEAD.format(title="Demo Shop") + """
   <li><a href="/search?q=hello">Search</a></li>
   <li><a href="/page?id=1">Product page</a></li>
   <li><a href="/news?id=1">News</a></li>
+  <li><a href="/lfi?file=index.php">Files</a></li>
+  <li><a href="/tpl?name=guest">Templates</a></li>
+  <li><a href="/ping?host=127.0.0.1">Ping tool</a></li>
+  <li><a href="/go?next=/">Redirect</a></li>
+  <li><a href="/files">Downloads</a></li>
+  <li><a href="/api/data">API</a></li>
+  <li><a href="/xxe">XML Import</a></li>
+  <li><a href="/fetch?url=http://example.com">URL Fetcher</a></li>
+  <li><a href="/reset">Password Reset</a></li>
+</ul>
+<script>var SESSION = "eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ.";</script>
   <li><a href="/login">Login</a></li>
 </ul>
 <form action="/search" method="GET">
@@ -116,6 +127,88 @@ class VulnHandler(BaseHTTPRequestHandler):
                 self._send(HTML_HEAD.format(title="News") +
                            "<p>Latest news: our shop is open, we have many products "
                            "and great offers for everyone this season</p></body></html>")
+        elif path == "/lfi":
+            # LFI simulation: returns fake /etc/passwd content for traversal payloads
+            f = qs.get("file", [""])[0]
+            if "etc/passwd" in f or "win.ini" in f or "proc/self" in f:
+                self._send(HTML_HEAD.format(title="File") +
+                           "<pre>root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin\n"
+                           "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin</pre></body></html>")
+            else:
+                self._send(HTML_HEAD.format(title="File") +
+                           f"<pre>content of {html.escape(f) or 'index.php'}</pre></body></html>")
+        elif path == "/tpl":
+            # SSTI simulation: actually evaluates simple {expr} patterns
+            name = qs.get("name", ["guest"])[0]
+            import re as _re
+            m = _re.fullmatch(r"\{\{(\d+)\*(\d+)\}\}", name) or \
+                _re.fullmatch(r"\$\{(\d+)\*(\d+)\}", name) or \
+                _re.fullmatch(r"<%=(\d+)\*(\d+)%>", name) or \
+                _re.fullmatch(r"#\{(\d+)\*(\d+)\}", name)
+            if m:
+                out = str(int(m.group(1)) * int(m.group(2)))
+            elif _re.fullmatch(r"\{\{7\*'7'\}\}", name):
+                out = "7777777"
+            else:
+                out = html.escape(name)
+            self._send(HTML_HEAD.format(title="Template") + f"<p>Hello {out}</p></body></html>")
+        elif path == "/go":
+            # Open redirect simulation
+            nxt = qs.get("next", [""])[0]
+            if nxt.startswith("http://") or nxt.startswith("https://"):
+                self.send_response(302)
+                self.send_header("Location", nxt)
+                self.end_headers()
+            else:
+                self._send(HTML_HEAD.format(title="Go") + "<p>redirecting...</p></body></html>")
+        elif path == "/ping":
+            # Command injection simulation
+            host = qs.get("host", [""])[0]
+            if ";" in host or "|" in host or "`" in host or "$(" in host:
+                self._send(HTML_HEAD.format(title="Ping") +
+                           "<pre>PING 127.0.0.1\nuid=33(www-data) gid=33(www-data) groups=33(www-data)</pre>"
+                           "</body></html>")
+            else:
+                self._send(HTML_HEAD.format(title="Ping") +
+                           f"<pre>PING {html.escape(host)}: 64 bytes</pre></body></html>")
+        elif path == "/files":
+            # Directory listing simulation
+            self._send("<!DOCTYPE html><html><head><title>Index of /files/</title></head><body>"
+                       "<h1>Index of /files/</h1><ul><li><a href='backup.zip'>backup.zip</a></li>"
+                       "<li><a href='db.sql'>db.sql</a></li></ul></body></html>")
+        elif path == "/api/data":
+            # CORS reflection simulation
+            origin = self.headers.get("Origin", "")
+            body = '{"secret": "user-data"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if origin:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode())
+        elif path == "/xxe":
+            # XXE simulation (POST XML) — runs on any method
+            self._send(HTML_HEAD.format(title="XML Import") +
+                       "<p>Upload XML data</p></body></html>")
+        elif path == "/fetch":
+            # SSRF simulation
+            u = qs.get("url", [""])[0]
+            if "127.0.0.1:1" in u or "localhost:1" in u:
+                self._send(HTML_HEAD.format(title="Fetch") +
+                           "<pre>Failed to fetch URL: Connection refused (ECONNREFUSED)</pre></body></html>")
+            elif "file://" in u:
+                self._send(HTML_HEAD.format(title="Fetch") +
+                           "<pre>root:x:0:0:root:/root:/bin/bash</pre></body></html>")
+            else:
+                self._send(HTML_HEAD.format(title="Fetch") +
+                           f"<pre>content of {html.escape(u)}</pre></body></html>")
+        elif path == "/reset":
+            # Host header echo (password-reset poisoning simulation)
+            host = self.headers.get("Host", "localhost")
+            self._send(HTML_HEAD.format(title="Reset") +
+                       f"<p>Reset link: http://{html.escape(host)}/reset?token=abc123</p></body></html>")
         elif path == "/login":
             self._send(LOGIN)
         elif path == "/admin":
@@ -139,7 +232,16 @@ class VulnHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8", "ignore")
         params = urllib.parse.parse_qs(body)
-        if self.path == "/login":
+        if self.path == "/xxe":
+            # XXE simulation: resolve external entity when XML contains a file DOCTYPE
+            if "ENTITY" in body.upper() and "file:///" in body:
+                self._send(HTML_HEAD.format(title="XML Import") +
+                           "<pre>root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin</pre>"
+                           "</body></html>")
+            else:
+                self._send(HTML_HEAD.format(title="XML Import") +
+                           "<p>XML processed OK</p></body></html>")
+        elif self.path == "/login":
             user = params.get("user", [""])[0]
             if "'" in user:
                 self._send(HTML_HEAD.format(title="Error") +

