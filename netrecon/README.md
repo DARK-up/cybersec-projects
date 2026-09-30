@@ -1,49 +1,51 @@
-# NetRecon v2.0 — إطار استطلاع الشبكات المتقدم
+# NetRecon v2.0 — Advanced Network Reconnaissance Framework
 
-أداة مسح شبكات **asynchronous** عالية الأداء مبنية بالكامل على Python Standard Library (بدون أي مكتبات خارجية).
+A high-performance **asynchronous** network scanning framework built entirely on the
+Python standard library (zero third-party dependencies).
 
-## ✨ المميزات
+## ✨ Features
 
-- **مسح منافذ async** بسرعة عالية (حتى 2000 اتصال متزامن)
-- **دعم CIDR / IP ranges / Hostnames**: `192.168.1.0/24` أو `10.0.0.1-50`
-- **بصمة خدمات دقيقة**: banner grabbing + probes نشطة (HTTP, SSH, FTP, SMTP, IMAP, MySQL, Redis, VNC, SIP...)
-- **استخراج إصدارات البرامج**: `OpenSSH_8.9p1`, `Apache/2.4.49`, `ProFTPD 1.3.5` ...
-- **تخمين نظام التشغيل** من البانرات (Linux/Ubuntu, Windows, Cisco, MikroTik...)
-- **اكتشاف hosts** عبر TCP ping sweep (`--discover`)
-- **ملفات توقيت**: `sneaky` / `normal` / `aggressive` / `insane`
-- **عشوائية المنافذ** (shuffle) لتفادي كشف IDS البسيط
-- **تقارير**: Console ملون + JSON + HTML
+- **Async port scanning** with high concurrency (up to 2,000 parallel connections)
+- **CIDR / IP ranges / hostnames**: `192.168.1.0/24` or `10.0.0.1-50`
+- **Accurate service fingerprinting**: banner grabbing + active probes
+  (HTTP, SSH, FTP, SMTP, IMAP, MySQL, Redis, VNC, SIP, ...)
+- **Software version extraction**: `OpenSSH_8.9p1`, `Apache/2.4.49`, `ProFTPD 1.3.5`, ...
+- **OS hinting** from service banners (Linux/Ubuntu, Windows, Cisco, MikroTik, ...)
+- **Host discovery** via TCP ping sweep (`--discover`)
+- **Timing profiles**: `sneaky` / `normal` / `aggressive` / `insane`
+- **Port randomization** (shuffling) to evade naive IDS heuristics
+- **Reporting**: colored console + JSON + HTML
 
-## 🚀 الاستخدام
+## 🚀 Usage
 
 ```bash
-# مسح top 100 منافذ لشبكة كاملة
+# Scan the top 100 ports across a subnet
 python3 netrecon.py -t 192.168.1.0/24 -p top100
 
-# مسح منافذ محددة مع بصمة خدمات
+# Scan specific ports with service fingerprinting
 python3 netrecon.py -t 10.0.0.5 -p 22,80,443,3306,8080
 
-# مسح سريع وخفية
+# Quiet and stealthy scan
 python3 netrecon.py -t scanme.example.com -p 1-5000 -T sneaky
 
-# كل المنافذ مع اكتشاف المضيفين وتقارير
+# Full port range with host discovery and reports
 python3 netrecon.py -t 192.168.1.1-50 -p all --discover \
   --json reports/scan.json --html reports/scan.html
 
-# مسح بدون بصمة (أسرع)
+# Fast scan without fingerprinting
 python3 netrecon.py -t 10.0.0.0/28 -p top:20 --no-probe
 ```
 
-### خيارات التوقيت
+### Timing Profiles
 
-| Profile | التزامن | Timeout | المهلة بين الطلبات | الاستخدام |
-|---------|---------|---------|-------------------|-----------|
-| `sneaky` | 50 | 3.0s | 300ms | تهرب من IDS |
-| `normal` | 300 | 1.2s | 50ms | افتراضي |
-| `aggressive` | 800 | 0.8s | 0 | شبكات سريعة |
-| `insane` | 2000 | 0.5s | 0 | lab فقط |
+| Profile | Concurrency | Timeout | Delay/request | Use case |
+|---------|-------------|---------|---------------|----------|
+| `sneaky` | 50 | 3.0s | 300ms | IDS evasion |
+| `normal` | 300 | 1.2s | 50ms | default |
+| `aggressive` | 800 | 0.8s | 0 | fast networks |
+| `insane` | 2000 | 0.5s | 0 | lab use only |
 
-## 📊 مثال على الإخراج
+## 📊 Sample Output
 
 ```
 [+] 127.0.0.1:2222   open  SSH (2.0 OpenSSH_8.9p1) | SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6
@@ -52,19 +54,19 @@ python3 netrecon.py -t 10.0.0.0/28 -p top:20 --no-probe
 [+] Host 127.0.0.1: 6 open port(s) in 0.81s (OS hint: Linux (Ubuntu/Debian))
 ```
 
-## 🏗️ البنية
+## 🏗️ Architecture
 
 ```
 NetRecon
-├── parse_targets()      ← CIDR / ranges / hostnames
-├── parse_ports()        ← 22,80 | 1-1024 | top100 | all
-├── discover_host()      ← TCP ping sweep
-├── scan_port()          ← async connect + banner
-├── grab_banner()        ← fingerprint DB (25+ توقيع)
-├── os_hint_from_banner()← OS estimation
-└── save_json/html()     ← reporting
+├── parse_targets()       ← CIDR / ranges / hostnames
+├── parse_ports()         ← 22,80 | 1-1024 | top100 | all
+├── discover_host()       ← TCP ping sweep
+├── scan_port()           ← async connect + banner
+├── grab_banner()         ← fingerprint DB (25+ signatures)
+├── os_hint_from_banner() ← OS estimation
+└── save_json/html()      ← reporting
 ```
 
-## ⚖️ قانوني
+## ⚖️ Legal
 
-استخدم الأداة فقط على الشبكات التي تملكها أو لديك إذن باختبارها.
+Only scan networks you own or have explicit authorization to test.

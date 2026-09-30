@@ -1,124 +1,126 @@
 # 🛡️ CyberSec Projects — Red Team Portfolio
 
-**4 مشاريع قوية في الأمن السيبراني (Offensive Security) + معمل تدريب آمن**
+**4 battle-tested offensive security projects + a safe local training lab**
 
-> ⚖️ **تنبيه قانوني مهم:** هذه الأدوات لأغراض التعليم واختبار الاختراق **القانوني فقط**.
-> لا تستخدمها على أنظمة أو شبكات بدون إذن كتابي صريح من المالك. الاستخدام غير المصرح به جريمة.
-> أنت المسؤول الوحيد عن طريقة استخدامك لهذه الأدوات.
-
----
-
-## 📦 المشاريع
-
-| # | المشروع | الوصف | التقنيات |
-|---|---------|-------|----------|
-| 1 | **[NetRecon](netrecon/)** | إطار استطلاع شبكات متقدم — مسح منافذ async بصمة خدمات، اكتشاف hosts، تقارير HTML/JSON | Python (asyncio) — بدون مكتبات خارجية |
-| 2 | **[WebVulnX](webvulnx/)** | ماسح ثغرات تطبيقات ويب — SQLi (Error/Boolean/Time) + XSS + Crawler + DirBuster + Audit | Python (requests, HTMLParser) |
-| 3 | **[HashBreaker](hashbreaker/)** | تحديد وكسر الهاشات — Dictionary + Rules + Mask + Multiprocessing + NTLM/MD4 أصلي | Python (multiprocessing) — بدون مكتبات خارجية |
-| 4 | **[NetSentry](netsentry/)** | محرك كشف تهديدات الشبكة — ARP Spoof + Port Scan + DNS Tunneling + كشف كلمات السر | Python (scapy) |
-| 5 | **[Demo Lab](demo-lab/)** | تطبيق ويب ضعيف عمداً + خدمات وهمية — لتجربة الأدوات بشكل قانوني على جهازك | Python (stdlib) |
+> ⚖️ **Legal disclaimer:** These tools are for **authorized** security testing and
+> education only. Do not use them against systems you do not own or lack explicit
+> written permission to test. Unauthorized access is illegal. You are solely
+> responsible for how you use this software.
 
 ---
 
-## 🚀 البدء السريع
+## 📦 Projects
+
+| # | Project | Description | Tech |
+|---|---------|-------------|------|
+| 1 | **[NetRecon](netrecon/)** | Advanced network reconnaissance framework — async port scanning, service fingerprinting, host discovery, HTML/JSON reporting | Python (asyncio) — zero dependencies |
+| 2 | **[WebVulnX](webvulnx/)** | Web application vulnerability scanner — SQLi (Error / Boolean-blind / Time-blind) + XSS + crawler + dirbuster + misconfig audit | Python (requests) |
+| 3 | **[HashBreaker](hashbreaker/)** | Hash identification & cracking suite — dictionary + rules + mask attacks, multiprocessing, pure-Python MD4/NTLM | Python (multiprocessing) — zero dependencies |
+| 4 | **[NetSentry](netsentry/)** | Real-time network threat detection — ARP spoofing, port scans, DNS tunneling, cleartext credential leakage | Python (scapy) |
+| 5 | **[Demo Lab](demo-lab/)** | Intentionally vulnerable web app + fake services — practice the tools legally on your own machine | Python (stdlib) |
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-# المتطلبات (NetSentry وWebVulnX فقط)
+# Requirements (only NetSentry & WebVulnX need third-party packages)
 pip install scapy requests
 
-# 1) شغّل معمل التدريب المحلي
+# 1) Start the local training lab
 cd demo-lab
-python3 vuln_app.py 8080 &        # تطبيق ويب ضعيف على http://127.0.0.1:8080
-python3 fake_services.py &        # خدمات وهمية (SSH/FTP/SMTP/IMAP/Redis)
+python3 vuln_app.py 8080 &        # vulnerable web app on http://127.0.0.1:8080
+python3 fake_services.py &        # fake SSH/FTP/SMTP/IMAP/Redis banners
 
-# 2) استكشف الشبكة
+# 2) Discover the network
 cd ../netrecon
 python3 netrecon.py -t 127.0.0.1 -p top100 --json reports/scan.json --html reports/scan.html
 
-# 3) امسح تطبيق الويب
+# 3) Scan the web application
 cd ../webvulnx
 python3 webvulnx.py -u http://127.0.0.1:8080 --full --html reports/web.html
 
-# 4) اكسر هاشات (بيانات تجريبية)
+# 4) Crack sample hashes
 cd ../hashbreaker
 python3 hashbreaker.py identify -x 5f4dcc3b5aa765d61d8327deb882cf99
 python3 hashbreaker.py crack -x 098f6bcd4621d373cade4e832627b4f6 -w wordlists/common-pass.txt --rules
 
-# 5) راقب الشبكة (وضع التجربة بدون Root)
+# 5) Monitor the network (demo mode — no root needed)
 cd ../netsentry
 python3 netsentry.py --demo --report reports/summary.json
-# أو لقطة حية (تحتاج Root):
+# or live capture (requires root):
 # sudo python3 netsentry.py --live -i eth0 --gateway 192.168.1.1
 ```
 
 ---
 
-## 🎯 المهارات اللي تغطيها المشاريع
+## 🎯 Skills Covered
 
 ### Offensive / Red Team
-- **Network Reconnaissance**: TCP scanning, banner grabbing, service fingerprinting, OS hinting
-- **Web Application Security**: SQLi (Error / Boolean-Blind / Time-Blind), Reflected XSS, sensitive data exposure, misconfigurations
-- **Password Security**: hash identification (25+ صيغة), dictionary/rules/mask attacks, NTLM/MD4 internals
-- **Network Attacks Detection**: ARP poisoning, SYN/XMAS scans, DNS tunneling, cleartext credential leakage
+- **Network reconnaissance**: TCP scanning, banner grabbing, service fingerprinting, OS hinting
+- **Web application security**: SQLi (error-based, boolean-blind, time-based blind), reflected XSS, sensitive data exposure, security misconfigurations
+- **Password security**: hash identification (25+ formats), dictionary / rules / mask attacks, NTLM & MD4 internals
+- **Threat detection**: ARP poisoning, SYN/XMAS scans, DNS tunneling, cleartext credential exposure
 
-### المهارات البرمجية
-- Async programming (asyncio) وconcurrency عالي الأداء
+### Engineering Skills
+- High-concurrency async programming (asyncio)
 - Multiprocessing cracking engine
-- Custom protocol fingerprinting database
-- Heuristic detection (similarity matching, entropy, rate analysis)
-- Pure-Python MD4 implementation (RFC 1320) — fallback when OpenSSL lacks MD4
+- Custom protocol fingerprinting databases
+- Heuristic detection (similarity matching, entropy analysis, rate windows)
+- Pure-Python MD4 implementation (RFC 1320) with full test-vector validation
 - Professional reporting (JSON / HTML / JSONL)
-- Clean CLI design (argparse) مع timing profiles
+- Clean CLI design (argparse) with timing profiles
 
 ---
 
-## 📂 هيكل المشروع
+## 📂 Repository Layout
 
 ```
 cybersec-projects/
-├── README.md                  ← أنت هنا
-├── netrecon/                  ← مشروع 1: استطلاع الشبكات
+├── README.md                  ← you are here
+├── netrecon/                  ← Project 1: network reconnaissance
 │   ├── netrecon.py
 │   ├── requirements.txt
 │   └── reports/
-├── webvulnx/                  ← مشروع 2: ماسح ثغرات الويب
+├── webvulnx/                  ← Project 2: web vulnerability scanner
 │   ├── webvulnx.py
 │   ├── wordlists/dirs.txt
 │   └── reports/
-├── hashbreaker/               ← مشروع 3: كسر الهاشات
+├── hashbreaker/               ← Project 3: hash cracking suite
 │   ├── hashbreaker.py
 │   ├── wordlists/common-pass.txt
 │   └── reports/
-├── netsentry/                 ← مشروع 4: كشف تهديدات الشبكة
+├── netsentry/                 ← Project 4: network threat detection
 │   ├── netsentry.py
 │   └── reports/
-└── demo-lab/                  ← معمل التدريب القانوني
+└── demo-lab/                  ← legal local training target
     ├── vuln_app.py
     └── fake_services.py
 ```
 
 ---
 
-## ✅ ما تم اختباره فعلياً
+## ✅ Actually Tested (not just written)
 
-| الاختبار | النتيجة |
-|----------|---------|
-| NetRecon: بصمة SSH/FTP/SMTP/IMAP/Redis/HTTP مع الإصدارات | ✅ |
-| NetRecon: OS hint من البانرات + تقارير JSON/HTML | ✅ |
-| WebVulnX: SQLi Error-Based (Critical) على /page و/login | ✅ |
-| WebVulnX: SQLi Boolean-Blind + Time-Blind على /news | ✅ |
-| WebVulnX: Reflected XSS + DirBuster (.env, backup.sql, admin) | ✅ |
-| HashBreaker: تحديد MD5/NTLM + كسر Dictionary/Rules/Mask | ✅ |
-| HashBreaker: MD4 pure-Python عبر RFC 1320 test vectors كاملة | ✅ |
-| NetSentry: كشف ARP Spoof + SYN Scan + DNS Tunnel + Cleartext Creds | ✅ |
+| Test | Result |
+|------|--------|
+| NetRecon: SSH / FTP / SMTP / IMAP / Redis / HTTP fingerprinting with versions | ✅ |
+| NetRecon: OS hinting from banners + JSON/HTML reports | ✅ |
+| WebVulnX: Error-based SQLi (Critical) on `/page` and `/login` | ✅ |
+| WebVulnX: Boolean-blind + Time-blind SQLi on `/news` | ✅ |
+| WebVulnX: Reflected XSS + DirBuster (`.env`, `backup.sql`, `admin`) | ✅ |
+| HashBreaker: MD5/NTLM identification + dictionary / rules / mask cracking | ✅ |
+| HashBreaker: pure-Python MD4 validated against the full RFC 1320 test suite | ✅ |
+| NetSentry: ARP spoof + SYN scan + DNS tunnel + cleartext credential detection | ✅ |
 
 ---
 
-## 📖 الشهادات والمسار المهني
+## 📖 Certification Alignment
 
-هذه المشاريع تناسب التحضير لشهادات:
-- **OSCP / eJPT / PNPT** (Offensive)
-- **CEH / CompTIA Security+** (Foundations)
-- **Blue Team Level 1 (BTL1)** (NetSentry يغطي جانب الدفاع)
+These projects map well to the practical domains of:
+- **OSCP / eJPT / PNPT** (offensive track)
+- **CEH / CompTIA Security+** (foundations)
+- **Blue Team Level 1 (BTL1)** — NetSentry covers the defensive side
 
-كل مشروع مصمم كـ **portfolio project** يمكن عرضه في GitHub مع README مستقل ونتائج اختبار حقيقية.
+Each project is structured as a **portfolio piece** with an independent README,
+real test results, and clean, readable code.

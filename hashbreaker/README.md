@@ -1,65 +1,67 @@
-# HashBreaker v2.0 — تحديد وكسر الهاشات المتقدم
+# HashBreaker v2.0 — Advanced Hash Identification & Cracking Suite
 
-أداة متكاملة لتحديد نوع الهاش وكسره بـ Dictionary + Rules + Mask attacks مع multiprocessing.
+A complete hash identification and password recovery toolkit with dictionary,
+rules, and mask attacks — powered by a multiprocessing cracking engine.
 
-## ✨ المميزات
+## ✨ Features
 
-### 🔎 محرك تحديد الهاشات (25+ صيغة)
-MD5, MD4, SHA1, SHA2 family, **NTLM**, LM, MySQL 3.x/4.1+, MSSQL 2000/2005+,
-bcrypt, sha256/512crypt, md5crypt, apr1, phpass (WordPress/phpBB), Django (SHA/PBKDF2),
-LDAP SSHA, Argon2, yescrypt, scrypt, Base64-encoded...
+### 🔎 Hash Identification Engine (25+ formats)
+MD5, MD4, SHA1, SHA2 family, **NTLM**, LM, MySQL 3.x / 4.1+, MSSQL 2000/2005+,
+bcrypt, sha256/512crypt, md5crypt, apr1, phpass (WordPress / phpBB),
+Django (SHA / PBKDF2), LDAP SSHA, Argon2, yescrypt, scrypt, Base64-encoded, ...
 
-### 💥 محرك الكسر
-| Mode | الوصف |
-|------|-------|
-| **Dictionary** | قوائم كلمات مع دعم multi-target |
-| **Rules** | 25+ قاعدة تحويل (capitalize, leet, append years/symbols, reverse...) |
-| **Mask** | brute-force موجه: `?l?l?d?d` مع charsets مخصصة |
-| **Hybrid** | Dictionary + Rules + Mask معاً |
-| **Multiprocessing** | يستخدم كل أنوية المعالج |
-| **Salted** | md5+salt, sha256+salt, hmac-sha256/sha512 |
-| **pwdump/shadow** | يقرأ ملفات Windows pwdump وLinux shadow مباشرة |
+### 💥 Cracking Engine
+| Mode | Description |
+|------|-------------|
+| **Dictionary** | Wordlists with multi-target support |
+| **Rules** | 25+ mangling rules (capitalize, leet, append years/symbols, reverse, ...) |
+| **Mask** | Targeted brute-force: `?l?l?d?d` with custom charsets |
+| **Hybrid** | Dictionary + rules + mask combined |
+| **Multiprocessing** | Utilizes all CPU cores |
+| **Salted hashes** | md5+salt, sha256+salt, hmac-sha256/sha512 |
+| **pwdump / shadow** | Parses Windows pwdump and Linux shadow files directly |
 
-### 🧠 ميزة خاصة: MD4 Pure-Python
-OpenSSL 3 شال MD4 من الـ default provider — فـ NTLM/MD4/LM بتكسر عادياً
-عن طريق **MD4 fallback مكتوب من الصفر (RFC 1320)** — متحقق منه بـ official test vectors.
+### 🧠 Highlight: Pure-Python MD4
+OpenSSL 3 removed MD4 from the default provider — so NTLM / MD4 / LM cracking
+works anyway through a **from-scratch MD4 fallback (RFC 1320)**, validated
+against the complete official test-vector suite.
 
-## 🚀 الاستخدام
+## 🚀 Usage
 
 ```bash
-# تحديد نوع هاش
+# Identify a hash type
 python3 hashbreaker.py identify -x 5f4dcc3b5aa765d61d8327deb882cf99
 python3 hashbreaker.py identify -f hashes.txt
 
-# كسر بـ Dictionary + Rules
+# Dictionary attack with rules
 python3 hashbreaker.py crack -f hashes.txt -w wordlists/common-pass.txt --rules
 
-# كسر NTLM بـ Mask (4 أحرف صغيرة)
+# Crack NTLM with a 4-char lowercase mask
 python3 hashbreaker.py crack -x 0cb6948805f797bf2a82807973b89537 -a ntlm --mask '?l?l?l?l'
 
-# هاش مملح
+# Salted hash
 python3 hashbreaker.py crack -x <sha256-hex> -a sha256+salt -s "mysalt" -w wordlist.txt
 
-# ملف pwdump كامل (عدة مستخدمين)
+# Full pwdump file (multiple users)
 python3 hashbreaker.py crack -f pwdump.txt -w wordlists/common-pass.txt --rules \
   --json reports/cracked.json
 
-# قياس سرعة الخوارزميات
+# Benchmark the algorithms
 python3 hashbreaker.py benchmark
 ```
 
-### Mask tokens
+### Mask Tokens
 | Token | Charset |
 |-------|---------|
 | `?l` | abcdefghijklmnopqrstuvwxyz |
 | `?u` | ABCDEFGHIJKLMNOPQRSTUVWXYZ |
 | `?d` | 0123456789 |
-| `?s` | special chars |
-| `?a` | كل ما سبق |
+| `?s` | special characters |
+| `?a` | all of the above |
 | `?h` / `?H` | hex lowercase / uppercase |
-| `?X=abc` | charset مخصص (`--charset`) |
+| `?X=abc` | custom charset (`--charset`) |
 
-## 📊 مثال على الإخراج
+## 📊 Sample Output
 
 ```
 [+] Wordlist: wordlists/common-pass.txt (159 words)
@@ -69,15 +71,16 @@ python3 hashbreaker.py benchmark
 [+] Done in 0.04s | rate ≈ 306,664 H/s | cracked 2/3
 ```
 
-## 📁 صيغة ملف الهاشات
+## 📁 Input File Formats
 
 ```
-5f4dcc3b5aa765d61d8327deb882cf99          # هاش فقط
+5f4dcc3b5aa765d61d8327deb882cf99          # bare hash
 admin:5f4dcc3b5aa765d61d8327deb882cf99    # user:hash
-bob:1001:aad3b435b51404eeaad3b435b51404ee:8846f7eaee8fb117ad06bdd830b7586c:::   # pwdump
-alice:$6$salt$hash...                      # shadow
+bob:1001:aad3...:8846f7eaee8fb117ad06bdd830b7586c:::   # pwdump
+alice:$6$salt$hash...                      # shadow entry
 ```
 
-## ⚖️ قانوني
+## ⚖️ Legal
 
-لا تكسر هاشات إلا ضمن تدقيق مصرح به (مثلاً: تدقيق كلمات السر لمؤسستك).
+Only crack hashes within an authorized audit scope (e.g. your organization's
+own password policy assessment).

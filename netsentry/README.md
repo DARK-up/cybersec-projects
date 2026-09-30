@@ -1,52 +1,54 @@
-# NetSentry v2.0 — محرك كشف تهديدات الشبكة في الوقت الحقيقي
+# NetSentry v2.0 — Real-Time Network Threat Detection Engine
 
-محرك مراقبة وكشف هجمات بالـ Python + Scapy — يجمع بين جانب الهجوم والدفاع (Purple Team).
+A Python + Scapy network monitoring and attack-detection engine — bridging
+offense and defense (Purple Team style).
 
-## ✨ المميزات
+## ✨ Features
 
-### 🕵️ كشف ARP Spoofing / MITM
-- **Conflict detection**: نفس الـ IP يدعيه أكثر من MAC
-- **Gateway MAC change**: تغيير MAC البوابة المفاجئ
-- **ARP reply floods**: انفجارات ARP غير مطلوبة (أداة bettercap/arpspoof)
+### 🕵️ ARP Spoofing / MITM Detection
+- **Conflict detection**: one IP claimed by multiple MAC addresses
+- **Gateway MAC change**: unexpected gateway hardware-address changes
+- **ARP reply floods**: bursts of unsolicited ARP replies (bettercap / arpspoof style)
 
-### 🔦 كشف Port Scanning
-- **SYN scan detection**: معدل SYN مرتفع لمنافذ متعددة في نافذة زمنية
-- **NULL / XMAS scans**: مسحات خفية (stealth)
+### 🔦 Port-Scan Detection
+- **SYN scan detection**: high SYN rate to many distinct ports inside a sliding window
+- **NULL / XMAS scans**: stealth scan signatures
 
-### 🌐 مراقبة DNS
-- **DNS tunneling**: أسماء domains طويلة/معقدة (iodine, dnscat2)
-- **DGA detection**: domains مولّدة خوارزمياً (malware C2)
-- **Suspicious TLDs**: .tk/.ml/.xyz مع أرقام
+### 🌐 DNS Monitoring
+- **DNS tunneling**: unusually long / complex query names (iodine, dnscat2)
+- **DGA detection**: algorithmically generated domains (malware C2)
+- **Suspicious TLDs**: `.tk` / `.ml` / `.xyz` combined with numeric labels
 
-### 🔑 كشف كلمات السر النصية
-HTTP Basic Auth, FTP USER/PASS, POP3/IMAP auth, session cookies — كلها في مرور غير مشفّر.
+### 🔑 Cleartext Credential Exposure
+HTTP Basic Auth, FTP USER/PASS, POP3/IMAP auth, session cookies — anything
+crossing the wire unencrypted.
 
-### 📊 الإحصائيات
-- عدادات البروتوكولات (TCP/UDP/ARP/ICMP)
-- أهم المتصلين (Top talkers)
-- توزيع TCP flags
+### 📊 Traffic Statistics
+- Protocol counters (TCP/UDP/ARP/ICMP)
+- Top talkers
+- TCP flag distribution
 
-## 🚀 الاستخدام
+## 🚀 Usage
 
 ```bash
-# وضع التجربة (بدون Root — حركة مرور اصطناعية)
+# Demo mode (no root — synthetic attack traffic)
 python3 netsentry.py --demo
 
-# تحليل ملف PCAP (forensics)
+# Offline PCAP forensics
 python3 netsentry.py --pcap capture.pcapng --report reports/summary.json
 
-# مراقبة حية (تحتاج Root)
+# Live capture (requires root)
 sudo python3 netsentry.py --live -i eth0 --gateway 192.168.1.1
 
-# مع BPF filter وحفظ الـ alerts
+# With a BPF filter and JSONL alert logging
 sudo python3 netsentry.py --live -i wlan0 --filter "arp or tcp" \
   --alert-log reports/alerts.jsonl
 
-# حساسية أعلى لكشف المسحات (10 SYNs = تنبيه)
+# More sensitive scan detection (10 SYNs = alert)
 sudo python3 netsentry.py --live -i eth0 --syn-threshold 10
 ```
 
-## 🧪 نتائج وضع Demo
+## 🧪 Demo Mode Results
 
 ```
 [CRITICAL] ARP-SPOOF(CONFLICT)   aa:bb:cc:dd:ee:ff -> 192.168.1.1 |
@@ -58,24 +60,25 @@ sudo python3 netsentry.py --live -i eth0 --syn-threshold 10
 [HIGH]     CLEARTEXT-CRED        192.168.1.10 -> 10.0.0.5 | FTP USER observed
 ```
 
-## 🏗️ البنية
+## 🏗️ Architecture
 
 ```
 NetSentry
 ├── ArpDetector        ← IP↔MAC binding tracking + conflict + gateway watch
 ├── PortScanDetector   ← SYN rate windows + NULL/XMAS signatures
-├── DnsDetector        ← tunnel/DGA/TLD heuristics
+├── DnsDetector        ← tunnel / DGA / suspicious-TLD heuristics
 ├── CredDetector       ← cleartext credential regex engine
-├── Stats              ← protocol/talker/flag counters
+├── Stats              ← protocol / talker / flag counters
 └── AlertBus           ← console + JSONL logging
 ```
 
-## 📁 المخرجات
+## 📁 Outputs
 
-- **Console**: تنبيهات ملونة فورية مع timestamps
-- **JSONL log** (`--alert-log`): كل تنبيه في سطر JSON — جاهز للـ SIEM
-- **Summary JSON** (`--report`): إحصائيات + ملخص تنبيهات
+- **Console**: live color-coded alerts with timestamps
+- **JSONL log** (`--alert-log`): one JSON object per alert — SIEM-ready
+- **Summary JSON** (`--report`): statistics + alert breakdown
 
-## ⚖️ قانوني
+## ⚖️ Legal
 
-راقب فقط الشبكات التي تملكها أو مصرح لك بمراقبتها. الالتقاط غير المصرح به غير قانوني.
+Only monitor networks you own or are explicitly authorized to observe.
+Unauthorized packet capture is illegal.
