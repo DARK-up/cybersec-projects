@@ -225,7 +225,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                  depth: int = 3, max_urls: int = 80, timeout: float = 10.0,
                  delay: float = 0.0, time_blind: float = 5.0,
                  wordlist_path: Optional[str] = None,
-                 cookie: Optional[str] = None, proxy: Optional[str] = None) -> Dict:
+                 cookie: Optional[str] = None, proxy: Optional[str] = None,
+                 stealth: bool = True) -> Dict:
     import webvulnx as wx
 
     modules = modules or {}
@@ -246,7 +247,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                 k, _, v = part.partition("=")
                 cookies[k.strip()] = v.strip()
 
-    client = wx.HttpClient(timeout=timeout, delay=delay, cookies=cookies, proxy=proxy)
+    client = wx.HttpClient(timeout=timeout, delay=delay, cookies=cookies, proxy=proxy,
+                           stealth=stealth, target=url)
     state = wx.ScanState(base_url=url, start_ts=time.time())
 
     probe = client.get(url)

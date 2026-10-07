@@ -116,6 +116,10 @@ python3 webvulnx.py -u https://target.example --full \
 
 # Basic WAF throttling (delay between requests)
 python3 webvulnx.py -u https://target.example --sqli --delay 0.5 --time-blind 8
+
+# Stealth is ON by default (Chrome fingerprint, no scanner banner, WAF backoff).
+# Localhost skips extra jitter. Disable only in a lab:
+python3 webvulnx.py -u http://127.0.0.1:8080 --full --no-stealth
 ```
 
 ## 🧪 Try It on the Demo Lab

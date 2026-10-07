@@ -253,6 +253,7 @@ class WebScanReq(BaseModel):
     time_blind: float = 5.0
     cookie: Optional[str] = None
     proxy: Optional[str] = None
+    stealth: bool = True
 
 
 class HashIdentifyReq(BaseModel):
@@ -416,7 +417,7 @@ def job_web_scan(req: WebScanReq):
                  "param_fuzz": req.param_fuzz, "default_creds": req.default_creds},
         depth=req.depth, max_urls=req.max_urls, timeout=req.timeout,
         delay=req.delay, time_blind=None if req.fast else req.time_blind,
-        cookie=req.cookie, proxy=req.proxy,
+        cookie=req.cookie, proxy=req.proxy, stealth=req.stealth,
     )
     return {"job_id": job_id, "legal": LEGAL}
 

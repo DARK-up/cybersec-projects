@@ -964,7 +964,9 @@ class DeepXssScanner:
     def run_headers(self) -> None:
         if not self.test_headers:
             return
-        urls = [self.state.base_url] + list(self.state.crawled_urls)[:3]
+        urls = [self.state.base_url]
+        if not getattr(self.client, "stealth", True):
+            urls += list(self.state.crawled_urls)[:3]
         for url in urls:
             host = urllib.parse.urlsplit(url).netloc or "localhost"
             self._info(f"Deep XSS via HTTP headers on {url}")

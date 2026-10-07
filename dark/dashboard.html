@@ -147,6 +147,7 @@
     <label><input type="checkbox" id="web-audit" checked> Misconfig audit</label>
     <label><input type="checkbox" id="web-creds"> Default creds</label>
     <label><input type="checkbox" id="web-fast" checked> ⚡ Fast (skip time-based SQLi)</label>
+    <label><input type="checkbox" id="web-stealth" checked> 🥷 Stealth (browser fingerprint, no scanner banner, WAF backoff)</label>
   </div>
   <div class="row" style="align-items:center">
     <span style="font-size:12px;color:var(--dim)">Preset:</span>
@@ -482,7 +483,8 @@ async function runWeb() {
     default_creds: $('web-creds').checked,
     fast: $('web-fast').checked,
     time_blind: +$('web-blind').value, max_urls: +$('web-max').value,
-    depth: +$('web-depth').value, delay: +$('web-delay').value
+    depth: +$('web-depth').value, delay: +$('web-delay').value,
+    stealth: $('web-stealth').checked
   };
   try {
     const { job_id } = await api('/api/jobs/web-scan', {
