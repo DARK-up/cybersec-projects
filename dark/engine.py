@@ -292,7 +292,23 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         if do_sqli:
             run_module("sqli", wx.SqliScanner(client, state, time_delay=time_blind).run)
         if do_xss:
-            run_module("xss", wx.XssScanner(client, state).run)
+            try:
+                import xss_deep as xd
+                deep = xd.DeepXssScanner(
+                    client, state, wx.Finding,
+                    payload_limit=int(modules.get("xss_payload_limit") or 14),
+                    brute=bool(modules.get("xss_brute")),
+                    brute_limit=int(modules.get("xss_brute_limit") or 250),
+                    test_headers=modules.get("xss_headers", True),
+                    stored_sweep=modules.get("xss_stored", True),
+                    dom_analysis=modules.get("xss_dom", True),
+                )
+                run_module("xss-deep", deep.run)
+                state.xss_deep = deep.stats()
+            except Exception as e:
+                print(f"[!] deep XSS engine unavailable ({type(e).__name__}: {e}) "
+                      f"— falling back to legacy XSS")
+                run_module("xss", wx.XssScanner(client, state).run)
         if do_dirs:
             wordlist = wx.load_wordlist(wordlist_path)
             run_module("dirbuster",
@@ -316,6 +332,13 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         if do_default_creds:
             run_module("default-creds",
                        wx.AdvancedScanner(client, state).scan_default_creds)
+        if do_advanced or do_audit or do_dirs:
+            try:
+                import worldscan as ws
+                run_module("world-surface",
+                           ws.WorldScanner(client, state, wx.Finding).run)
+            except Exception as e:
+                print(f"[!] world-surface module failed: {type(e).__name__}: {e}")
 
     # ---- coverage + honest diagnosis of an empty result -------------------
     st = client.stats
@@ -381,6 +404,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         "coverage": state.coverage(),
         "diagnostics": state.diagnostics,
         "findings": [asdict(f) for f in state.findings],
+        "xss_deep": getattr(state, "xss_deep", {}) or {},
         "log": cap.text,
     }
 

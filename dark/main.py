@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 import engine
@@ -286,7 +286,7 @@ app = FastAPI(
     description=("DARK — Detection & Attack Reconnaissance Kit. "
                  "Unified REST API for NetRecon / WebVulnX / HashBreaker / NetSentry.\n\n"
                  + LEGAL),
-    version="1.0.0",
+    version="2.0.0",
 )
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -307,7 +307,7 @@ def logo():
 def health():
     return {
         "name": "DARK",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "online",
         "platform": sys.platform,
         "tools": engine.tools_status(),
@@ -332,6 +332,67 @@ def get_job(job_id: str):
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
         return _public(job)
+
+
+@app.get("/api/jobs/{job_id}/report")
+def job_report(job_id: str, download: int = 0):
+    """World-class executive HTML report (print-to-PDF from the browser)."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        job = _public(job)
+    if job.get("status") != "done":
+        raise HTTPException(409, f"job is {job.get('status')} — wait until it finishes")
+    result = job.get("result") or {}
+    kind = job.get("kind")
+    sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
+    import report as dreport  # type: ignore
+    if kind == "web-scan":
+        html = dreport.render_html(result)
+    else:
+        # Wrap non-web jobs in the same cover so every DARK job has a report.
+        html = dreport.render_html({
+            "target": result.get("target") or kind,
+            "stats": {
+                "urls_crawled": 0, "forms": 0, "parameters": 0,
+                "requests_sent": 0, "modules_run": [kind],
+                "duration_s": round((job.get("finished_at") or 0) - (job.get("started_at") or 0), 1),
+            },
+            "findings": result.get("findings") or result.get("alerts") or [],
+            "diagnostics": [f"DARK {kind} job {job_id}"],
+        })
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="DARK-{job_id}.html"'
+    return HTMLResponse(html, headers=headers)
+
+
+@app.get("/api/jobs/{job_id}/export.csv")
+def job_csv(job_id: str):
+    import csv
+    import io
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        result = (job.get("result") or {})
+    findings = result.get("findings") or result.get("alerts") or []
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["severity", "type", "parameter", "url", "payload", "evidence", "cvss"])
+    for f in findings:
+        w.writerow([
+            f.get("severity") or "",
+            f.get("vuln_type") or f.get("category") or "",
+            f.get("parameter") or "",
+            f.get("url") or f.get("src") or "",
+            (f.get("payload") or "")[:300],
+            (f.get("evidence") or f.get("detail") or "")[:400],
+            f.get("cvss_hint") or "",
+        ])
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="DARK-{job_id}.csv"'})
 
 
 # ---- jobs: network --------------------------------------------------------

@@ -9,7 +9,8 @@
 | Module | Tool | What it does |
 |--------|------|--------------|
 | `/api/jobs/network-scan` | **NetRecon** | Async port scan + service/OS fingerprinting |
-| `/api/jobs/web-scan` | **WebVulnX** | SQLi (3 engines) + XSS + crawler + dirbuster + audit |
+| `/api/jobs/web-scan` | **WebVulnX** | SQLi + context-aware XSS + world-surface (Git/.env/GraphQL/OpenAPI/CMS) + 19 vuln classes |
+| `/api/jobs/{id}/report` | **Report** | Executive HTML (risk score, OWASP matrix, CWE/CVSS, print-to-PDF) |
 | `/api/hash/*` | **HashBreaker** | Hash identification + dictionary/rules/mask cracking |
 | `/api/jobs/monitor-*` | **NetSentry** | ARP spoof / scans / DNS tunnel detection (live, pcap, demo) |
 
@@ -176,6 +177,22 @@ dark/
 
 All long-running scans execute as **background jobs** — the API stays
 responsive; poll `GET /api/jobs/{id}` or watch them in the dashboard.
+
+## 📄 Executive report
+
+Every finished web-scan job has a client-ready HTML report:
+
+```
+GET /api/jobs/{id}/report            # open in the browser
+GET /api/jobs/{id}/report?download=1 # save DARK-{id}.html
+GET /api/jobs/{id}/export.csv        # findings spreadsheet
+```
+
+The report includes a cover with a 0–100 risk score, OWASP Top 10 coverage
+matrix, CWE / CVSS / impact / remediation per finding, and a methodology
+appendix. Print it from the browser (**Save as PDF**) for a deliverable that
+looks like a commercial DAST report. The dashboard **Jobs** tab has a
+`report` button on every finished job.
 
 ## ⚖️ Legal
 

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DARK Assessment Report — https://shop.example.com</title>
+<style>
+:root{--bg:#070b10;--panel:#10161f;--ink:#e8f0f7;--muted:#8aa0b8;--line:#243044;--cyan:#22d3ee;--rose:#f43f5e}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.45}
+.wrap{max-width:980px;margin:0 auto;padding:28px 24px 80px}
+.cover{border:1px solid var(--line);border-radius:18px;padding:36px 40px;background:
+  radial-gradient(1200px 400px at 10% -10%,rgba(34,211,238,.12),transparent),
+  linear-gradient(180deg,#0e1622,var(--panel));margin-bottom:28px}
+.brand{letter-spacing:8px;font-size:42px;font-weight:800;margin:0}
+.brand span{color:var(--cyan)}
+.tag{color:var(--muted);letter-spacing:2px;font-size:11px;margin-top:4px}
+.conf{display:inline-block;margin-top:16px;border:1px solid var(--rose);color:#ffb4c0;
+  padding:4px 12px;border-radius:999px;font-size:11px;letter-spacing:1px}
+h1,h2,h3{margin:0 0 8px}
+h2{color:var(--cyan);font-size:18px;letter-spacing:1px;margin-top:32px;
+  border-bottom:1px solid var(--line);padding-bottom:8px}
+.target{font-size:22px;margin:18px 0 4px;word-break:break-all}
+.when{color:var(--muted);font-size:12px}
+.scorebox{display:flex;gap:28px;align-items:center;flex-wrap:wrap;margin-top:22px}
+.score{width:120px;height:120px;border-radius:50%;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;border:6px solid currentColor}
+.score b{font-size:32px;line-height:1}
+.score small{font-size:11px;letter-spacing:2px}
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.kpi{background:#0b1018;border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:110px}
+.kpi b{display:block;font-size:18px;color:var(--cyan)}
+.kpi span{font-size:11px;color:var(--muted)}
+.summary{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:18px 0}
+.warn{color:#ffb27d}
+.legend{display:flex;flex-direction:column;gap:4px;font-size:12px}
+.lg{display:flex;align-items:center;gap:6px}
+.lg i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.chart{display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.bar-row{display:grid;grid-template-columns:90px 1fr 40px;gap:8px;align-items:center;margin:4px 0;font-size:12px}
+.bar{background:#0b1018;border:1px solid var(--line);height:10px;border-radius:6px;overflow:hidden}
+.bar span{display:block;height:100%}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0 24px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#0e1622;color:var(--cyan)}
+.matrix tr.hit td:last-child{color:var(--rose);font-weight:700}
+.matrix tr.ok td:last-child{color:#34d399}
+.matrix tr.na td{color:var(--muted)}
+.toc a{color:var(--cyan);text-decoration:none}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:16px 0;page-break-inside:avoid}
+.card header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.card h3{font-size:16px;flex:1}
+.fid{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--muted)}
+.sev{color:#041018;font-weight:800;font-size:11px;padding:3px 10px;border-radius:999px;letter-spacing:1px}
+.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+.meta dt{font-size:10px;color:var(--muted);letter-spacing:1px}
+.meta dd{margin:0;font-weight:700}
+.url{font-size:12px;word-break:break-all}
+a{color:var(--cyan)}
+pre{background:#0b1018;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+  overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all}
+h4{margin:14px 0 4px;font-size:12px;letter-spacing:1px;color:var(--muted);text-transform:uppercase}
+.refs{padding-left:18px;font-size:12px}
+.foot{margin-top:40px;color:var(--muted);font-size:11px;border-top:1px solid var(--line);padding-top:14px}
+@media print{
+  body{background:#fff;color:#111}
+  .cover,.card,.summary{break-inside:avoid;border-color:#ccc}
+  a{color:#0645ad}
+  .brand span{color:#0e7490}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<section class="cover">
+  <div class="brand">D<span>A</span>RK</div>
+  <div class="tag">DETECTION &amp; ATTACK RECONNAISSANCE KIT — WEB APPLICATION ASSESSMENT</div>
+  <div class="conf">CONFIDENTIAL — AUTHORIZED TESTING ONLY</div>
+  <div class="target">https://shop.example.com</div>
+  <div class="when">Report F064346DEC · generated 2026-10-07 16:34 UTC"
+        · scan duration 96.4s</div>
+  <div class="scorebox">
+    <div class="score" style="color:#f43f5e">
+      <b>76</b><small>CRITICAL</small>
+    </div>
+    <div class="chart"><svg viewBox="0 0 100 100" width="140" height="140"><circle cx="50" cy="50" r="42" fill="none" stroke="#f43f5e" stroke-width="12" stroke-dasharray="75.40 188.50" transform="rotate(-90.00 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#f97316" stroke-width="12" stroke-dasharray="37.70 226.20" transform="rotate(12.86 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#fbbf24" stroke-width="12" stroke-dasharray="75.40 188.50" transform="rotate(64.29 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#22d3ee" stroke-width="12" stroke-dasharray="75.40 188.50" transform="rotate(167.14 50 50)"/></svg><div class="legend"><span class="lg"><i style="background:#f43f5e"></i>Critical 2</span><span class="lg"><i style="background:#f97316"></i>High 1</span><span class="lg"><i style="background:#fbbf24"></i>Medium 2</span><span class="lg"><i style="background:#22d3ee"></i>Low 2</span></div></div>
+    <div style="flex:1;min-width:220px"><div class="bar-row"><span class="bar-lab">Critical</span><span class="bar"><span style="width:100%;background:#f43f5e"></span></span><span class="bar-n">2</span></div><div class="bar-row"><span class="bar-lab">High</span><span class="bar"><span style="width:50%;background:#f97316"></span></span><span class="bar-n">1</span></div><div class="bar-row"><span class="bar-lab">Medium</span><span class="bar"><span style="width:100%;background:#fbbf24"></span></span><span class="bar-n">2</span></div><div class="bar-row"><span class="bar-lab">Low</span><span class="bar"><span style="width:100%;background:#22d3ee"></span></span><span class="bar-n">2</span></div><div class="bar-row"><span class="bar-lab">Info</span><span class="bar"><span style="width:0%;background:#60a5fa"></span></span><span class="bar-n">0</span></div></div>
+  </div>
+  <div class="kpis"><div class='kpi'><b>84</b><span>URLs crawled</span></div><div class='kpi'><b>11</b><span>Forms</span></div><div class='kpi'><b>37</b><span>Parameters</span></div><div class='kpi'><b>4,210</b><span>Requests</span></div><div class='kpi'><b>13</b><span>Modules</span></div><div class='kpi'><b>7</b><span>Findings</span></div></div>
+</section>
+
+<h2>1. Executive summary</h2>
+<div class="summary">DARK assessed <b>https://shop.example.com</b> and confirmed <b>7</b> finding(s) (7 actionable; 2 Critical, 1 High) after 4,210 requests across 84 URL(s). Overall risk rating: <b style='color:#f43f5e'>CRITICAL</b> (score 76/100). The highest-impact issue is <b>SQL Injection (Error-Based)</b> on <code>https://shop.example.com/product?id=1</code>.</div>
+
+<h2>2. OWASP Top 10 coverage</h2>
+<p style="color:var(--muted);font-size:13px">Every class DARK has a module for is marked
+tested. “Tested — none confirmed” means the checks ran and did not meet the
+proof threshold — not that the class is theoretically impossible.</p>
+<table class='matrix'><thead><tr><th>OWASP Top 10:2021</th><th>Tested</th><th>Result</th></tr></thead><tbody><tr class='hit'><td>A01:2021 Broken Access Control</td><td>Yes</td><td>2 finding(s)</td></tr><tr class='hit'><td>A02:2021 Cryptographic Failures</td><td>Yes</td><td>1 finding(s)</td></tr><tr class='hit'><td>A03:2021 Injection</td><td>Yes</td><td>2 finding(s)</td></tr><tr class='ok'><td>A04:2021 Insecure Design</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='hit'><td>A05:2021 Security Misconfiguration</td><td>Yes</td><td>2 finding(s)</td></tr><tr class='ok'><td>A06:2021 Vulnerable and Outdated Components</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='ok'><td>A07:2021 Identification and Authentication Failures</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='ok'><td>A08:2021 Software and Data Integrity Failures</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='na'><td>A09:2021 Security Logging and Monitoring Failures</td><td>—</td><td>Not in scope</td></tr><tr class='ok'><td>A10:2021 SSRF</td><td>Yes</td><td>Tested — none confirmed</td></tr></tbody></table>
+
+<h2>3. Findings index</h2>
+<ol class="toc"><li><a href='#DARK-001'>DARK-001</a> <span class='sev' style='background:#f43f5e'>Critical</span> SQL Injection (Error-Based)</li><li><a href='#DARK-002'>DARK-002</a> <span class='sev' style='background:#f43f5e'>Critical</span> Source-Control Metadata Exposed</li><li><a href='#DARK-003'>DARK-003</a> <span class='sev' style='background:#f97316'>High</span> Reflected XSS (executable — script)</li><li><a href='#DARK-004'>DARK-004</a> <span class='sev' style='background:#fbbf24'>Medium</span> GraphQL Introspection Enabled</li><li><a href='#DARK-005'>DARK-005</a> <span class='sev' style='background:#fbbf24'>Medium</span> CORS Misconfiguration</li><li><a href='#DARK-006'>DARK-006</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-007'>DARK-007</a> <span class='sev' style='background:#22d3ee'>Low</span> Insecure Cookie Flags</li></ol>
+
+<h2>4. Technical findings</h2>
+
+<article class="card" id="DARK-001">
+  <header>
+    <span class="fid">DARK-001</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>SQL Injection (Error-Based)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-89</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>id</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/product?id=1">https://shop.example.com/product?id=1</a></p>
+  <h4>Impact</h4>
+  <p>An attacker can read, modify or destroy the database, bypass authentication, and in many stacks escalate to remote code execution via stacked queries or INTO OUTFILE.</p>
+  <h4>What the scanner observed</h4><p>Error-based SQLi confirmed on the product identifier.</p>
+  <h4>Evidence</h4><pre>MySQL: You have an error in your SQL syntax</pre>
+  <h4>Payload</h4><pre>1&#x27;</pre>
+  <h4>Remediation</h4>
+  <p>Use parameterised queries / prepared statements on every SQL call. Never concatenate user input into SQL. Apply least-privilege DB accounts and disable stacked queries where the driver allows it.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/SQL_Injection">https://owasp.org/www-community/attacks/SQL_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-002">
+  <header>
+    <span class="fid">DARK-002</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>Source-Control Metadata Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.6</dd></div>
+    <div><dt>CWE</dt><dd>CWE-527</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/.git/HEAD">https://shop.example.com/.git/HEAD</a></p>
+  <h4>Impact</h4>
+  <p>.git / .svn on a web root lets an attacker reconstruct the entire repository — source, secrets, history.</p>
+  
+  <h4>Evidence</h4><pre>ref: refs/heads/main</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block /.git and /.svn at the reverse proxy. Rotate any credential that ever lived in that repo.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/vulnerabilities/Unprotected_Directory">https://owasp.org/www-community/vulnerabilities/Unprotected_Directory</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-003">
+  <header>
+    <span class="fid">DARK-003</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Reflected XSS (executable — script)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>q</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/search">https://shop.example.com/search</a></p>
+  <h4>Impact</h4>
+  <p>Injected input reached an executable HTML/JS context. A victim who opens the crafted URL runs attacker script in their session.</p>
+  
+  <h4>Evidence</h4><pre>marker executed as JS source inside a &lt;script&gt; block</pre>
+  <h4>Payload</h4><pre>&lt;script&gt;var dkxab12=1&lt;/script&gt;</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output for the exact context (HTML body, attribute, JS string, URL). Add CSP without &#x27;unsafe-inline&#x27;. HttpOnly cookies.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-004">
+  <header>
+    <span class="fid">DARK-004</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>GraphQL Introspection Enabled</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.3</dd></div>
+    <div><dt>CWE</dt><dd>CWE-200</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/graphql">https://shop.example.com/graphql</a></p>
+  <h4>Impact</h4>
+  <p>The full schema (types, mutations, hidden fields) is public — attackers map the API without source code.</p>
+  
+  <h4>Evidence</h4><pre>__schema returned (queryType=Query, 42 types)</pre>
+  <h4>Payload</h4><pre>{__schema{queryType{name}}}</pre>
+  <h4>Remediation</h4>
+  <p>Disable introspection in production. Add query depth/cost limits and authentication on the endpoint.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-graphql-security/">https://owasp.org/www-project-graphql-security/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-005">
+  <header>
+    <span class="fid">DARK-005</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>CORS Misconfiguration</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>6.5</dd></div>
+    <div><dt>CWE</dt><dd>CWE-942</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/api/me">https://shop.example.com/api/me</a></p>
+  <h4>Impact</h4>
+  <p>Any website can read authenticated responses — data theft from the victim&#x27;s session.</p>
+  
+  <h4>Evidence</h4><pre>ACAO: https://dark-cors-check.example | ACAC: true</pre>
+  <h4>Payload</h4><pre>Origin: https://dark-cors-check.example</pre>
+  <h4>Remediation</h4>
+  <p>Never reflect Origin blindly. Never combine ACAO:* with credentials. Allow-list exact trusted origins.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://portswigger.net/web-security/cors">https://portswigger.net/web-security/cors</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-006">
+  <header>
+    <span class="fid">DARK-006</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>Content-Security-Policy</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/">https://shop.example.com/</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  
+  <h4>Evidence</h4><pre>header absent</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-007">
+  <header>
+    <span class="fid">DARK-007</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Insecure Cookie Flags</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>4.3</dd></div>
+    <div><dt>CWE</dt><dd>CWE-614</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>session</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="https://shop.example.com/">https://shop.example.com/</a></p>
+  <h4>Impact</h4>
+  <p>Session cookies can leak over HTTP or to JavaScript (XSS → session theft).</p>
+  
+  <h4>Evidence</h4><pre>Set-Cookie without HttpOnly, Secure, SameSite</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set Secure, HttpOnly and SameSite=Lax (Strict for session cookies) on every authentication cookie.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/controls/SecureCookieAttribute">https://owasp.org/www-community/controls/SecureCookieAttribute</a></li></ul>
+</article>
+
+
+<h2>5. Methodology &amp; coverage</h2>
+<div class="summary">
+  <p><b>Modules executed:</b> param-discovery, misconfig-audit, sqli, xss-deep, dirbuster, lfi, ssti, cmdi, cors, xxe, ssrf, jwt, world-surface</p>
+  <p><b>Seed URLs:</b> https://shop.example.com/, https://shop.example.com/login</p>
+  <p><b>HTTP requests:</b> 4,210
+     · errors 0
+     · blocked 2
+     · WAF pages 0</p>
+  <p>DARK reports a finding only when a unique artefact proves it (SQL error
+     signature, executable XSS context, file contents, schema document, etc.).
+     Reflections that cannot execute, JSON/API bodies, and mere HTTP 200s on
+     interesting paths are not raised as High/Critical.</p>
+  
+</div>
+
+<div class="foot">
+  DARK — Detection &amp; Attack Reconnaissance Kit · Report F064346DEC ·
+  This document is intended for the system owner. Scanning systems without
+  written authorisation is illegal. Print this page to produce a PDF.
+</div>
+</div>
+</body>
+</html>

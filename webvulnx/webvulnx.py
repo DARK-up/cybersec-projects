@@ -41,6 +41,10 @@ from html.parser import HTMLParser
 import requests
 import urllib3
 
+import xss_deep as xd
+import worldscan as ws
+import report as dreport
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BANNER = r"""
@@ -204,6 +208,7 @@ class ScanState:
     seeds_used: List[str] = field(default_factory=list)
     diagnostics: List[str] = field(default_factory=list)        # why 0 findings
     degraded: bool = False                                      # blocked/WAF
+    xss_deep: Dict[str, Any] = field(default_factory=dict)      # deep XSS engine stats
 
     def note(self, msg: str) -> None:
         if msg not in self.diagnostics:
@@ -1676,41 +1681,31 @@ def write_json_report(state: ScanState, path: str,
     ok(f"JSON report: {path}")
 
 
-def write_html_report(state: ScanState, path: str) -> None:
-    sev_color = {"Critical": "#ff4d4d", "High": "#ff7a45", "Medium": "#faad14",
-                 "Low": "#36cfc9", "Info": "#597ef7"}
-    rows = "".join(
-        f"<tr><td style='color:{sev_color.get(f.severity,'#ccc')};font-weight:600'>{f.severity}</td>"
-        f"<td>{f.vuln_type}</td><td>{f.parameter or '-'}</td>"
-        f"<td><a style='color:#58a6ff' href='{f.url}'>{f.url}</a></td>"
-        f"<td><code>{f.payload or '-'}</code></td>"
-        f"<td><code>{(f.evidence or '-')[:120]}</code></td></tr>"
-        for f in sorted(state.findings,
-                        key=lambda x: ["Critical", "High", "Medium", "Low", "Info"].index(x.severity))
-    )
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>WebVulnX Report</title>
-<style>
-body{{font-family:Segoe UI,Arial;background:#0d1117;color:#c9d1d9;padding:24px}}
-h1{{color:#58a6ff}} h2{{color:#7ee787}}
-table{{border-collapse:collapse;width:100%;margin-top:12px}}
-th,td{{border:1px solid #30363d;padding:8px;font-size:13px;text-align:left;vertical-align:top}}
-th{{background:#161b22;color:#58a6ff}} code{{color:#7ee787}}
-.meta{{color:#8b949e}} .badge{{display:inline-block;padding:2px 10px;border-radius:10px;
-background:#161b22;margin-right:8px;border:1px solid #30363d}}
-</style></head><body>
-<h1>WebVulnX v2.0 &mdash; Vulnerability Report</h1>
-<p class="meta">Target: <b>{state.base_url}</b> | Generated: {datetime.now(timezone.utc).isoformat()}</p>
-<p>
-<span class="badge">URLs: {len(state.crawled_urls)}</span>
-<span class="badge">Forms: {len(state.forms)}</span>
-<span class="badge">Findings: {len(state.findings)}</span>
-</p>
-<h2>Findings</h2>
-<table><tr><th>Severity</th><th>Type</th><th>Parameter</th><th>URL</th><th>Payload</th><th>Evidence</th></tr>
-{rows or '<tr><td colspan=6>No findings 🎉</td></tr>'}
-</table></body></html>"""
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(html)
+def write_html_report(state: ScanState, path: str,
+                      client_stats: Optional[Dict[str, Any]] = None) -> None:
+    """World-class executive HTML report (print-to-PDF ready)."""
+    cs = client_stats or {}
+    cov = state.coverage()
+    payload = {
+        "target": state.base_url,
+        "stats": {
+            "urls_crawled": cov["urls_crawled"],
+            "forms": cov["forms_found"],
+            "parameters": cov["parameters"],
+            "findings": len(state.findings),
+            "requests_sent": cs.get("requests", 0),
+            "connection_errors": cs.get("errors", 0),
+            "blocked_responses": cs.get("blocked", 0),
+            "waf_challenge_pages": cs.get("waf_hits", 0),
+            "modules_run": cov["modules_run"],
+            "seed_urls": cov["seed_urls"],
+            "degraded": state.degraded,
+            "duration_s": round(time.time() - state.start_ts, 2),
+        },
+        "findings": [asdict(f) for f in state.findings],
+        "diagnostics": state.diagnostics,
+    }
+    dreport.write_html_report(path, payload)
     ok(f"HTML report: {path}")
 
 
@@ -1777,6 +1772,23 @@ def build_parser() -> argparse.ArgumentParser:
                         "when a sub-page URL is given (strict single-URL scope)")
     p.add_argument("--no-probe-paths", action="store_true",
                    help="Skip probing common entry points (/login, /admin, /search …)")
+    # ---- deep XSS engine -------------------------------------------------
+    p.add_argument("--xss-legacy", action="store_true",
+                   help="Use the old simple XSS checks instead of the "
+                        "context-aware deep engine")
+    p.add_argument("--xss-payload-limit", type=int, default=14,
+                   help="Curated payloads tried per reflection context [14]")
+    p.add_argument("--xss-brute", action="store_true",
+                   help="Also try the vendored PayloadsAllTheThings vectors "
+                        "(1,622 community payloads, marker-verified)")
+    p.add_argument("--xss-brute-limit", type=int, default=250,
+                   help="How many community vectors to try per point [250]")
+    p.add_argument("--no-xss-headers", action="store_true",
+                   help="Skip XSS testing of HTTP headers (UA/Referer/XFF/Origin…)")
+    p.add_argument("--no-xss-stored", action="store_true",
+                   help="Skip the stored/blind XSS marker sweep")
+    p.add_argument("--no-xss-dom", action="store_true",
+                   help="Skip static DOM XSS source→sink analysis of site JS")
     p.add_argument("--json", metavar="FILE", help="JSON report path")
     p.add_argument("--html", metavar="FILE", help="HTML report path")
     return p
@@ -1865,7 +1877,20 @@ def main() -> None:
             client, state,
             time_delay=None if args.no_time_blind else args.time_blind).run)
     if args.full or args.xss:
-        run_module("xss", XssScanner(client, state).run)
+        if args.xss_legacy:
+            run_module("xss-legacy", XssScanner(client, state).run)
+        else:
+            deep = xd.DeepXssScanner(
+                client, state, Finding,
+                payload_limit=args.xss_payload_limit,
+                brute=args.xss_brute,
+                brute_limit=args.xss_brute_limit,
+                test_headers=not args.no_xss_headers,
+                stored_sweep=not args.no_xss_stored,
+                dom_analysis=not args.no_xss_dom,
+            )
+            run_module("xss-deep", deep.run)
+            state.xss_deep = deep.stats()
     if args.full or args.dirs:
         run_module("dirbuster", DirBuster(
             client, state, load_wordlist(args.wordlist)).run, args.url)
@@ -1893,6 +1918,8 @@ def main() -> None:
             run_module(nm, fn)
     if args.default_creds:
         run_module("default-creds", adv.scan_default_creds)
+    if args.full or args.advanced or args.audit or args.dirs:
+        run_module("world-surface", ws.WorldScanner(client, state, Finding).run)
 
     # ---- Coverage / why-nothing-found diagnosis ---------------------------
     st = client.stats
@@ -1909,6 +1936,19 @@ def main() -> None:
     print(f"  Modules executed   : {len(state.modules_run)} "
           f"({', '.join(state.modules_run[:8])}{' …' if len(state.modules_run) > 8 else ''})")
     print(f"  HTTP requests sent : {st['requests']}")
+    if state.xss_deep:
+        d = state.xss_deep
+        print(f"  Deep XSS engine    : {d.get('probes_sent', 0)} context probes, "
+              f"{d.get('payloads_sent', 0)} payloads, "
+              f"{d.get('markers_planted', 0)} stored markers planted")
+        cs = d.get("contexts_seen") or {}
+        if cs:
+            print(f"  Reflection contexts: "
+                  + ", ".join(f"{k}×{v}" for k, v in
+                              sorted(cs.items(), key=lambda kv: -kv[1])[:8]))
+        conf = d.get("confirmed_points") or []
+        print(f"  Executable XSS at  : {len(conf)} injection point(s)"
+              + (f" -> {'; '.join(conf[:3])}" if conf else ""))
     print(f"  Connection errors  : {st['errors']}")
     print(f"  Blocked (4xx/5xx)  : {st['blocked']}  | WAF/challenge pages: {st['waf_hits']}")
     top = sorted(st["statuses"].items(), key=lambda kv: -kv[1])[:6]
@@ -1978,7 +2018,7 @@ def main() -> None:
     if args.json:
         write_json_report(state, args.json, client_stats=st)
     if args.html:
-        write_html_report(state, args.html)
+        write_html_report(state, args.html, client_stats=st)
 
 
 if __name__ == "__main__":

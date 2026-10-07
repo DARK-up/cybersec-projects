@@ -66,10 +66,23 @@ request count that backs the claim.
 
 - Tests query parameters, form fields, and numeric URL path segments (`/item/123`)
 
-### 🎯 Reflected XSS Engine
-- 14 context-aware polyglot payloads with encoding bypasses
-- Distinguishes **executable XSS** (script actually runs) from **reflected-only**
-  (exploitability depends on context)
+### 🎯 Deep XSS Engine (context-aware, zero-FP)
+- HTML/JS/CSS tokenizer classifies the reflection context (body, attribute,
+  script source, JS string, textarea, comment, JSON, …)
+- Capability probe (`<>"'` etc.) then **selects** matching payloads — no blind spray
+- Execution is verified by re-classifying the unique marker after injection.
+  A `<script>` trapped in a `<textarea>` or HTML comment is **not** reported
+- Surfaces: query params, forms, JSON bodies, URL path segments, 18 HTTP headers,
+  cookies, stored-marker sweep, static DOM source→sink analysis
+- 59 curated payloads + 1,622 vendored PayloadsAllTheThings vectors (MIT, Swissky)
+  used only when `--xss-brute` is on, and only if they can carry a verifiable marker
+- `--xss-legacy` falls back to the old simple checks
+
+### 🌍 World-surface probes (proof-based)
+Confirmed by a unique artefact, never by a mere HTTP 200:
+`.git/HEAD`, `.env` secrets, phpinfo, Spring Actuator, OpenAPI/Swagger,
+GraphQL introspection, WordPress user enum / xmlrpc, S3 listing, Django DEBUG,
+backup/swap files with source tokens, clickjacking (no frame-ancestors).
 
 ### 📂 Directory Brute-Force
 - 200+ high-value paths (`.git`, `.env`, backups, admin panels, actuator, swagger, ...)
@@ -128,7 +141,13 @@ Expected findings on the lab:
 
 - **Console**: color-coded severity tags + evidence lines
 - **JSON**: machine-readable output (SIEM-friendly)
-- **HTML**: professional dark-theme report for stakeholders
+- **HTML executive report**: cover page, risk score 0–100, OWASP Top 10 matrix,
+  CWE/CVSS/impact/remediation per finding, methodology appendix.
+  Open in a browser and **Print → Save as PDF** for a client-ready deliverable.
+
+```bash
+python3 webvulnx.py -u https://target.example --full --html reports/DARK.html
+```
 
 ## ⚖️ Legal
 

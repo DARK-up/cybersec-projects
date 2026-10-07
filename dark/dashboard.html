@@ -392,6 +392,13 @@ function renderJob(j, outEl) {
               '</td><td>' + esc((f.evidence || '-').slice(0, 90)) + '</td></tr>';
     }
     html += '</table>';
+    html += '\\n\\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
+            encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a> ';
+    html += '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
+            encodeURIComponent(j.id) + '/report?download=1">⬇ HTML</a> ';
+    html += '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
+            encodeURIComponent(j.id) + '/export.csv">⬇ CSV</a>';
+    html += '<div style="font-size:11px;color:#7d90a8;margin-top:6px">Open the report → Print → Save as PDF for a client-ready deliverable.</div>';
   } else if (r.results && r.results.length && r.results[0].hash_type !== undefined) {  // hash crack (new format)
     const s = r.summary || {};
     html += '\n<b>── CRACK RESULT ──</b>\n';
@@ -627,7 +634,12 @@ async function loadJobs() {
               '<td>' + dur + '</td>' +
               '<td style="font-size:11px">' + prog + '</td>' +
               '<td><button class="run" style="padding:4px 12px;font-size:11px" ' +
-              "onclick=\"viewJob('" + j.id + "')\">view</button></td></tr>";
+              "onclick=\"viewJob('" + j.id + "')\">view</button>" +
+              (j.status === 'done'
+                ? ' <a class="run" style="padding:4px 12px;font-size:11px;text-decoration:none;display:inline-block" href="/api/jobs/' +
+                  j.id + '/report" target="_blank">report</a>'
+                : '') +
+              '</td></tr>';
     }
     html += '</table>';
     $('jobs-table').innerHTML = html;
