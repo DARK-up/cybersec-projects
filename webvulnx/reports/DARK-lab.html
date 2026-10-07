@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DARK Assessment Report — http://127.0.0.1:8080</title>
+<style>
+:root{--bg:#070b10;--panel:#10161f;--ink:#e8f0f7;--muted:#8aa0b8;--line:#243044;--cyan:#22d3ee;--rose:#f43f5e}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.45}
+.wrap{max-width:980px;margin:0 auto;padding:28px 24px 80px}
+.cover{border:1px solid var(--line);border-radius:18px;padding:36px 40px;background:
+  radial-gradient(1200px 400px at 10% -10%,rgba(34,211,238,.12),transparent),
+  linear-gradient(180deg,#0e1622,var(--panel));margin-bottom:28px}
+.brand{letter-spacing:8px;font-size:42px;font-weight:800;margin:0}
+.brand span{color:var(--cyan)}
+.tag{color:var(--muted);letter-spacing:2px;font-size:11px;margin-top:4px}
+.conf{display:inline-block;margin-top:16px;border:1px solid var(--rose);color:#ffb4c0;
+  padding:4px 12px;border-radius:999px;font-size:11px;letter-spacing:1px}
+h1,h2,h3{margin:0 0 8px}
+h2{color:var(--cyan);font-size:18px;letter-spacing:1px;margin-top:32px;
+  border-bottom:1px solid var(--line);padding-bottom:8px}
+.target{font-size:22px;margin:18px 0 4px;word-break:break-all}
+.when{color:var(--muted);font-size:12px}
+.scorebox{display:flex;gap:28px;align-items:center;flex-wrap:wrap;margin-top:22px}
+.score{width:120px;height:120px;border-radius:50%;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;border:6px solid currentColor}
+.score b{font-size:32px;line-height:1}
+.score small{font-size:11px;letter-spacing:2px}
+.kpis{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.kpi{background:#0b1018;border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:110px}
+.kpi b{display:block;font-size:18px;color:var(--cyan)}
+.kpi span{font-size:11px;color:var(--muted)}
+.summary{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:18px 0}
+.warn{color:#ffb27d}
+.legend{display:flex;flex-direction:column;gap:4px;font-size:12px}
+.lg{display:flex;align-items:center;gap:6px}
+.lg i{width:10px;height:10px;border-radius:2px;display:inline-block}
+.chart{display:flex;gap:24px;align-items:center;flex-wrap:wrap}
+.bar-row{display:grid;grid-template-columns:90px 1fr 40px;gap:8px;align-items:center;margin:4px 0;font-size:12px}
+.bar{background:#0b1018;border:1px solid var(--line);height:10px;border-radius:6px;overflow:hidden}
+.bar span{display:block;height:100%}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:12px 0 24px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#0e1622;color:var(--cyan)}
+.matrix tr.hit td:last-child{color:var(--rose);font-weight:700}
+.matrix tr.ok td:last-child{color:#34d399}
+.matrix tr.na td{color:var(--muted)}
+.toc a{color:var(--cyan);text-decoration:none}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:16px 0;page-break-inside:avoid}
+.card header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.card h3{font-size:16px;flex:1}
+.fid{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--muted)}
+.sev{color:#041018;font-weight:800;font-size:11px;padding:3px 10px;border-radius:999px;letter-spacing:1px}
+.meta{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+.meta dt{font-size:10px;color:var(--muted);letter-spacing:1px}
+.meta dd{margin:0;font-weight:700}
+.url{font-size:12px;word-break:break-all}
+a{color:var(--cyan)}
+pre{background:#0b1018;border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+  overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all}
+h4{margin:14px 0 4px;font-size:12px;letter-spacing:1px;color:var(--muted);text-transform:uppercase}
+.refs{padding-left:18px;font-size:12px}
+.foot{margin-top:40px;color:var(--muted);font-size:11px;border-top:1px solid var(--line);padding-top:14px}
+@media print{
+  body{background:#fff;color:#111}
+  .cover,.card,.summary{break-inside:avoid;border-color:#ccc}
+  a{color:#0645ad}
+  .brand span{color:#0e7490}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<section class="cover">
+  <div class="brand">D<span>A</span>RK</div>
+  <div class="tag">DETECTION &amp; ATTACK RECONNAISSANCE KIT — WEB APPLICATION ASSESSMENT</div>
+  <div class="conf">CONFIDENTIAL — AUTHORIZED TESTING ONLY</div>
+  <div class="target">http://127.0.0.1:8080</div>
+  <div class="when">Report 00A8E64760 · generated 2026-10-07 16:35 UTC"
+        · scan duration 6.71s</div>
+  <div class="scorebox">
+    <div class="score" style="color:#f43f5e">
+      <b>100</b><small>CRITICAL</small>
+    </div>
+    <div class="chart"><svg viewBox="0 0 100 100" width="140" height="140"><circle cx="50" cy="50" r="42" fill="none" stroke="#f43f5e" stroke-width="12" stroke-dasharray="40.60 223.30" transform="rotate(-90.00 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#f97316" stroke-width="12" stroke-dasharray="54.13 209.76" transform="rotate(-34.62 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#fbbf24" stroke-width="12" stroke-dasharray="81.20 182.70" transform="rotate(39.23 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#22d3ee" stroke-width="12" stroke-dasharray="67.67 196.23" transform="rotate(150.00 50 50)"/><circle cx="50" cy="50" r="42" fill="none" stroke="#60a5fa" stroke-width="12" stroke-dasharray="20.30 243.59" transform="rotate(242.31 50 50)"/></svg><div class="legend"><span class="lg"><i style="background:#f43f5e"></i>Critical 6</span><span class="lg"><i style="background:#f97316"></i>High 8</span><span class="lg"><i style="background:#fbbf24"></i>Medium 12</span><span class="lg"><i style="background:#22d3ee"></i>Low 10</span><span class="lg"><i style="background:#60a5fa"></i>Info 3</span></div></div>
+    <div style="flex:1;min-width:220px"><div class="bar-row"><span class="bar-lab">Critical</span><span class="bar"><span style="width:50%;background:#f43f5e"></span></span><span class="bar-n">6</span></div><div class="bar-row"><span class="bar-lab">High</span><span class="bar"><span style="width:66%;background:#f97316"></span></span><span class="bar-n">8</span></div><div class="bar-row"><span class="bar-lab">Medium</span><span class="bar"><span style="width:100%;background:#fbbf24"></span></span><span class="bar-n">12</span></div><div class="bar-row"><span class="bar-lab">Low</span><span class="bar"><span style="width:83%;background:#22d3ee"></span></span><span class="bar-n">10</span></div><div class="bar-row"><span class="bar-lab">Info</span><span class="bar"><span style="width:25%;background:#60a5fa"></span></span><span class="bar-n">3</span></div></div>
+  </div>
+  <div class="kpis"><div class='kpi'><b>19</b><span>URLs crawled</span></div><div class='kpi'><b>2</b><span>Forms</span></div><div class='kpi'><b>11</b><span>Parameters</span></div><div class='kpi'><b>1,547</b><span>Requests</span></div><div class='kpi'><b>22</b><span>Modules</span></div><div class='kpi'><b>39</b><span>Findings</span></div></div>
+</section>
+
+<h2>1. Executive summary</h2>
+<div class="summary">DARK assessed <b>http://127.0.0.1:8080</b> and confirmed <b>39</b> finding(s) (36 actionable; 6 Critical, 8 High) after 1,547 requests across 19 URL(s). Overall risk rating: <b style='color:#f43f5e'>CRITICAL</b> (score 100/100). The highest-impact issue is <b>SQL Injection (Error-Based)</b> on <code>http://127.0.0.1:8080/page?id=1</code>.</div>
+
+<h2>2. OWASP Top 10 coverage</h2>
+<p style="color:var(--muted);font-size:13px">Every class DARK has a module for is marked
+tested. “Tested — none confirmed” means the checks ran and did not meet the
+proof threshold — not that the class is theoretically impossible.</p>
+<table class='matrix'><thead><tr><th>OWASP Top 10:2021</th><th>Tested</th><th>Result</th></tr></thead><tbody><tr class='hit'><td>A01:2021 Broken Access Control</td><td>Yes</td><td>13 finding(s)</td></tr><tr class='hit'><td>A02:2021 Cryptographic Failures</td><td>Yes</td><td>1 finding(s)</td></tr><tr class='hit'><td>A03:2021 Injection</td><td>Yes</td><td>7 finding(s)</td></tr><tr class='hit'><td>A04:2021 Insecure Design</td><td>Yes</td><td>1 finding(s)</td></tr><tr class='hit'><td>A05:2021 Security Misconfiguration</td><td>Yes</td><td>12 finding(s)</td></tr><tr class='hit'><td>A06:2021 Vulnerable and Outdated Components</td><td>Yes</td><td>1 finding(s)</td></tr><tr class='ok'><td>A07:2021 Identification and Authentication Failures</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='ok'><td>A08:2021 Software and Data Integrity Failures</td><td>Yes</td><td>Tested — none confirmed</td></tr><tr class='na'><td>A09:2021 Security Logging and Monitoring Failures</td><td>—</td><td>Not in scope</td></tr><tr class='hit'><td>A10:2021 SSRF</td><td>Yes</td><td>1 finding(s)</td></tr></tbody></table>
+
+<h2>3. Findings index</h2>
+<ol class="toc"><li><a href='#DARK-001'>DARK-001</a> <span class='sev' style='background:#f43f5e'>Critical</span> SQL Injection (Error-Based)</li><li><a href='#DARK-002'>DARK-002</a> <span class='sev' style='background:#f43f5e'>Critical</span> SQL Injection (Error-Based)</li><li><a href='#DARK-003'>DARK-003</a> <span class='sev' style='background:#f43f5e'>Critical</span> Local File Inclusion / Path Traversal</li><li><a href='#DARK-004'>DARK-004</a> <span class='sev' style='background:#f43f5e'>Critical</span> Server-Side Template Injection (SSTI)</li><li><a href='#DARK-005'>DARK-005</a> <span class='sev' style='background:#f43f5e'>Critical</span> OS Command Injection</li><li><a href='#DARK-006'>DARK-006</a> <span class='sev' style='background:#f43f5e'>Critical</span> Environment / Secrets File Exposed</li><li><a href='#DARK-007'>DARK-007</a> <span class='sev' style='background:#f97316'>High</span> SQL Injection (Boolean-Based Blind)</li><li><a href='#DARK-008'>DARK-008</a> <span class='sev' style='background:#f97316'>High</span> Reflected XSS (executable — script)</li><li><a href='#DARK-009'>DARK-009</a> <span class='sev' style='background:#f97316'>High</span> Reflected XSS (executable — script)</li><li><a href='#DARK-010'>DARK-010</a> <span class='sev' style='background:#f97316'>High</span> Sensitive Path Exposed</li><li><a href='#DARK-011'>DARK-011</a> <span class='sev' style='background:#f97316'>High</span> Sensitive Path Exposed</li><li><a href='#DARK-012'>DARK-012</a> <span class='sev' style='background:#f97316'>High</span> Known-Vulnerable Software Version</li><li><a href='#DARK-013'>DARK-013</a> <span class='sev' style='background:#f97316'>High</span> Server-Side Request Forgery (SSRF)</li><li><a href='#DARK-014'>DARK-014</a> <span class='sev' style='background:#f97316'>High</span> Weak / Tamperable JWT</li><li><a href='#DARK-015'>DARK-015</a> <span class='sev' style='background:#fbbf24'>Medium</span> Dangerous HTTP Method Enabled</li><li><a href='#DARK-016'>DARK-016</a> <span class='sev' style='background:#fbbf24'>Medium</span> Dangerous HTTP Method Enabled</li><li><a href='#DARK-017'>DARK-017</a> <span class='sev' style='background:#fbbf24'>Medium</span> Dangerous HTTP Method Enabled</li><li><a href='#DARK-018'>DARK-018</a> <span class='sev' style='background:#fbbf24'>Medium</span> Sensitive Path Exposed</li><li><a href='#DARK-019'>DARK-019</a> <span class='sev' style='background:#fbbf24'>Medium</span> Sensitive Path Exposed</li><li><a href='#DARK-020'>DARK-020</a> <span class='sev' style='background:#fbbf24'>Medium</span> Sensitive Path Exposed</li><li><a href='#DARK-021'>DARK-021</a> <span class='sev' style='background:#fbbf24'>Medium</span> Sensitive Path Exposed</li><li><a href='#DARK-022'>DARK-022</a> <span class='sev' style='background:#fbbf24'>Medium</span> Open Redirect</li><li><a href='#DARK-023'>DARK-023</a> <span class='sev' style='background:#fbbf24'>Medium</span> Open Redirect</li><li><a href='#DARK-024'>DARK-024</a> <span class='sev' style='background:#fbbf24'>Medium</span> CORS Misconfiguration</li><li><a href='#DARK-025'>DARK-025</a> <span class='sev' style='background:#fbbf24'>Medium</span> Directory Listing Enabled</li><li><a href='#DARK-026'>DARK-026</a> <span class='sev' style='background:#fbbf24'>Medium</span> CSRF — Missing Anti-CSRF Token</li><li><a href='#DARK-027'>DARK-027</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-028'>DARK-028</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-029'>DARK-029</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-030'>DARK-030</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-031'>DARK-031</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-032'>DARK-032</a> <span class='sev' style='background:#22d3ee'>Low</span> Missing Security Header</li><li><a href='#DARK-033'>DARK-033</a> <span class='sev' style='background:#22d3ee'>Low</span> Input reflected without execution (context-dependent)</li><li><a href='#DARK-034'>DARK-034</a> <span class='sev' style='background:#22d3ee'>Low</span> Input reflected without execution (context-dependent)</li><li><a href='#DARK-035'>DARK-035</a> <span class='sev' style='background:#22d3ee'>Low</span> Input reflected without execution (context-dependent)</li><li><a href='#DARK-036'>DARK-036</a> <span class='sev' style='background:#22d3ee'>Low</span> Clickjacking (missing frame protection)</li><li><a href='#DARK-037'>DARK-037</a> <span class='sev' style='background:#60a5fa'>Info</span> Server Banner Disclosure</li><li><a href='#DARK-038'>DARK-038</a> <span class='sev' style='background:#60a5fa'>Info</span> Technology Disclosure</li><li><a href='#DARK-039'>DARK-039</a> <span class='sev' style='background:#60a5fa'>Info</span> Information File Present</li></ol>
+
+<h2>4. Technical findings</h2>
+
+<article class="card" id="DARK-001">
+  <header>
+    <span class="fid">DARK-001</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>SQL Injection (Error-Based)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-89</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>id</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/page?id=1">http://127.0.0.1:8080/page?id=1</a></p>
+  <h4>Impact</h4>
+  <p>An attacker can read, modify or destroy the database, bypass authentication, and in many stacks escalate to remote code execution via stacked queries or INTO OUTFILE.</p>
+  <h4>What the scanner observed</h4><p>Server returned a database error message indicating the input is concatenated into a SQL query unsafely.</p>
+  <h4>Evidence</h4><pre>DBMS signature: MySQL</pre>
+  <h4>Payload</h4><pre>&#x27;</pre>
+  <h4>Remediation</h4>
+  <p>Use parameterised queries / prepared statements on every SQL call. Never concatenate user input into SQL. Apply least-privilege DB accounts and disable stacked queries where the driver allows it.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/SQL_Injection">https://owasp.org/www-community/attacks/SQL_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-002">
+  <header>
+    <span class="fid">DARK-002</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>SQL Injection (Error-Based)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-89</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>user</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/login">http://127.0.0.1:8080/login</a></p>
+  <h4>Impact</h4>
+  <p>An attacker can read, modify or destroy the database, bypass authentication, and in many stacks escalate to remote code execution via stacked queries or INTO OUTFILE.</p>
+  <h4>What the scanner observed</h4><p>Server returned a database error message indicating the input is concatenated into a SQL query unsafely.</p>
+  <h4>Evidence</h4><pre>DBMS signature: MySQL</pre>
+  <h4>Payload</h4><pre>&#x27;</pre>
+  <h4>Remediation</h4>
+  <p>Use parameterised queries / prepared statements on every SQL call. Never concatenate user input into SQL. Apply least-privilege DB accounts and disable stacked queries where the driver allows it.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/SQL_Injection">https://owasp.org/www-community/attacks/SQL_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-003">
+  <header>
+    <span class="fid">DARK-003</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>Local File Inclusion / Path Traversal</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.6</dd></div>
+    <div><dt>CWE</dt><dd>CWE-22</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>file</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/lfi?file=index.php">http://127.0.0.1:8080/lfi?file=index.php</a></p>
+  <h4>Impact</h4>
+  <p>Arbitrary files are read from the server — /etc/passwd, application source, cloud credentials, SSH keys.</p>
+  <h4>What the scanner observed</h4><p>User input is used to read files — an attacker can exfiltrate /etc/passwd, source code, and secrets.</p>
+  <h4>Evidence</h4><pre>server returned file system content</pre>
+  <h4>Payload</h4><pre>../../../../etc/passwd</pre>
+  <h4>Remediation</h4>
+  <p>Never concatenate user input into file paths. Use a whitelist of allowed names. Canonicalise and reject &#x27;..&#x27;.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/Path_Traversal">https://owasp.org/www-community/attacks/Path_Traversal</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-004">
+  <header>
+    <span class="fid">DARK-004</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>Server-Side Template Injection (SSTI)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-1336</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>name</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/tpl?name=guest">http://127.0.0.1:8080/tpl?name=guest</a></p>
+  <h4>Impact</h4>
+  <p>Template expressions execute on the server. On Jinja/Twig/Freemarker this is typically remote code execution.</p>
+  <h4>What the scanner observed</h4><p>Template expression was evaluated server-side — often leads to remote code execution.</p>
+  <h4>Evidence</h4><pre>expression evaluated: {{1337*2}} -&gt; 2674</pre>
+  <h4>Payload</h4><pre>{{1337*2}}</pre>
+  <h4>Remediation</h4>
+  <p>Never render user input as a template. Use a sandboxed engine if you must, and keep templates on disk only.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/18-Testing_for_Server_Side_Template_Injection">https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/18-Testing_for_Server_Side_Template_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-005">
+  <header>
+    <span class="fid">DARK-005</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>OS Command Injection</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-78</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>host</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/ping?host=127.0.0.1">http://127.0.0.1:8080/ping?host=127.0.0.1</a></p>
+  <h4>Impact</h4>
+  <p>Attacker-controlled shell metacharacters are executed — full host compromise, reverse shells, ransomware.</p>
+  <h4>What the scanner observed</h4><p>Shell metacharacters in input are executed — full server compromise is possible.</p>
+  <h4>Evidence</h4><pre>command output reflected in response</pre>
+  <h4>Payload</h4><pre>;id</pre>
+  <h4>Remediation</h4>
+  <p>Do not call a shell. Use library APIs / subprocess with argument lists (never shell=True). Whitelist arguments.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/Command_Injection">https://owasp.org/www-community/attacks/Command_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-006">
+  <header>
+    <span class="fid">DARK-006</span>
+    <span class="sev" style="background:#f43f5e">Critical</span>
+    <h3>Environment / Secrets File Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>9.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-260</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/.env">http://127.0.0.1:8080/.env</a></p>
+  <h4>Impact</h4>
+  <p>A reachable .env / credentials file is usually full server compromise (DB password, cloud keys, app secrets).</p>
+  <h4>What the scanner observed</h4><p>Confirmed by unique response artefact — not a mere 200 OK.</p>
+  <h4>Evidence</h4><pre>2 KEY=value lines, secret-like keys present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Remove the file from the web root immediately, rotate every value in it, and block dotfiles at the proxy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-007">
+  <header>
+    <span class="fid">DARK-007</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>SQL Injection (Boolean-Based Blind)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.6</dd></div>
+    <div><dt>CWE</dt><dd>CWE-89</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>id</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/news?id=1">http://127.0.0.1:8080/news?id=1</a></p>
+  <h4>Impact</h4>
+  <p>The application answers true/false questions about the database. An attacker can dump tables one bit at a time.</p>
+  <h4>What the scanner observed</h4><p>Responses differ consistently between TRUE and FALSE boolean conditions across two payload pairs — classic blind SQLi behavior.</p>
+  <h4>Evidence</h4><pre>similarity baseline/true=1.00 baseline/false=0.80 true/false=0.80 (confirmed with a second payload pair)</pre>
+  <h4>Payload</h4><pre>TRUE=&#x27; OR 1=1--  / FALSE=&#x27; OR 1=2-- </pre>
+  <h4>Remediation</h4>
+  <p>Same as error-based SQLi: parameterised queries only. Do not return different page shapes for true vs false SQL predicates.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/Blind_SQL_Injection">https://owasp.org/www-community/attacks/Blind_SQL_Injection</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-008">
+  <header>
+    <span class="fid">DARK-008</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Reflected XSS (executable — script)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>q</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/search">http://127.0.0.1:8080/search</a></p>
+  <h4>Impact</h4>
+  <p>Injected input reached an executable HTML/JS context. A victim who opens the crafted URL runs attacker script in their session.</p>
+  <h4>What the scanner observed</h4><p>Reflection context: html_text. Verified by re-parsing the response: the injected marker reached an executable context.</p>
+  <h4>Evidence</h4><pre>marker executed as JS source: it sits inside a &lt;script&gt; block as code, not as a string</pre>
+  <h4>Payload</h4><pre>&lt;script&gt;var dkx0001x7572=1&lt;/script&gt;</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output for the exact context (HTML body, attribute, JS string, URL). Add CSP without &#x27;unsafe-inline&#x27;. HttpOnly cookies.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-009">
+  <header>
+    <span class="fid">DARK-009</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Reflected XSS (executable — script)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>q</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/search">http://127.0.0.1:8080/search</a></p>
+  <h4>Impact</h4>
+  <p>Injected input reached an executable HTML/JS context. A victim who opens the crafted URL runs attacker script in their session.</p>
+  <h4>What the scanner observed</h4><p>Reflection context: html_text. Verified by re-parsing the response: the injected marker reached an executable context.</p>
+  <h4>Evidence</h4><pre>marker executed as JS source: it sits inside a &lt;script&gt; block as code, not as a string</pre>
+  <h4>Payload</h4><pre>&lt;script&gt;var dkx0011x7588=1&lt;/script&gt;</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output for the exact context (HTML body, attribute, JS string, URL). Add CSP without &#x27;unsafe-inline&#x27;. HttpOnly cookies.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-010">
+  <header>
+    <span class="fid">DARK-010</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/.env">http://127.0.0.1:8080/.env</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 46 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-011">
+  <header>
+    <span class="fid">DARK-011</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/backup.sql">http://127.0.0.1:8080/backup.sql</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 126 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-012">
+  <header>
+    <span class="fid">DARK-012</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Known-Vulnerable Software Version</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>7.5</dd></div>
+    <div><dt>CWE</dt><dd>CWE-1104</dd></div>
+    <div><dt>OWASP</dt><dd>A06:2021 Vulnerable and Outdated Components</dd></div>
+    <div><dt>Parameter</dt><dd><code>Apache 2.4.49/2.4.50</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Public exploits exist for the advertised version.</p>
+  <h4>What the scanner observed</h4><p>Apache path traversal &amp; RCE (CVE-2021-41773 / CVE-2021-42013) — verify and patch immediately.</p>
+  <h4>Evidence</h4><pre>Apache/2.4.49</pre>
+  
+  <h4>Remediation</h4>
+  <p>Patch or upgrade. Hide server banners where possible.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/">https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-013">
+  <header>
+    <span class="fid">DARK-013</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Server-Side Request Forgery (SSRF)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.5</dd></div>
+    <div><dt>CWE</dt><dd>CWE-918</dd></div>
+    <div><dt>OWASP</dt><dd>A10:2021 SSRF</dd></div>
+    <div><dt>Parameter</dt><dd><code>url</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/fetch?url=http://example.com">http://127.0.0.1:8080/fetch?url=http://example.com</a></p>
+  <h4>Impact</h4>
+  <p>The server fetches attacker URLs — cloud metadata (IAM keys), internal admin panels, port scanning of RFC1918.</p>
+  <h4>What the scanner observed</h4><p>The server fetches attacker-supplied URLs — internal network scanning and cloud metadata theft are possible.</p>
+  <h4>Evidence</h4><pre>server made a request to an attacker-controlled target</pre>
+  <h4>Payload</h4><pre>http://127.0.0.1:1</pre>
+  <h4>Remediation</h4>
+  <p>Allow-list schemes and hosts. Block link-local and private ranges. Do not follow redirects. Use a locked-down egress proxy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/">https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-014">
+  <header>
+    <span class="fid">DARK-014</span>
+    <span class="sev" style="background:#f97316">High</span>
+    <h3>Weak / Tamperable JWT</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>8.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-347</dd></div>
+    <div><dt>OWASP</dt><dd>A02:2021 Cryptographic Failures</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Tokens can be forged (alg=none, empty signature) — full authentication bypass.</p>
+  <h4>What the scanner observed</h4><p>Weak JWT configuration allows token forgery.</p>
+  <h4>Evidence</h4><pre>JWT with algorithm &#x27;none&#x27; (signature bypass), empty signature</pre>
+  
+  <h4>Remediation</h4>
+  <p>Whitelist algorithms (RS256/ES256). Reject alg=none. Verify signature on every request. Short TTL + rotation.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://portswigger.net/web-security/jwt">https://portswigger.net/web-security/jwt</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-015">
+  <header>
+    <span class="fid">DARK-015</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Dangerous HTTP Method Enabled</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-650</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>TRACE</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>TRACE/PUT/DELETE/DEBUG may enable XST or unintended writes.</p>
+  <h4>What the scanner observed</h4><p>Verb tampering / cross-site tracing may be possible.</p>
+  <h4>Evidence</h4><pre>TRACE allowed (HTTP 501)</pre>
+  
+  <h4>Remediation</h4>
+  <p>Allow only GET/POST/HEAD (and PUT/PATCH/DELETE where the API actually needs them) at the reverse proxy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-016">
+  <header>
+    <span class="fid">DARK-016</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Dangerous HTTP Method Enabled</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-650</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>PUT</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>TRACE/PUT/DELETE/DEBUG may enable XST or unintended writes.</p>
+  <h4>What the scanner observed</h4><p>Verb tampering / cross-site tracing may be possible.</p>
+  <h4>Evidence</h4><pre>PUT allowed (HTTP 501)</pre>
+  
+  <h4>Remediation</h4>
+  <p>Allow only GET/POST/HEAD (and PUT/PATCH/DELETE where the API actually needs them) at the reverse proxy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-017">
+  <header>
+    <span class="fid">DARK-017</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Dangerous HTTP Method Enabled</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-650</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>DELETE</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>TRACE/PUT/DELETE/DEBUG may enable XST or unintended writes.</p>
+  <h4>What the scanner observed</h4><p>Verb tampering / cross-site tracing may be possible.</p>
+  <h4>Evidence</h4><pre>DELETE allowed (HTTP 501)</pre>
+  
+  <h4>Remediation</h4>
+  <p>Allow only GET/POST/HEAD (and PUT/PATCH/DELETE where the API actually needs them) at the reverse proxy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-018">
+  <header>
+    <span class="fid">DARK-018</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/admin">http://127.0.0.1:8080/admin</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 244 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-019">
+  <header>
+    <span class="fid">DARK-019</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/login">http://127.0.0.1:8080/login</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 351 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-020">
+  <header>
+    <span class="fid">DARK-020</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/robots.txt">http://127.0.0.1:8080/robots.txt</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 55 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-021">
+  <header>
+    <span class="fid">DARK-021</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Sensitive Path Exposed</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-538</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/files">http://127.0.0.1:8080/files</a></p>
+  <h4>Impact</h4>
+  <p>Admin panels, backups, source control or secrets are reachable without authentication.</p>
+  <h4>What the scanner observed</h4><p>A potentially sensitive or hidden resource is accessible.</p>
+  <h4>Evidence</h4><pre>HTTP 200, 199 bytes</pre>
+  
+  <h4>Remediation</h4>
+  <p>Block these paths at the reverse proxy. Move backups off the web root. Require auth on admin interfaces.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-022">
+  <header>
+    <span class="fid">DARK-022</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Open Redirect</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>6.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-601</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>next</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/go?next=/">http://127.0.0.1:8080/go?next=/</a></p>
+  <h4>Impact</h4>
+  <p>Used in phishing and OAuth/token-theft chains: the real site redirects the victim to an attacker domain.</p>
+  <h4>What the scanner observed</h4><p>Open redirects enable phishing and token theft chains.</p>
+  <h4>Evidence</h4><pre>redirects to attacker URL (Location: https://dark-redirect-check.example)</pre>
+  <h4>Payload</h4><pre>https://dark-redirect-check.example</pre>
+  <h4>Remediation</h4>
+  <p>Allow-list redirect targets. Prefer relative paths. Never send the user to a raw user-supplied URL.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html">https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-023">
+  <header>
+    <span class="fid">DARK-023</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Open Redirect</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>6.1</dd></div>
+    <div><dt>CWE</dt><dd>CWE-601</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>url</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/fetch?url=http://example.com">http://127.0.0.1:8080/fetch?url=http://example.com</a></p>
+  <h4>Impact</h4>
+  <p>Used in phishing and OAuth/token-theft chains: the real site redirects the victim to an attacker domain.</p>
+  <h4>What the scanner observed</h4><p>Open redirects enable phishing and token theft chains.</p>
+  <h4>Evidence</h4><pre>redirects to attacker URL (Location: in body)</pre>
+  <h4>Payload</h4><pre>https://dark-redirect-check.example</pre>
+  <h4>Remediation</h4>
+  <p>Allow-list redirect targets. Prefer relative paths. Never send the user to a raw user-supplied URL.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html">https://cheatsheetseries.owasp.org/cheatsheets/Unvalidated_Redirects_and_Forwards_Cheat_Sheet.html</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-024">
+  <header>
+    <span class="fid">DARK-024</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>CORS Misconfiguration</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>6.5</dd></div>
+    <div><dt>CWE</dt><dd>CWE-942</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/api/data">http://127.0.0.1:8080/api/data</a></p>
+  <h4>Impact</h4>
+  <p>Any website can read authenticated responses — data theft from the victim&#x27;s session.</p>
+  <h4>What the scanner observed</h4><p>Any website can read authenticated responses from this origin — enables cross-site data theft.</p>
+  <h4>Evidence</h4><pre>ACAO: https://dark-cors-check.example | ACAC: true</pre>
+  <h4>Payload</h4><pre>Origin: https://dark-cors-check.example</pre>
+  <h4>Remediation</h4>
+  <p>Never reflect Origin blindly. Never combine ACAO:* with credentials. Allow-list exact trusted origins.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://portswigger.net/web-security/cors">https://portswigger.net/web-security/cors</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-025">
+  <header>
+    <span class="fid">DARK-025</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>Directory Listing Enabled</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.3</dd></div>
+    <div><dt>CWE</dt><dd>CWE-548</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/files">http://127.0.0.1:8080/files</a></p>
+  <h4>Impact</h4>
+  <p>Anyone can enumerate files — backups, configs, source.</p>
+  <h4>What the scanner observed</h4><p>Directory listings leak files, backups and structure.</p>
+  <h4>Evidence</h4><pre>server renders an index of directory contents</pre>
+  
+  <h4>Remediation</h4>
+  <p>Disable autoindex (Options -Indexes / autoindex off) and deploy a default document.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/Forced_browsing">https://owasp.org/www-community/attacks/Forced_browsing</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-026">
+  <header>
+    <span class="fid">DARK-026</span>
+    <span class="sev" style="background:#fbbf24">Medium</span>
+    <h3>CSRF — Missing Anti-CSRF Token</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>5.8</dd></div>
+    <div><dt>CWE</dt><dd>CWE-352</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/login">http://127.0.0.1:8080/login</a></p>
+  <h4>Impact</h4>
+  <p>A third-party site can submit state-changing requests as the logged-in victim (password change, transfer, email change).</p>
+  <h4>What the scanner observed</h4><p>State-changing form has no CSRF protection — cross-site request forgery attacks are possible.</p>
+  <h4>Evidence</h4><pre>POST form without any CSRF token field (inputs: [&#x27;pass&#x27;, &#x27;user&#x27;])</pre>
+  
+  <h4>Remediation</h4>
+  <p>Synchroniser tokens on every state-changing request, SameSite=Lax/Strict cookies, and check Origin/Referer.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/csrf">https://owasp.org/www-community/attacks/csrf</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-027">
+  <header>
+    <span class="fid">DARK-027</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>Strict-Transport-Security</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing HSTS (session hijacking risk on HTTP)</p>
+  <h4>Evidence</h4><pre>Strict-Transport-Security not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-028">
+  <header>
+    <span class="fid">DARK-028</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>Content-Security-Policy</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing CSP (XSS impact increased)</p>
+  <h4>Evidence</h4><pre>Content-Security-Policy not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-029">
+  <header>
+    <span class="fid">DARK-029</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>X-Content-Type-Options</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing X-Content-Type-Options (MIME sniffing)</p>
+  <h4>Evidence</h4><pre>X-Content-Type-Options not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-030">
+  <header>
+    <span class="fid">DARK-030</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>X-Frame-Options</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing X-Frame-Options (clickjacking)</p>
+  <h4>Evidence</h4><pre>X-Frame-Options not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-031">
+  <header>
+    <span class="fid">DARK-031</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>Referrer-Policy</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing Referrer-Policy (information leak)</p>
+  <h4>Evidence</h4><pre>Referrer-Policy not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-032">
+  <header>
+    <span class="fid">DARK-032</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Missing Security Header</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>3.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-693</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>Permissions-Policy</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Missing defence-in-depth (clickjacking, MIME sniffing, XSS impact, HTTPS downgrade).</p>
+  <h4>What the scanner observed</h4><p>Missing Permissions-Policy</p>
+  <h4>Evidence</h4><pre>Permissions-Policy not present</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy and a frame-ancestors policy.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-secure-headers/">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-033">
+  <header>
+    <span class="fid">DARK-033</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Input reflected without execution (context-dependent)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>2.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>file</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/lfi">http://127.0.0.1:8080/lfi</a></p>
+  <h4>Impact</h4>
+  <p>Input is echoed but did not reach an executable context in this scan. It becomes XSS if a DOM sink later consumes it.</p>
+  <h4>What the scanner observed</h4><p>The value is echoed back but no executable context was reached with the tested payloads. Exploitability depends on how this data is later consumed (e.g. a DOM sink).</p>
+  <h4>Evidence</h4><pre>reflected verbatim in context: html_text</pre>
+  <h4>Payload</h4><pre>dkx0004x7578</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output anyway. Review any client-side sink that reads this parameter.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-034">
+  <header>
+    <span class="fid">DARK-034</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Input reflected without execution (context-dependent)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>2.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>name</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/tpl">http://127.0.0.1:8080/tpl</a></p>
+  <h4>Impact</h4>
+  <p>Input is echoed but did not reach an executable context in this scan. It becomes XSS if a DOM sink later consumes it.</p>
+  <h4>What the scanner observed</h4><p>The value is echoed back but no executable context was reached with the tested payloads. Exploitability depends on how this data is later consumed (e.g. a DOM sink).</p>
+  <h4>Evidence</h4><pre>reflected verbatim in context: html_text</pre>
+  <h4>Payload</h4><pre>dkx0005x7579</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output anyway. Review any client-side sink that reads this parameter.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-035">
+  <header>
+    <span class="fid">DARK-035</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Input reflected without execution (context-dependent)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>2.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-79</dd></div>
+    <div><dt>OWASP</dt><dd>A03:2021 Injection</dd></div>
+    <div><dt>Parameter</dt><dd><code>url</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/fetch">http://127.0.0.1:8080/fetch</a></p>
+  <h4>Impact</h4>
+  <p>Input is echoed but did not reach an executable context in this scan. It becomes XSS if a DOM sink later consumes it.</p>
+  <h4>What the scanner observed</h4><p>The value is echoed back but no executable context was reached with the tested payloads. Exploitability depends on how this data is later consumed (e.g. a DOM sink).</p>
+  <h4>Evidence</h4><pre>reflected verbatim in context: html_text</pre>
+  <h4>Payload</h4><pre>dkx0008x7583</pre>
+  <h4>Remediation</h4>
+  <p>Encode on output anyway. Review any client-side sink that reads this parameter.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/xss/">https://owasp.org/www-community/attacks/xss/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-036">
+  <header>
+    <span class="fid">DARK-036</span>
+    <span class="sev" style="background:#22d3ee">Low</span>
+    <h3>Clickjacking (missing frame protection)</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>4.3</dd></div>
+    <div><dt>CWE</dt><dd>CWE-1021</dd></div>
+    <div><dt>OWASP</dt><dd>A04:2021 Insecure Design</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>The page can be framed; UI-redressing tricks users into clicking privileged actions.</p>
+  <h4>What the scanner observed</h4><p>The page can be framed by any origin.</p>
+  <h4>Evidence</h4><pre>no X-Frame-Options and no CSP frame-ancestors</pre>
+  
+  <h4>Remediation</h4>
+  <p>Set Content-Security-Policy frame-ancestors &#x27;self&#x27; (and X-Frame-Options: DENY as a legacy fallback).</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-community/attacks/Clickjacking">https://owasp.org/www-community/attacks/Clickjacking</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-037">
+  <header>
+    <span class="fid">DARK-037</span>
+    <span class="sev" style="background:#60a5fa">Info</span>
+    <h3>Server Banner Disclosure</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>2.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-200</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Exact software versions help an attacker pick exploits.</p>
+  <h4>What the scanner observed</h4><p>The server discloses its software/version — aids targeted attacks.</p>
+  <h4>Evidence</h4><pre>Server: Apache/2.4.49 (Unix) </pre>
+  
+  <h4>Remediation</h4>
+  <p>Suppress Server / X-Powered-By. Keep software patched regardless of banner hiding.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-038">
+  <header>
+    <span class="fid">DARK-038</span>
+    <span class="sev" style="background:#60a5fa">Info</span>
+    <h3>Technology Disclosure</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>2.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-200</dd></div>
+    <div><dt>OWASP</dt><dd>A05:2021 Security Misconfiguration</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080">http://127.0.0.1:8080</a></p>
+  <h4>Impact</h4>
+  <p>Stack fingerprinting accelerates targeted attacks.</p>
+  <h4>What the scanner observed</h4><p>Framework/technology fingerprint exposed.</p>
+  <h4>Evidence</h4><pre>X-Powered-By: PHP/7.4.21</pre>
+  
+  <h4>Remediation</h4>
+  <p>Remove generator meta tags and verbose error pages.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<article class="card" id="DARK-039">
+  <header>
+    <span class="fid">DARK-039</span>
+    <span class="sev" style="background:#60a5fa">Info</span>
+    <h3>Information File Present</h3>
+  </header>
+  <dl class="meta">
+    <div><dt>CVSS</dt><dd>1.0</dd></div>
+    <div><dt>CWE</dt><dd>CWE-200</dd></div>
+    <div><dt>OWASP</dt><dd>A01:2021 Broken Access Control</dd></div>
+    <div><dt>Parameter</dt><dd><code>—</code></dd></div>
+  </dl>
+  <p class="url">URL <a href="http://127.0.0.1:8080/robots.txt">http://127.0.0.1:8080/robots.txt</a></p>
+  <h4>Impact</h4>
+  <p>Robots, sitemaps, traces or dump files leak structure.</p>
+  <h4>What the scanner observed</h4><p>Review contents for sensitive directory disclosure.</p>
+  <h4>Evidence</h4><pre>55 bytes — may leak hidden paths</pre>
+  
+  <h4>Remediation</h4>
+  <p>Do not serve backup/trace files. Restrict robots.txt to what you actually want indexed.</p>
+  <h4>References</h4><ul class='refs'><li><a href="https://owasp.org/www-project-web-security-testing-guide/">https://owasp.org/www-project-web-security-testing-guide/</a></li></ul>
+</article>
+
+
+<h2>5. Methodology &amp; coverage</h2>
+<div class="summary">
+  <p><b>Modules executed:</b> param-discovery, misconfig-audit, sqli, xss-deep, dirbuster, lfi, ssti, cmdi, open-redirect, cors, crlf, dir-listing, js-libs, sensitive-data, known-cves, csrf, xxe, ssrf, host-header, jwt, stored-xss, world-surface</p>
+  <p><b>Seed URLs:</b> http://127.0.0.1:8080/, http://127.0.0.1:8080/admin, http://127.0.0.1:8080/secret-panel, http://127.0.0.1:8080/login, http://127.0.0.1:8080/search, http://127.0.0.1:8080/news</p>
+  <p><b>HTTP requests:</b> 1,547
+     · errors 0
+     · blocked 0
+     · WAF pages 0</p>
+  <p>DARK reports a finding only when a unique artefact proves it (SQL error
+     signature, executable XSS context, file contents, schema document, etc.).
+     Reflections that cannot execute, JSON/API bodies, and mere HTTP 200s on
+     interesting paths are not raised as High/Critical.</p>
+  <p><b>Diagnostics</b></p><ul><li>Scope: robots.txt/sitemap advertised 2 path(s)</li><li>Scope: probed 4 common entry point(s) that answered</li></ul>
+</div>
+
+<div class="foot">
+  DARK — Detection &amp; Attack Reconnaissance Kit · Report 00A8E64760 ·
+  This document is intended for the system owner. Scanning systems without
+  written authorisation is illegal. Print this page to produce a PDF.
+</div>
+</div>
+</body>
+</html>
