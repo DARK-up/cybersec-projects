@@ -256,6 +256,63 @@ def test_rbac_session_middleware_and_rate_limit():
     assert any(l["actor"] == aname and l["action"] == "scan:cloud-audit" for l in logs)
 
 
+def test_zero_false_positives_on_hardened_targets():
+    # 1. Clean Cloud, Container (with tricky benign ENV vars!), SAST (with comments & usedforsecurity=False), and Forensics
+    assert len(ca.audit_cloud_config("aws", 'resource "aws_s3_bucket" "b" {}\nresource "aws_s3_bucket_server_side_encryption_configuration" "e" {}')["findings"]) == 0
+    assert len(cta.audit_container_and_sbom('FROM python:3.12.4-slim\nRUN useradd -m app\nUSER app\nENV PASSWORD_MIN_LENGTH=12\nENV TOKEN_TTL=3600\nENV DB_PASSWORD=""\nCMD ["python","a.py"]\n')["findings"]) == 0
+    assert len(cta.audit_container_and_sbom("requests==2.32.3\npyyaml==6.0.2\n", kind="requirements.txt")["findings"]) == 0
+    assert len(sa.scan_sast("import hashlib, yaml\n# eval(user_input)\nhashlib.md5(b'etag', usedforsecurity=False).hexdigest()\nyaml.safe_load(x)\n", language="Python")["findings"]) == 0
+    assert len(sa.scan_sast(target_path=str(ROOT / "dark"))["findings"]) == 0
+    assert len(fx.analyze_forensics("Oct 12 10:00:01 srv sshd[1]: Accepted publickey for deploy from 10.0.0.5 port 22\n")["findings"]) == 0
+
+    # 2. Clean Hardened Soft-404 Web App -> ZERO actionable findings (0 Critical/High/Medium/Low)
+    import engine as dark_eng
+
+    class _HardenedSoft404(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _sec(self):
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            self.send_header("Content-Security-Policy", "default-src 'self'")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Permissions-Policy", "geolocation=()")
+
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self._sec()
+                self.end_headers()
+                self.wfile.write(b"<html><body><h1>Hardened</h1><a href='/search?q=hi'>S</a></body></html>")
+            elif self.path.startswith("/search"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self._sec()
+                self.end_headers()
+                q = self.path.split("q=", 1)[1] if "q=" in self.path else ""
+                safe = q.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#x27;")
+                self.wfile.write(f"<html><body>Result: {safe}</body></html>".encode())
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self._sec()
+                self.end_headers()
+                self.wfile.write(b"<html><body><h1>404 - Not Found</h1></body></html>")
+
+    srv = HTTPServer(("127.0.0.1", 0), _HardenedSoft404)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        res = dark_eng.run_web_scan(f"http://127.0.0.1:{port}", time_blind=None, max_urls=10, depth=1)
+        actionable = [f for f in res["findings"] if f.get("severity") != "Info"]
+        assert len(actionable) == 0, f"Unexpected false positives: {actionable}"
+    finally:
+        srv.shutdown()
+
+
 def test_performance_and_memory_budget():
     # Ensure running SAST + Container + Cloud + Compliance stays lightweight (< 2s, < 300MB RSS)
     t0 = time.perf_counter()

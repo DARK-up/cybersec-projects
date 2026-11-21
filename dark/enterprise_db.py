@@ -894,15 +894,36 @@ def pop_due_schedules() -> List[dict]:
 # ---------------------------------------------------------------------------
 # Backup & Restore
 # ---------------------------------------------------------------------------
+_BACKUP_SELECT_SQL = {
+    "scope_rules": "SELECT * FROM scope_rules",
+    "settings": "SELECT * FROM settings",
+    "assets": "SELECT * FROM assets",
+    "asset_relations": "SELECT * FROM asset_relations",
+    "vuln_feed": "SELECT * FROM vuln_feed",
+    "remediation_tickets": "SELECT * FROM remediation_tickets",
+    "schedules": "SELECT * FROM schedules",
+    "plugins": "SELECT * FROM plugins",
+}
+
+_BACKUP_INSERT_SQL = {
+    "scope_rules": ("id", "pattern", "rule_type", "note", "created_at"),
+    "settings": ("key", "value"),
+    "assets": ("id", "project_id", "kind", "name", "criticality", "internet_exposed", "meta_json", "first_seen", "last_seen"),
+    "asset_relations": ("id", "project_id", "src_asset_id", "dst_asset_id", "relation", "created_at"),
+    "vuln_feed": ("cve_id", "cpe_prefix", "product", "version_lt", "severity", "cvss_v31", "cvss_v40", "epss", "kev", "summary", "remediation", "updated_at"),
+    "remediation_tickets": ("id", "project_id", "job_id", "finding_key", "title", "severity", "target", "assignee", "due_date", "status", "notes_json", "evidence_json", "retest_history_json", "created_at", "updated_at"),
+    "schedules": ("id", "project_id", "name", "kind", "payload_json", "interval_minutes", "enabled", "last_run", "next_run", "created_at"),
+    "plugins": ("plugin_id", "manifest_json", "signature", "enabled", "verified", "created_at"),
+}
+
+
 def export_backup() -> dict:
     with _DB_LOCK:
         c = _conn()
         try:
-            tables = ["scope_rules", "settings", "assets", "asset_relations",
-                      "vuln_feed", "remediation_tickets", "schedules", "plugins"]
             dump: Dict[str, Any] = {"version": "dark-enterprise-v3", "exported_at": time.time(), "tables": {}}
-            for t in tables:
-                dump["tables"][t] = [dict(r) for r in c.execute(f"SELECT * FROM {t}").fetchall()]
+            for t, sql in _BACKUP_SELECT_SQL.items():
+                dump["tables"][t] = [dict(r) for r in c.execute(sql).fetchall()]
             return dump
         finally:
             c.close()
@@ -915,23 +936,26 @@ def restore_backup(dump: dict) -> dict:
     with _DB_LOCK:
         c = _conn()
         try:
+            static_inserts = {
+                "scope_rules": "INSERT OR REPLACE INTO scope_rules(id,pattern,rule_type,note,created_at) VALUES(?,?,?,?,?)",
+                "settings": "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+                "assets": "INSERT OR REPLACE INTO assets(id,project_id,kind,name,criticality,internet_exposed,meta_json,first_seen,last_seen) VALUES(?,?,?,?,?,?,?,?,?)",
+                "asset_relations": "INSERT OR REPLACE INTO asset_relations(id,project_id,src_asset_id,dst_asset_id,relation,created_at) VALUES(?,?,?,?,?,?)",
+                "vuln_feed": "INSERT OR REPLACE INTO vuln_feed(cve_id,cpe_prefix,product,version_lt,severity,cvss_v31,cvss_v40,epss,kev,summary,remediation,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "remediation_tickets": "INSERT OR REPLACE INTO remediation_tickets(id,project_id,job_id,finding_key,title,severity,target,assignee,due_date,status,notes_json,evidence_json,retest_history_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "schedules": "INSERT OR REPLACE INTO schedules(id,project_id,name,kind,payload_json,interval_minutes,enabled,last_run,next_run,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "plugins": "INSERT OR REPLACE INTO plugins(plugin_id,manifest_json,signature,enabled,verified,created_at) VALUES(?,?,?,?,?,?)",
+            }
             for t, rows in (dump.get("tables") or {}).items():
-                if t not in {"scope_rules", "settings", "assets", "asset_relations",
-                             "vuln_feed", "remediation_tickets", "schedules", "plugins"}:
+                if t not in static_inserts or not isinstance(rows, list):
                     continue
-                if not isinstance(rows, list):
-                    continue
+                cols = _BACKUP_INSERT_SQL[t]
+                sql = static_inserts[t]
                 count = 0
                 for row in rows:
                     if not isinstance(row, dict) or not row:
                         continue
-                    cols = list(row.keys())
-                    placeholders = ",".join("?" for _ in cols)
-                    col_list = ",".join(cols)
-                    c.execute(
-                        f"INSERT OR REPLACE INTO {t}({col_list}) VALUES({placeholders})",
-                        [row[k] for k in cols],
-                    )
+                    c.execute(sql, [row.get(col) for col in cols])
                     count += 1
                 restored[t] = count
             c.commit()

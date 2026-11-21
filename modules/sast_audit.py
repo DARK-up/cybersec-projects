@@ -81,10 +81,15 @@ def _scan_python_ast(src: str, code: str) -> List[dict]:
                             snippet, "Pass argument list with shell=False.", "CWE-78"
                         ))
             elif fn_name in ("hashlib.md5", "hashlib.sha1"):
-                findings.append(_sfinding(
-                    "Python", f"Weak Hash Function ({fn_name})", "Medium", f"{src}:{ln}",
-                    snippet, "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.", "CWE-328"
-                ))
+                used_for_sec = not any(
+                    kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+                    for kw in node.keywords
+                )
+                if used_for_sec:
+                    findings.append(_sfinding(
+                        "Python", f"Weak Hash Function ({fn_name})", "Medium", f"{src}:{ln}",
+                        snippet, "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.", "CWE-328"
+                    ))
             elif fn_name.endswith(".execute") and node.args:
                 arg0 = node.args[0]
                 if isinstance(arg0, (ast.JoinedStr, ast.BinOp)):
@@ -126,13 +131,19 @@ def _scan_generic(lang: str, src: str, code: str) -> List[dict]:
     for pat, title, sev, cwe, rem in _LANG_PATTERNS.get(lang, []):
         rx = re.compile(pat)
         for i, ln in enumerate(lines, 1):
-            if rx.search(ln):
-                findings.append(_sfinding(lang, title, sev, f"{src}:{i}", ln.strip(), rem, cwe))
+            st = ln.strip()
+            if not st or st.startswith(("#", "//", "/*", "*")):
+                continue
+            if rx.search(st):
+                findings.append(_sfinding(lang, title, sev, f"{src}:{i}", st, rem, cwe))
     # Secret scan across all languages
     sec_rx = re.compile(r'(?i)(api_key|secret_key|password|private_key|aws_secret)\s*[:=]\s*["\']([A-Za-z0-9/+=_\-]{8,})["\']')
     for i, ln in enumerate(lines, 1):
-        if sec_rx.search(ln) and "example" not in ln.lower() and "changeme" not in ln.lower():
-            findings.append(_sfinding(lang, "Hardcoded Credential / Secret Literal", "High", f"{src}:{i}", ln.strip(),
+        st = ln.strip()
+        if not st or st.startswith(("#", "//", "/*", "*")):
+            continue
+        if sec_rx.search(st) and "example" not in st.lower() and "changeme" not in st.lower():
+            findings.append(_sfinding(lang, "Hardcoded Credential / Secret Literal", "High", f"{src}:{i}", st,
                                       "Move secrets to environment variables or a secret vault.", "CWE-798"))
     return findings
 

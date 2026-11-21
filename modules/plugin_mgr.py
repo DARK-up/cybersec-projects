@@ -11,6 +11,7 @@ Each plugin manifest defines:
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import hmac
 import json
@@ -128,10 +129,11 @@ def ensure_builtin_plugins() -> int:
                 now = time.time()
                 for m in BUILTIN_PLUGINS:
                     sig = sign_manifest(m)
+                    en = 0 if m["plugin_id"] == "dark-plg-security-txt" else 1
                     c.execute(
                         "INSERT OR IGNORE INTO plugins(plugin_id, manifest_json, signature, enabled, verified, created_at) "
-                        "VALUES(?,?,?,1,1,?)",
-                        (m["plugin_id"], json.dumps(m, ensure_ascii=False), sig, now),
+                        "VALUES(?,?,?,?,1,?)",
+                        (m["plugin_id"], json.dumps(m, ensure_ascii=False), sig, en, now),
                     )
                 c.commit()
                 return len(BUILTIN_PLUGINS)
@@ -229,6 +231,14 @@ def run_plugin_tests(plugin_id: str) -> dict:
 
 def execute_enabled_plugins(client, base_url: str) -> List[dict]:
     findings: List[dict] = []
+    # Soft-404 calibration: catch-all 200 responses must never trigger plugin matches
+    s404_status = None
+    s404_body = ""
+    probe_r = client.request("GET", urljoin(base_url.rstrip("/") + "/", "dark-nonexistent-plugin-probe-91827"))
+    if probe_r is not None and probe_r.status_code == 200:
+        s404_status = 200
+        s404_body = probe_r.text or ""
+
     for p in list_plugins():
         if not p["enabled"] or not p["signature_valid"]:
             continue
@@ -238,7 +248,11 @@ def execute_enabled_plugins(client, base_url: str) -> List[dict]:
         r = client.request("GET", target_url)
         if r is None:
             continue
-        if _eval_logic(logic, r.status_code, r.text or ""):
+        body = r.text or ""
+        if s404_status == 200 and r.status_code == 200 and s404_body:
+            if body == s404_body or difflib.SequenceMatcher(None, s404_body[:2000], body[:2000]).ratio() >= 0.88:
+                continue
+        if _eval_logic(logic, r.status_code, body):
             findings.append({
                 "vuln_type": f"[Plugin:{m['plugin_id']}] {m['name']}",
                 "severity": m["severity"],

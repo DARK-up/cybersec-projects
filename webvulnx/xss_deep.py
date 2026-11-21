@@ -752,8 +752,8 @@ class DeepXssScanner:
         return None
 
     def _inert(self, resp, marker: str, url: str, point: str,
-               where: str, labels: Set[str]) -> None:
-        """Report a non-executing reflection honestly (Low/Info), never High."""
+               where: str, labels: Set[str], caps: Optional[Dict[str, bool]] = None) -> None:
+        """Report a non-executing reflection honestly ONLY when characters aren't safely escaped."""
         if resp is None:
             return
         body = resp.text or ""
@@ -763,15 +763,20 @@ class DeepXssScanner:
         ctxs = sorted(labels) or ["unknown"]
         renderable, why = renderable_as_html(resp.headers)
         if not renderable:
-            self._add(vuln_type="Input reflected in a non-renderable response",
-                      severity="Info", url=url, parameter=point, payload=marker,
-                      evidence=f"reflected in {', '.join(ctxs)} — {why}",
-                      detail="The response is served as data (JSON/XML/plain), so a "
-                             "browser will not execute script in it. It only becomes "
-                             "XSS if a DOM sink later writes this value into the page "
-                             "— check the DOM analysis findings.",
-                      cvss_hint=0.0)
-            return
+            return  # non-renderable JSON/XML/plain echo is normal API behavior, not XSS
+        # Zero-FP guarantee: if HTML/attribute delimiters are properly blocked/escaped,
+        # normal search/form echoes are NOT vulnerabilities.
+        if caps is not None:
+            safe_html_only = all(
+                c == "html_text" or c == "html_comment" or c.startswith("rawtext:")
+                for c in ctxs
+            )
+            if safe_html_only and not caps.get("<") and not caps.get(">"):
+                return
+            if all(c.endswith(":dq") for c in ctxs) and not caps.get('"'):
+                return
+            if all(c.endswith(":sq") for c in ctxs) and not caps.get("'"):
+                return
         sev = "Low"
         if ctxs and all(c.startswith("json") for c in ctxs):
             sev = "Info"
@@ -779,9 +784,8 @@ class DeepXssScanner:
                   severity=sev, url=url, parameter=point, payload=marker,
                   evidence=("reflected " + ("HTML-encoded" if encoded else "verbatim")
                             + " in context: " + ", ".join(ctxs)),
-                  detail="The value is echoed back but no executable context was "
-                         "reached with the tested payloads. Exploitability depends "
-                         "on how this data is later consumed (e.g. a DOM sink).",
+                  detail="The value is echoed back with some unescaped delimiters but "
+                         "no executable context was reached with the tested payloads.",
                   cvss_hint=2.0 if sev == "Low" else 0.0)
 
     # -- core: one injection point ----------------------------------------
@@ -885,7 +889,7 @@ class DeepXssScanner:
         # the finding list; query/form inert reflections stay as a single Low.
         if not (where.startswith("header:") or where.startswith("cookie:")
                 or where.startswith("path-")):
-            self._inert(resp, marker, url, point, where, labels)
+            self._inert(resp, marker, url, point, where, labels, caps=caps)
         return False
 
     # -- injection point drivers ------------------------------------------

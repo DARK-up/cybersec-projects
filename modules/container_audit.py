@@ -62,12 +62,17 @@ def _audit_dockerfile(src: str, text: str) -> tuple[List[dict], List[dict]]:
                     f"Line {i}: {s}", "Create and switch to a non-root UID via USER appuser."
                 ))
         elif up.startswith("ENV ") or up.startswith("ARG "):
-            if re.search(r'(password|secret|token|api_key|private_key)\s*=?\s*\S+', s, re.I):
-                findings.append(_cfinding(
-                    "Secret Embedded in Dockerfile ENV/ARG", "Critical", f"{src}:{i}",
-                    f"Line {i}: sensitive key assignment in Dockerfile",
-                    "Pass secrets at runtime via orchestrator secrets, never bake into image layers.", "CWE-798"
-                ))
+            kv = s.split(None, 1)[1] if len(s.split(None, 1)) > 1 else ""
+            m_kv = re.match(r'^([A-Za-z0-9_]+)\s*[= ]\s*(.+)$', kv.strip())
+            if m_kv:
+                kname, kval = m_kv.group(1), m_kv.group(2).strip().strip('"').strip("'")
+                if re.search(r'(?:^|_)(PASSWORD|PASSWD|SECRET|API_KEY|ACCESS_KEY|PRIVATE_KEY|AUTH_TOKEN|JWT_SECRET)$', kname, re.I):
+                    if kval and not kval.startswith("$") and kval.lower() not in ("", "changeme", "example", "dummy", "placeholder", "none", "null"):
+                        findings.append(_cfinding(
+                            "Secret Embedded in Dockerfile ENV/ARG", "Critical", f"{src}:{i}",
+                            f"Line {i}: non-empty secret assignment to {kname}",
+                            "Pass secrets at runtime via orchestrator secrets, never bake into image layers.", "CWE-798"
+                        ))
         elif re.search(r'(curl|wget)\s+[^|]+\|\s*(sh|bash)', s, re.I):
             findings.append(_cfinding(
                 "Unsafe Remote Script Pipe-to-Shell in RUN", "High", f"{src}:{i}",
