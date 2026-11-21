@@ -575,6 +575,7 @@ def project_report(project_id: str, download: int = 0):
         f"Unified Project Report for '{proj.get('name')}' ({len(jobs)} completed/stopped job(s))"
     ]
 
+    seen_findings = set()
     for j in jobs:
         res = j.get("result") or {}
         kind = j.get("kind") or "job"
@@ -596,21 +597,32 @@ def project_report(project_id: str, download: int = 0):
             item = dict(f)
             if not item.get("url"):
                 item["url"] = tgt
+            fkey = (
+                str(item.get("vuln_type") or ""),
+                str(item.get("url") or "").rstrip("/"),
+                str(item.get("parameter") or ""),
+            )
+            if fkey in seen_findings:
+                continue
+            seen_findings.add(fkey)
             item["detail"] = f"[{kind} | {tgt}] " + (item.get("detail") or "")
             combined_findings.append(item)
 
         if kind == "hash-crack":
             cracked = [r for r in (res.get("results") or []) if r.get("cracked")]
             if cracked:
-                combined_findings.append({
-                    "vuln_type": f"Cracked Credential Hashes ({len(cracked)})",
-                    "severity": "High",
-                    "url": tgt,
-                    "parameter": "HashBreaker",
-                    "evidence": ", ".join(f"{c.get('used_algo')}:{c.get('password')}" for c in cracked[:6]),
-                    "detail": "Weak or dictionary passwords cracked during offline audit.",
-                    "cvss_hint": 7.5,
-                })
+                hkey = ("Cracked Credential Hashes", str(tgt), "HashBreaker")
+                if hkey not in seen_findings:
+                    seen_findings.add(hkey)
+                    combined_findings.append({
+                        "vuln_type": f"Cracked Credential Hashes ({len(cracked)})",
+                        "severity": "High",
+                        "url": tgt,
+                        "parameter": "HashBreaker",
+                        "evidence": ", ".join(f"{c.get('used_algo')}:{c.get('password')}" for c in cracked[:6]),
+                        "detail": "Weak or dictionary passwords cracked during offline audit.",
+                        "cvss_hint": 7.5,
+                    })
 
     html = dreport.render_html({
         "target": f"Project: {proj.get('name')} ({', '.join(targets[:4]) or 'no targets'})",

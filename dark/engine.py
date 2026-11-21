@@ -388,6 +388,9 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             except Exception as e:
                 print(f"[!] OpenAPI ingestion error: {e}")
 
+        if do_audit and not state.should_stop():
+            run_module("misconfig-audit", wx.MisconfigAudit(client, state).run, url)
+
         if do_crawl and not state.should_stop():
             seeds = wx.discover_seeds(client, url, state, expand_root=True,
                                       probe_paths=True)
@@ -400,8 +403,6 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                 state.note("Crawling disabled: only the given URL was tested")
         if do_param_fuzz and not state.should_stop():
             run_module("param-discovery", wx.ParamFuzzer(client, state).run)
-        if do_audit and not state.should_stop():
-            run_module("misconfig-audit", wx.MisconfigAudit(client, state).run, url)
         if do_sqli and not state.should_stop():
             run_module("sqli", wx.SqliScanner(client, state, time_delay=time_blind).run)
         if do_xss and not state.should_stop():
