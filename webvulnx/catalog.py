@@ -380,6 +380,84 @@ CATALOG: Dict[str, dict] = {
         "remediation": "Encode every output location independently.",
         "refs": ["https://owasp.org/www-community/attacks/xss/"],
     },
+    "Mixed Content (HTTP resource on HTTPS page)": {
+        "cwe": "CWE-311", "owasp": "A02:2021 Cryptographic Failures", "cvss": 5.4,
+        "impact": "Active HTTP scripts or stylesheets on HTTPS pages can be "
+                  "intercepted and modified by an active network attacker.",
+        "remediation": "Serve all scripts, stylesheets, and iframes over HTTPS "
+                       "and enforce upgrade-insecure-requests in CSP.",
+        "refs": ["https://developer.mozilla.org/en-US/docs/Web/Security/Mixed_content"],
+    },
+    "Missing Subresource Integrity (SRI) on CDN Asset": {
+        "cwe": "CWE-353", "owasp": "A08:2021 Software and Data Integrity Failures", "cvss": 3.1,
+        "impact": "If the external CDN is compromised, arbitrary JavaScript or "
+                  "styles are executed in every visitor's browser.",
+        "remediation": "Add integrity='sha384-...' and crossorigin='anonymous' "
+                       "attributes to third-party script and link tags.",
+        "refs": ["https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity"],
+    },
+    "Missing Cache-Control on Cookie-Issuing Response": {
+        "cwe": "CWE-525", "owasp": "A05:2021 Security Misconfiguration", "cvss": 3.1,
+        "impact": "Shared proxies or browser history caches may retain sensitive "
+                  "pages or headers from authenticated responses.",
+        "remediation": "Set Cache-Control: no-store, private on authenticated and "
+                       "session-issuing responses.",
+        "refs": ["https://owasp.org/www-project-web-security-testing-guide/"],
+    },
+    "TLS Untrusted / Self-Signed Certificate": {
+        "cwe": "CWE-295", "owasp": "A02:2021 Cryptographic Failures", "cvss": 5.9,
+        "impact": "Clients cannot verify server identity, enabling MitM interception.",
+        "remediation": "Install a valid certificate issued by a trusted CA.",
+        "refs": ["https://ssl-config.mozilla.org/"],
+    },
+    "TLS Certificate Expired": {
+        "cwe": "CWE-295", "owasp": "A02:2021 Cryptographic Failures", "cvss": 7.4,
+        "impact": "Users encounter trust errors or bypass warnings, weakening transport security.",
+        "remediation": "Renew the certificate immediately and automate ACME renewal.",
+        "refs": ["https://ssl-config.mozilla.org/"],
+    },
+    "TLS Certificate Hostname Mismatch": {
+        "cwe": "CWE-297", "owasp": "A02:2021 Cryptographic Failures", "cvss": 5.3,
+        "impact": "Certificate Subject/SAN does not match the accessed host.",
+        "remediation": "Reissue certificate with the correct Subject Alternative Names.",
+        "refs": ["https://ssl-config.mozilla.org/"],
+    },
+    "Deprecated TLS Protocol Enabled": {
+        "cwe": "CWE-326", "owasp": "A02:2021 Cryptographic Failures", "cvss": 5.3,
+        "impact": "TLS 1.0/1.1 allow downgrade and legacy cipher attacks.",
+        "remediation": "Disable TLS 1.0 and 1.1; enforce TLS 1.2 and TLS 1.3.",
+        "refs": ["https://ssl-config.mozilla.org/"],
+    },
+    "TLS Weak Cipher": {
+        "cwe": "CWE-327", "owasp": "A02:2021 Cryptographic Failures", "cvss": 5.9,
+        "impact": "Weak symmetric/stream ciphers weaken confidentiality.",
+        "remediation": "Restrict cipher suites to modern AEAD suites (AES-GCM, ChaCha20-Poly1305).",
+        "refs": ["https://ssl-config.mozilla.org/"],
+    },
+    "Missing Strict-Transport-Security (HSTS)": {
+        "cwe": "CWE-319", "owasp": "A02:2021 Cryptographic Failures", "cvss": 3.7,
+        "impact": "First-visit HTTP requests can be downgraded via SSL stripping.",
+        "remediation": "Send Strict-Transport-Security: max-age=31536000; includeSubDomains.",
+        "refs": ["https://owasp.org/www-project-secure-headers/"],
+    },
+    "DARK-WEB-": {
+        "cwe": "CWE-1104", "owasp": "A06:2021 Vulnerable and Outdated Components", "cvss": 7.5,
+        "impact": "Fingerprinted software version matches known CVEs in Nessus-style rules.",
+        "remediation": "Upgrade the affected component to the patched version listed in the finding.",
+        "refs": ["https://nvd.nist.gov/"],
+    },
+    "DARK-NET-": {
+        "cwe": "CWE-1104", "owasp": "A06:2021 Vulnerable and Outdated Components", "cvss": 7.5,
+        "impact": "Exposed network service or outdated daemon banner matches known CVEs/misconfigs.",
+        "remediation": "Patch the service, restrict exposure with firewall/VPN, and enforce authentication.",
+        "refs": ["https://nvd.nist.gov/"],
+    },
+    "OpenID Connect Discovery Metadata": {
+        "cwe": "CWE-200", "owasp": "A05:2021 Security Misconfiguration", "cvss": 0.0,
+        "impact": "Public OIDC discovery document (normal for OAuth/SSO, useful for mapping auth flows).",
+        "remediation": "Ensure token/introspection endpoints enforce strict client & PKCE validation.",
+        "refs": ["https://openid.net/specs/openid-connect-discovery-1_0.html"],
+    },
 }
 
 _DEFAULT = {
@@ -417,21 +495,22 @@ OWASP_TOP10 = [
       "Environment / Secrets", "Sensitive Path", "GraphQL", "OpenAPI",
       "Backup / Source", "Cloud Storage", "Information File", "Directory Listing")),
     ("A02:2021 Cryptographic Failures",
-     ("JWT", "Sensitive Data", "Insecure Cookie")),
+     ("JWT", "Sensitive Data", "Insecure Cookie", "TLS", "HSTS", "Mixed Content")),
     ("A03:2021 Injection",
      ("SQL Injection", "XSS", "SSTI", "Command Injection", "CRLF", "XXE")),
     ("A04:2021 Insecure Design",
      ("Clickjacking", "Host Header")),
     ("A05:2021 Security Misconfiguration",
      ("CORS", "Missing Security Header", "Dangerous HTTP Method",
-      "Server Banner", "Debug / Diagnostic", "XXE", "Directory Listing")),
+      "Server Banner", "Debug / Diagnostic", "XXE", "Directory Listing",
+      "Cache-Control")),
     ("A06:2021 Vulnerable and Outdated Components",
      ("Known-Vulnerable", "Outdated / Vulnerable JS", "CMS Fingerprint",
-      "Apache Path Traversal")),
+      "Apache Path Traversal", "DARK-WEB-", "DARK-NET-")),
     ("A07:2021 Identification and Authentication Failures",
      ("Default / Weak Credentials",)),
     ("A08:2021 Software and Data Integrity Failures",
-     ("Outdated / Vulnerable JS",)),
+     ("Outdated / Vulnerable JS", "Subresource Integrity")),
     ("A09:2021 Security Logging and Monitoring Failures",
      ()),  # detection-only; we don't claim to test this
     ("A10:2021 SSRF",

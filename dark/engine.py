@@ -199,7 +199,8 @@ class _Capture:
 # NetRecon
 # ---------------------------------------------------------------------------
 def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "normal",
-                     probe: bool = True, discover: bool = False) -> Dict:
+                     probe: bool = True, discover: bool = False,
+                     vuln_audit: bool = True) -> Dict:
     import netrecon as nr
 
     hosts = nr.parse_targets(targets)
@@ -212,10 +213,17 @@ def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "n
     scanner = nr.NetRecon(
         targets=hosts, ports=port_list, timing=timing,
         probe=probe, discover=discover, resolve=True, randomize=True,
+        vuln_audit=vuln_audit,
     )
     with _Capture() as cap:
         asyncio.run(scanner.run())
-    return {"report": scanner.to_dict(), "log": cap.text}
+    rep = scanner.to_dict()
+    return {
+        "target": ", ".join(hosts[:6]),
+        "report": rep,
+        "findings": rep.get("findings") or [],
+        "log": cap.text,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +413,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         },
         "coverage": state.coverage(),
         "diagnostics": state.diagnostics,
+        "tech_stack": getattr(state, "tech_stack", []) or [],
+        "tls_summary": getattr(state, "tls_summary", {}) or {},
         "findings": [asdict(f) for f in state.findings],
         "xss_deep": getattr(state, "xss_deep", {}) or {},
         "log": cap.text,

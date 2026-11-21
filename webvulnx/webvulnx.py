@@ -219,6 +219,8 @@ class ScanState:
     diagnostics: List[str] = field(default_factory=list)        # why 0 findings
     degraded: bool = False                                      # blocked/WAF
     xss_deep: Dict[str, Any] = field(default_factory=dict)      # deep XSS engine stats
+    tech_stack: List[Dict[str, Any]] = field(default_factory=list)
+    tls_summary: Dict[str, Any] = field(default_factory=dict)
 
     def note(self, msg: str) -> None:
         if msg not in self.diagnostics:
@@ -259,6 +261,8 @@ class LinkFormParser(HTMLParser):
         super().__init__()
         self.base = base
         self.links: List[str] = []
+        self.scripts: List[str] = []
+        self.external_assets: List[Tuple[str, str, bool]] = []  # (tag, src_or_href, has_sri)
         self.forms: List[Dict] = []
         self._form: Optional[Dict] = None
 
@@ -266,6 +270,8 @@ class LinkFormParser(HTMLParser):
         a = dict(attrs)
         if tag == "a" and a.get("href"):
             self.links.append(a["href"])
+        elif tag == "iframe" and a.get("src"):
+            self.links.append(a["src"])
         elif tag == "form":
             self._form = {
                 "action": a.get("action", ""),
@@ -279,7 +285,10 @@ class LinkFormParser(HTMLParser):
                 "value": a.get("value", ""),
             })
         elif tag == "script" and a.get("src"):
-            self.links.append(a["src"])
+            self.scripts.append(a["src"])
+            self.external_assets.append(("script", a["src"], bool(a.get("integrity"))))
+        elif tag == "link" and a.get("href") and "stylesheet" in (a.get("rel") or "").lower():
+            self.external_assets.append(("link", a["href"], bool(a.get("integrity"))))
 
     def handle_endtag(self, tag):
         if tag == "form" and self._form is not None:
@@ -603,6 +612,14 @@ def discover_seeds(client: HttpClient, url: str, state: ScanState,
 # ============================================================================
 # Module 1 — Crawler
 # ============================================================================
+JS_ROUTE_RX = re.compile(
+    r"""['"]((?:/api/|/v[123]/|/graphql|/admin|/auth|/user|/account|/login|/search|/rest/|/wp-json/)[a-zA-Z0-9_./?=&%-]{1,90})['"]"""
+)
+JS_FETCH_RX = re.compile(
+    r"""(?:fetch|axios\.(?:get|post|put|delete)|open\s*\(\s*['"](?:GET|POST)['"]\s*,)\s*\(\s*['"](/[^'"\s]{2,90})['"]"""
+)
+
+
 class Crawler:
     def __init__(self, client: HttpClient, state: ScanState, max_depth: int = 3,
                  max_urls: int = 150):
@@ -610,6 +627,29 @@ class Crawler:
         self.state = state
         self.max_depth = max_depth
         self.max_urls = max_urls
+        self._js_seen: Set[str] = set()
+
+    def _harvest_js_endpoints(self, text: str, page_url: str, start: str,
+                              queue: List[Tuple[str, int]], seen: Set[str], depth: int) -> None:
+        if not text:
+            return
+        hits = 0
+        for rx in (JS_ROUTE_RX, JS_FETCH_RX):
+            for m in rx.finditer(text[:200_000]):
+                cand = m.group(1)
+                if any(cand.lower().endswith(ext) for ext in (".png", ".jpg", ".svg", ".css", ".woff", ".woff2")):
+                    continue
+                absu = normalize_url(urllib.parse.urljoin(page_url, cand))
+                if same_origin(start, absu) and absu not in seen:
+                    queue.append((absu, depth + 1))
+                    qs = urllib.parse.urlsplit(absu).query
+                    if qs:
+                        self.state.params.setdefault(absu, set()).update(
+                            urllib.parse.parse_qs(qs, keep_blank_values=True).keys()
+                        )
+                    hits += 1
+                    if hits >= 20:
+                        return
 
     def run(self, start: str, seeds: Optional[List[str]] = None) -> None:
         info(f"Crawling {start} (depth={self.max_depth}, max_urls={self.max_urls})")
@@ -653,6 +693,18 @@ class Crawler:
                 parser.feed(resp.text)
             except Exception:
                 continue
+
+            # Passive SPA / JS endpoint discovery (inline + up to 8 same-origin bundles)
+            self._harvest_js_endpoints(resp.text, resp.url, start, queue, seen, depth)
+            for s_url in parser.scripts:
+                if len(self._js_seen) >= 8:
+                    break
+                abss = urllib.parse.urljoin(resp.url, s_url)
+                if same_origin(start, abss) and abss not in self._js_seen:
+                    self._js_seen.add(abss)
+                    jsr = self.client.get(abss, cache=True)
+                    if jsr is not None and jsr.status_code < 400:
+                        self._harvest_js_endpoints(jsr.text, resp.url, start, queue, seen, depth)
 
             for link in parser.links:
                 absu = urllib.parse.urljoin(resp.url, link)
@@ -702,8 +754,17 @@ class SqliScanner:
         return None
 
     @staticmethod
-    def _similarity(a: str, b: str) -> float:
-        return difflib.SequenceMatcher(None, a[:4000], b[:4000]).ratio()
+    def _strip_dynamic(body: str) -> str:
+        """Strip volatile tokens (timestamps, nonces, random hex) for external-site stability."""
+        s = re.sub(r"\b[0-9a-f]{16,64}\b", "<HEX>", body[:6000], flags=re.I)
+        s = re.sub(r"\b\d{9,13}(?:\.\d+)?\b", "<TS>", s)
+        return s
+
+    @classmethod
+    def _similarity(cls, a: str, b: str) -> float:
+        return difflib.SequenceMatcher(
+            None, cls._strip_dynamic(a), cls._strip_dynamic(b)
+        ).ratio()
 
     def _inject_params(self, url: str, method: str = "GET",
                        data: Optional[Dict] = None, param: Optional[str] = None
@@ -731,14 +792,19 @@ class SqliScanner:
         base_params = base_params or {p: "1" for p in params}
         parsed = urllib.parse.urlsplit(url)
         clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-        # Baseline
+        # Baseline (measure stability twice so dynamic external pages don't trigger FPs)
         if method.upper() == "GET":
             base_resp = self.client.get(clean, params=base_params)
+            base_resp2 = self.client.get(clean, params=base_params) if base_resp is not None else None
         else:
             base_resp = self.client.request("POST", clean, data=base_params)
+            base_resp2 = self.client.request("POST", clean, data=base_params) if base_resp is not None else None
         if base_resp is None:
             return
         baseline = base_resp.text
+        base_noise = self._similarity(baseline, base_resp2.text) if base_resp2 is not None else 1.0
+        # If two identical requests differ heavily, require a sharper true/false split
+        tf_ceiling = 0.80 if base_noise >= 0.96 else min(0.65, base_noise - 0.15)
 
         for param in params:
             info(f"SQLi tests on {url} [{param}] ({method})")
@@ -782,9 +848,9 @@ class SqliScanner:
                     sim_t = self._similarity(baseline, t_resp.text)
                     sim_f = self._similarity(baseline, f_resp.text)
                     sim_tf = self._similarity(t_resp.text, f_resp.text)
-                    if (sim_t > 0.90 and sim_f < 0.85) or \
-                       (sim_f > 0.90 and sim_t < 0.85) or \
-                       (sim_tf < 0.75 and abs(sim_t - sim_f) > 0.15):
+                    if (sim_t > 0.90 and sim_f < tf_ceiling) or \
+                       (sim_f > 0.90 and sim_t < tf_ceiling) or \
+                       (sim_tf < min(0.75, tf_ceiling) and abs(sim_t - sim_f) > 0.18):
                         # Confirmation with a second, different payload pair
                         t2 = self._send(url, method, param, SQL_BOOLEAN_TRUE[1], base_params, baseline)
                         f2 = self._send(url, method, param, SQL_BOOLEAN_FALSE[1], base_params, baseline)
@@ -792,7 +858,7 @@ class SqliScanner:
                             s_t2 = self._similarity(t2.text, t_resp.text)
                             s_f2 = self._similarity(f2.text, f_resp.text)
                             if s_t2 > 0.85 and s_f2 > 0.85 and \
-                               self._similarity(t2.text, f2.text) < 0.85:
+                               self._similarity(t2.text, f2.text) < tf_ceiling:
                                 self.state.add(Finding(
                                     vuln_type="SQL Injection (Boolean-Based Blind)",
                                     severity="High", url=url, parameter=param,
@@ -961,16 +1027,57 @@ class XssScanner:
 
 
 # ============================================================================
-# Module 4 — Directory brute-force
+# Module 4 — Directory brute-force (with Soft-404 / Catch-All Calibration)
 # ============================================================================
 class DirBuster:
     def __init__(self, client: HttpClient, state: ScanState, wordlist: List[str]):
         self.client = client
         self.state = state
         self.wordlist = wordlist
+        self._soft404_baselines: List[Tuple[int, int, str, str]] = []
+
+    @staticmethod
+    def _norm_404(body: str) -> str:
+        s = re.sub(r"\b[0-9a-f]{16,64}\b", "<HEX>", body[:3000], flags=re.I)
+        return re.sub(r"\d{9,13}(?:\.\d+)?", "<TS>", s)
+
+    def _calibrate_404(self, base: str) -> None:
+        self._soft404_baselines = []
+        for probe in (".dark-404-a8f3b2", "dark-nonexistent-9e1c4a.html"):
+            url = urllib.parse.urljoin(base, probe)
+            resp = self.client.get(url, allow_redirects=False)
+            if resp is None:
+                continue
+            loc = urllib.parse.urlsplit(resp.headers.get("Location", "")).path
+            self._soft404_baselines.append((
+                resp.status_code,
+                len(resp.content),
+                self._norm_404(resp.text or ""),
+                loc,
+            ))
+
+    def _is_soft_404(self, resp) -> bool:
+        if not self._soft404_baselines:
+            return False
+        sc = resp.status_code
+        sz = len(resp.content)
+        body = self._norm_404(resp.text or "")
+        loc = urllib.parse.urlsplit(resp.headers.get("Location", "")).path
+        for b_sc, b_sz, b_body, b_loc in self._soft404_baselines:
+            if sc != b_sc:
+                continue
+            if sc in (301, 302, 303, 307, 308) and loc and loc == b_loc:
+                return True
+            if abs(sz - b_sz) <= max(40, int(b_sz * 0.05)):
+                if difflib.SequenceMatcher(None, body, b_body).ratio() >= 0.85:
+                    return True
+            elif body and b_body and difflib.SequenceMatcher(None, body, b_body).ratio() >= 0.90:
+                return True
+        return False
 
     def run(self, base: str) -> None:
         base = base if base.endswith("/") else base + "/"
+        self._calibrate_404(base)
         info(f"Directory brute-force: {len(self.wordlist)} entries")
         interesting = {200, 201, 204, 301, 302, 307, 401, 403, 500}
         workers = getattr(self.client, "workers", 3)
@@ -986,28 +1093,37 @@ class DirBuster:
                 pass
 
     def _hit(self, base, word, interesting):
-            url = urllib.parse.urljoin(base, word.strip().lstrip("/"))
-            resp = self.client.get(url, allow_redirects=False)
-            if resp is None:
-                return
-            if resp.status_code in interesting:
-                size = len(resp.content)
-                loc = resp.headers.get("Location", "")
-                note = f" -> {loc}" if loc else ""
-                sev = "Medium" if resp.status_code in (200, 201, 500) else "Low"
-                # .git/.env/backup hits are higher severity
-                if any(x in word for x in (".git", ".env", ".aws", "id_rsa",
-                                           "dump.sql", "backup", ".htaccess",
-                                           "web.config", "phpinfo")):
-                    sev = "High" if resp.status_code == 200 else "Medium"
-                self.state.add(Finding(
-                    vuln_type="Sensitive Path Exposed" if sev in ("High", "Medium")
-                              else "Hidden Path Found",
-                    severity=sev, url=url,
-                    evidence=f"HTTP {resp.status_code}, {size} bytes{note}",
-                    detail="A potentially sensitive or hidden resource is accessible.",
-                    cvss_hint=5.0 if sev == "High" else 3.0,
-                ))
+        url = urllib.parse.urljoin(base, word.strip().lstrip("/"))
+        resp = self.client.get(url, allow_redirects=False)
+        if resp is None or resp.status_code not in interesting:
+            return
+        if self._is_soft_404(resp):
+            return
+        ct = (resp.headers.get("Content-Type") or "").lower()
+        body_head = (resp.text or "")[:400].lower()
+        is_secret_file = any(x in word for x in (
+            ".git", ".env", ".aws", "id_rsa", "dump.sql", "backup",
+            ".htaccess", "web.config",
+        ))
+        # Catch-all HTML pages on .env / .git / .sql are false positives
+        if is_secret_file and resp.status_code == 200 and (
+            "text/html" in ct or body_head.lstrip().startswith(("<!doctype", "<html"))
+        ):
+            return
+        size = len(resp.content)
+        loc = resp.headers.get("Location", "")
+        note = f" -> {loc}" if loc else ""
+        sev = "Medium" if resp.status_code in (200, 201, 500) else "Low"
+        if is_secret_file or "phpinfo" in word:
+            sev = "High" if resp.status_code == 200 else "Medium"
+        self.state.add(Finding(
+            vuln_type="Sensitive Path Exposed" if sev in ("High", "Medium")
+                      else "Hidden Path Found",
+            severity=sev, url=url,
+            evidence=f"HTTP {resp.status_code}, {size} bytes{note}",
+            detail="A potentially sensitive or hidden resource is accessible.",
+            cvss_hint=5.0 if sev == "High" else 3.0,
+        ))
 
 
 # ============================================================================
@@ -1019,7 +1135,7 @@ class MisconfigAudit:
         self.state = state
 
     def run(self, base: str) -> None:
-        info("Auditing security headers & cookies")
+        info("Auditing security headers, cookies, SRI & caching")
         resp = self.client.get(base)
         if resp is None:
             return
@@ -1049,38 +1165,106 @@ class MisconfigAudit:
                 cvss_hint=2.0,
             ))
 
+        raw_sc = resp.headers.get("Set-Cookie", "")
         for cookie in resp.cookies:
             issues = []
-            if not cookie.secure:
+            if base.startswith("https://") and not cookie.secure:
                 issues.append("missing Secure")
-            if "httponly" not in str(getattr(cookie, "_rest", {})).lower() \
+            rest_low = str(getattr(cookie, "_rest", {})).lower()
+            if "httponly" not in rest_low \
                and not getattr(cookie, "has_nonstandard_attr", lambda *_: False)("HttpOnly"):
                 issues.append("missing HttpOnly")
+            if "samesite" not in rest_low and "samesite" not in raw_sc.lower():
+                issues.append("missing SameSite")
             if issues:
                 self.state.add(Finding(
                     vuln_type="Insecure Cookie Flags", severity="Low", url=base,
                     parameter=cookie.name,
                     evidence=f"Set-Cookie '{cookie.name}': {', '.join(issues)}",
-                    detail="Cookies without Secure/HttpOnly flags are exposed to theft.",
+                    detail="Cookies without Secure/HttpOnly/SameSite flags increase session risk.",
                     cvss_hint=3.5,
                 ))
 
-        # HTTP methods
-        for method in ("OPTIONS", "TRACE", "PUT", "DELETE"):
+        # Sensitive cache-control check when session cookies are issued
+        if resp.cookies:
+            cc = (resp.headers.get("Cache-Control") or "").lower()
+            if "no-store" not in cc and "private" not in cc:
+                self.state.add(Finding(
+                    vuln_type="Missing Cache-Control on Cookie-Issuing Response",
+                    severity="Low", url=base, parameter="Cache-Control",
+                    evidence=f"Cache-Control={cc or 'absent'} while setting cookie(s)",
+                    detail="Set Cache-Control: no-store, private on authenticated or cookie-issuing responses.",
+                    cvss_hint=3.1,
+                ))
+
+        # Mixed content & missing Subresource Integrity (SRI) on third-party scripts/styles
+        try:
+            p = LinkFormParser(base)
+            p.feed(resp.text or "")
+            missing_sri = []
+            mixed = []
+            base_host = urllib.parse.urlsplit(base).netloc.lower()
+            for tag, src, has_sri in p.external_assets:
+                absu = urllib.parse.urljoin(resp.url or base, src)
+                u = urllib.parse.urlsplit(absu)
+                if base.startswith("https://") and u.scheme == "http":
+                    mixed.append(absu[:100])
+                elif u.netloc and u.netloc.lower() != base_host and not has_sri:
+                    missing_sri.append(absu[:100])
+            if mixed:
+                self.state.add(Finding(
+                    vuln_type="Mixed Content (HTTP resource on HTTPS page)",
+                    severity="Medium", url=base, parameter=mixed[0],
+                    evidence=f"{len(mixed)} HTTP resource(s) loaded on HTTPS page (e.g. {mixed[0]})",
+                    detail="Active HTTP scripts/stylesheets on HTTPS pages allow MitM tampering.",
+                    cvss_hint=5.4,
+                ))
+            if missing_sri:
+                self.state.add(Finding(
+                    vuln_type="Missing Subresource Integrity (SRI) on CDN Asset",
+                    severity="Low", url=base, parameter=f"{len(missing_sri)} external asset(s)",
+                    evidence=f"e.g. {missing_sri[0]} lacks integrity= attribute",
+                    detail="Add integrity='sha384-...' and crossorigin='anonymous' on third-party CDN scripts/styles.",
+                    cvss_hint=3.1,
+                ))
+        except Exception:
+            pass
+
+        # HTTP methods (never flag 501 Not Implemented; verify TRACE reflection & non-catchall)
+        tr = self.client.request("TRACE", base, headers={"X-Dark-Trace": "dark-trace-probe"})
+        if tr is not None and tr.status_code == 200 and "dark-trace-probe" in (tr.text or ""):
+            self.state.add(Finding(
+                vuln_type="Dangerous HTTP Method Enabled", severity="Medium",
+                url=base, parameter="TRACE",
+                evidence="TRACE echoed X-Dark-Trace header (HTTP 200)",
+                detail="Cross-Site Tracing (XST) is enabled. Disable HTTP TRACE.",
+                cvss_hint=5.0,
+            ))
+        base_body_norm = SqliScanner._strip_dynamic(resp.text or "")
+        for method in ("PUT", "DELETE"):
             r = self.client.request(method, base)
-            if r is not None and r.status_code in (200, 204, 501) and method in ("TRACE", "PUT", "DELETE"):
+            if r is not None and r.status_code in (200, 201, 204):
+                # Ignore SPAs/servers that return the same HTML index page for every verb
+                if r.status_code == 200 and difflib.SequenceMatcher(
+                    None, SqliScanner._strip_dynamic(r.text or ""), base_body_norm
+                ).ratio() > 0.85:
+                    continue
                 self.state.add(Finding(
                     vuln_type="Dangerous HTTP Method Enabled", severity="Medium",
                     url=base, parameter=method,
-                    evidence=f"{method} allowed (HTTP {r.status_code})",
-                    detail="Verb tampering / cross-site tracing may be possible.",
+                    evidence=f"{method} returned HTTP {r.status_code}",
+                    detail="Unexpected write/delete HTTP verb accepted on base endpoint.",
                     cvss_hint=5.0,
                 ))
 
-        # robots.txt / security.txt
+        # robots.txt / security.txt (ignore HTML SPA catch-all pages)
         for path in ("robots.txt", "security.txt", ".well-known/security.txt"):
             r = self.client.get(urllib.parse.urljoin(base, path))
             if r is not None and r.status_code == 200 and r.text.strip():
+                ct = (r.headers.get("Content-Type") or "").lower()
+                head = r.text.lstrip()[:200].lower()
+                if "text/html" in ct or head.startswith(("<!doctype", "<html")):
+                    continue
                 self.state.add(Finding(
                     vuln_type="Information File Present", severity="Info",
                     url=urllib.parse.urljoin(base, path),
@@ -1122,9 +1306,12 @@ class ParamFuzzer:
             parsed = urllib.parse.urlsplit(url)
             clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
             base_resp = self.client.get(clean)
+            base_resp2 = self.client.get(clean) if base_resp is not None else None
             if base_resp is None:
                 continue
             base_len = len(base_resp.text)
+            jitter = abs(len(base_resp2.text) - base_len) if base_resp2 is not None else 0
+            len_thresh = max(140, jitter * 3 + 80)
             for p in COMMON_PARAMS:
                 if p in existing:
                     continue
@@ -1134,7 +1321,7 @@ class ParamFuzzer:
                 if PARAM_MARKER in resp.text:
                     self.state.params.setdefault(url, set()).add(p)
                     found += 1
-                elif abs(len(resp.text) - base_len) > 120:
+                elif abs(len(resp.text) - base_len) > len_thresh:
                     self.state.params.setdefault(url, set()).add(p)
                     found += 1
         ok(f"Parameter discovery: {found} active parameter(s) found")
@@ -1527,24 +1714,56 @@ class AdvancedScanner:
     ]
 
     def scan_known_vulns(self) -> None:
-        info("Known-vulnerable version tests (CVE database)")
+        info("Nessus-style technology fingerprinting & CVE/TLS plugin audit")
         resp = self.client.get(self.state.base_url)
         if resp is None:
             return
-        blob = "; ".join(f"{k}: {v}" for k, v in resp.headers.items())
-        seen = set()
-        for rx, name, detail in self.KNOWN_VULN_VERSIONS:
-            m = rx.search(blob)
-            if m and name not in seen:
-                seen.add(name)
-                self.state.add(Finding(
-                    vuln_type="Known-Vulnerable Software Version",
-                    severity="High", url=self.state.base_url, parameter=name,
-                    evidence=m.group(0),
-                    detail=detail + " — verify and patch immediately.",
-                    cvss_hint=7.5,
-                ))
-        # Direct CVE-2021-41773 / 42013 exploit probe (precise, zero FP)
+
+        # 1. Nessus-style semantic-version CVE engine & stack fingerprinter
+        try:
+            import nessus_plugins as np  # type: ignore
+            np.NessusWebAuditor(self.client, self.state, Finding).run()
+        except Exception as e:
+            # Fallback to built-in quick checks if module unavailable
+            blob = "; ".join(f"{k}: {v}" for k, v in resp.headers.items())
+            seen = set()
+            for rx, name, detail in self.KNOWN_VULN_VERSIONS:
+                m = rx.search(blob)
+                if m and name not in seen:
+                    seen.add(name)
+                    self.state.add(Finding(
+                        vuln_type="Known-Vulnerable Software Version",
+                        severity="High", url=self.state.base_url, parameter=name,
+                        evidence=m.group(0),
+                        detail=detail + " — verify and patch immediately.",
+                        cvss_hint=7.5,
+                    ))
+
+        # 2. TLS / SSL & certificate compliance audit on HTTPS targets
+        parsed = urllib.parse.urlsplit(self.state.base_url)
+        if parsed.scheme.lower() == "https" and parsed.hostname:
+            try:
+                import tls_audit  # type: ignore
+                port = parsed.port or 443
+                hsts = resp.headers.get("Strict-Transport-Security", "")
+                tls_findings, tls_sum = tls_audit.audit_tls(
+                    parsed.hostname, port=port, timeout=5.0, hsts_header=hsts
+                )
+                self.state.tls_summary = tls_sum
+                for tf in tls_findings:
+                    self.state.add(Finding(
+                        vuln_type=f"[{tf['plugin_id']}] {tf['vuln_type']}",
+                        severity=tf["severity"],
+                        url=tf.get("url") or self.state.base_url,
+                        parameter=tf.get("parameter") or "",
+                        evidence=tf.get("evidence") or "",
+                        detail=tf.get("detail") or "",
+                        cvss_hint=float(tf.get("cvss_hint") or 5.0),
+                    ))
+            except Exception:
+                pass
+
+        # 3. Direct non-destructive read check for Apache CVE-2021-41773/42013
         for path in self.CVE_2021_41773_PATHS:
             target = urllib.parse.urljoin(self.state.base_url, path)
             r = self.client.get(target)

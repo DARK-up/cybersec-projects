@@ -8,9 +8,10 @@
 
 | Module | Tool | What it does |
 |--------|------|--------------|
-| `/api/jobs/network-scan` | **NetRecon** | Async port scan + service/OS fingerprinting |
-| `/api/jobs/web-scan` | **WebVulnX** | SQLi + context-aware XSS + world-surface (Git/.env/GraphQL/OpenAPI/CMS) + 19 vuln classes |
-| `/api/jobs/{id}/report` | **Report** | Executive HTML (risk score, OWASP matrix, CWE/CVSS, print-to-PDF) |
+| `/api/jobs/network-scan` | **NetRecon** | Async port scan + service/OS fingerprinting + Nessus-style service CVE & TLS plugins |
+| `/api/jobs/web-scan` | **WebVulnX** | SQLi + context-aware XSS + Nessus-style web CVE/TLS audit + Soft-404 calibration + SPA JS route discovery |
+| `/api/jobs/{id}/report` | **Report** | Executive HTML (risk score, OWASP matrix, CWE/CVSS, print-to-PDF) for Web & Network |
+| `/api/projects`, `/api/targets`, `/api/compare` | **Platform** | Projects, per-target history, retest scan diffing, and optional workspace lock (`/api/auth/*`) |
 | `/api/hash/*` | **HashBreaker** | Hash identification + dictionary/rules/mask cracking |
 | `/api/jobs/monitor-*` | **NetSentry** | ARP spoof / scans / DNS tunnel detection (live, pcap, demo) |
 

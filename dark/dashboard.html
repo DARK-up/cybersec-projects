@@ -72,9 +72,20 @@
 
 <header>
   <img src="/static/logo.png" alt="DARK logo">
-  <div>
+  <div style="flex:1">
     <h1>D<span>A</span>RK</h1>
     <div class="tag">DETECTION &amp; ATTACK RECONNAISSANCE KIT — UNIFIED SECURITY SUITE</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <label style="min-width:170px;margin:0;flex:0">Project
+      <select id="active-project" onchange="onProjectChange()" style="padding:6px 10px;font-size:12px">
+        <option value="default">Default</option>
+      </select>
+    </label>
+    <button id="auth-btn" class="run" onclick="openAuthModal()"
+            style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:8px 14px;font-size:12px">
+      🔓 Unlocked
+    </button>
   </div>
 </header>
 
@@ -85,6 +96,7 @@
   <button data-tab="web">🕸️ Web Scan</button>
   <button data-tab="hash">🔐 Hashes</button>
   <button data-tab="mon">📡 Monitor</button>
+  <button data-tab="platform">🏢 Platform &amp; Compare</button>
   <button data-tab="jobs">🧾 Jobs</button>
 </nav>
 
@@ -110,6 +122,7 @@
   </div>
   <div class="checks">
     <label><input type="checkbox" id="net-probe" checked> Service fingerprinting</label>
+    <label><input type="checkbox" id="net-vulns" checked> 🛡️ Nessus-style CVE &amp; TLS plugins</label>
     <label><input type="checkbox" id="net-discover"> Host discovery (ping sweep)</label>
   </div>
   <button class="run" onclick="runNetwork()">▶ RUN SCAN</button>
@@ -224,6 +237,44 @@
   <div class="out" id="mon-out">Results will appear here…</div>
 </section>
 
+<!-- ============ PLATFORM & COMPARE ============ -->
+<section id="tab-platform">
+  <h2>DARK Platform — Projects, Target History &amp; Scan Diff</h2>
+  <p class="desc">Organize engagements into projects, view per-target vulnerability history across tools, and compare two scans to track fixes vs regressions.</p>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:10px 0 8px">📁 Projects</h3>
+  <div class="row">
+    <label>New project name
+      <input id="proj-name" placeholder="Client Engagement Q4">
+    </label>
+    <label>Description
+      <input id="proj-desc" placeholder="External web + perimeter assessment">
+    </label>
+    <div style="display:flex;align-items:flex-end">
+      <button class="run" onclick="createProject()" style="padding:10px 18px">+ CREATE</button>
+    </div>
+  </div>
+  <div class="out" id="proj-list" style="margin-top:8px">Loading projects…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:20px 0 8px">🎯 Target History</h3>
+  <button class="run" onclick="loadPlatform()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:8px 14px">🔄 REFRESH</button>
+  <div class="out" id="targets-out" style="margin-top:8px">Loading targets…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:20px 0 8px">⚖️ Scan Comparison (Retest Diff)</h3>
+  <div class="row">
+    <label>Baseline scan (A)
+      <select id="cmp-a"></select>
+    </label>
+    <label>Newer scan (B)
+      <select id="cmp-b"></select>
+    </label>
+    <div style="display:flex;align-items:flex-end">
+      <button class="run" onclick="runCompare()" style="padding:10px 18px">COMPARE A vs B</button>
+    </div>
+  </div>
+  <div class="out" id="cmp-out">Select two finished scans of the same type (web-scan or network-scan) to diff.</div>
+</section>
+
 <!-- ============ JOBS ============ -->
 <section id="tab-jobs">
   <h2>Job Queue</h2>
@@ -241,11 +292,25 @@
 </main>
 
 <footer>
-  DARK v1.0 — Detection &amp; Attack Reconnaissance Kit &nbsp;|&nbsp;
+  DARK v2.0 — Detection &amp; Attack Reconnaissance Kit &nbsp;|&nbsp;
   API docs: <a href="/docs" target="_blank">/docs</a> &nbsp;|&nbsp;
   Tools: NetRecon · WebVulnX · HashBreaker · NetSentry &nbsp;|&nbsp;
   ⚖️ Authorized testing only
 </footer>
+
+<div id="auth-modal" style="display:none;position:fixed;inset:0;background:rgba(5,8,14,.85);z-index:99;align-items:center;justify-content:center">
+  <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;width:360px;max-width:92vw">
+    <h2 style="margin-top:0">🔐 Workspace Lock</h2>
+    <p class="desc" id="auth-msg">Protect the DARK dashboard with a password.</p>
+    <label>Username <input id="auth-user" value="dark"></label>
+    <label style="margin-top:10px">Password <input id="auth-pass" type="password" placeholder="Minimum 4 chars"></label>
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <button class="run" id="auth-submit" onclick="submitAuth()" style="padding:9px 16px">SAVE / LOGIN</button>
+      <button class="run" id="auth-disable-btn" onclick="disableAuth()" style="display:none;background:var(--red);color:#fff;padding:9px 14px">UNLOCK / DISABLE</button>
+      <button class="run" id="auth-close-btn" onclick="closeAuthModal()" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);padding:9px 14px">CLOSE</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -258,11 +323,16 @@ document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.add('active');
     $('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'jobs') loadJobs();
+    if (btn.dataset.tab === 'platform') loadPlatform();
   };
 });
 
+let ACTIVE_PROJECT = 'default';
+let AUTH_STATE = {enabled: false, authenticated: true};
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
+  if (r.status === 401) { openAuthModal(true); throw new Error('Workspace locked — login required'); }
   if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()));
   return r.json();
 }
@@ -315,6 +385,13 @@ function renderJob(j, outEl) {
              (secs ? ' in ' + secs : '') + '\n';
 
   if (r.report && r.report.hosts) {                       // network scan
+    const vs = r.report.vuln_summary || {};
+    if (vs.total) {
+      html += '\n<b>── Nessus-Style Service &amp; CVE Plugins: ' + vs.total + ' finding(s) ──</b>\n';
+      for (const sev in (vs.by_severity || {}))
+        html += ' <span class="badge b-' + esc(sev) + '">' + esc(sev) + ': ' + vs.by_severity[sev] + '</span>';
+      html += '\n';
+    }
     for (const h of r.report.hosts) {
       html += '\n<b>' + esc(h.host) + '</b> ' + esc(h.hostname || '') +
               ' — <span class="badge b-Low">OS: ' + esc(h.os_hint) + '</span>';
@@ -333,8 +410,22 @@ function renderJob(j, outEl) {
                 '<td><code>' + esc((p.banner || '-').slice(0, 70)) + '</code></td></tr>';
       }
       html += '</table>';
+      if (h.vulnerabilities && h.vulnerabilities.length) {
+        html += '<table><tr><th>Severity</th><th>Plugin / CVE Finding</th><th>Port</th><th>CVSS</th><th>Evidence</th></tr>';
+        for (const v of h.vulnerabilities) {
+          html += '<tr><td><span class="badge b-' + esc(v.severity) + '">' + esc(v.severity) + '</span></td>' +
+                  '<td>' + esc(v.vuln_type) + '</td><td>' + esc(v.port || '-') + '</td>' +
+                  '<td>' + esc(v.cvss_hint || '-') + '</td>' +
+                  '<td>' + esc((v.evidence || '-').slice(0, 110)) + '</td></tr>';
+        }
+        html += '</table>';
+      }
     }
     html += '\nTotal open ports: ' + r.report.hosts.reduce((a, h) => a + h.open_ports.length, 0);
+    html += '\n\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
+            encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a> ' +
+            '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
+            encodeURIComponent(j.id) + '/export.csv">⬇ CSV</a>';
   } else if (r.findings) {                                // web scan
     const st = r.stats || {};
     html += '\nTarget: ' + esc(r.target || '');
@@ -357,6 +448,17 @@ function renderJob(j, outEl) {
       html += '\nStatus codes: ' + codes.map(([k, v]) => k + '×' + v).join(', ');
     if ((st.seed_urls || []).length)
       html += '\nSeeds: ' + esc((st.seed_urls || []).slice(0, 8).join('  '));
+    if (r.tech_stack && r.tech_stack.length) {
+      html += '\n\n<b>── Fingerprinted Tech Stack ──</b>\n';
+      for (const t of r.tech_stack)
+        html += ' <span class="badge b-Info">' + esc(t.product + (t.version ? ' ' + t.version : '')) + '</span>';
+    }
+    if (r.tls_summary && r.tls_summary.reachable) {
+      html += '\n\n<b>── TLS/SSL Summary ──</b>\n' +
+              esc((r.tls_summary.protocol || '?') + ' · ' + (r.tls_summary.cipher || '?') +
+              (r.tls_summary.issuer ? ' · Issuer: ' + r.tls_summary.issuer : '') +
+              (r.tls_summary.not_after ? ' · Expires: ' + r.tls_summary.not_after : ''));
+    }
     html += '\n\n<b>── Findings: ' + (st.findings || 0) + ' total (' +
             (st.actionable !== undefined ? st.actionable : r.findings.length) +
             ' actionable) ──</b>\n';
@@ -393,7 +495,7 @@ function renderJob(j, outEl) {
               '</td><td>' + esc((f.evidence || '-').slice(0, 90)) + '</td></tr>';
     }
     html += '</table>';
-    html += '\\n\\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
+    html += '\n\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
             encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a> ';
     html += '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
             encodeURIComponent(j.id) + '/report?download=1">⬇ HTML</a> ';
@@ -465,7 +567,8 @@ async function runNetwork() {
   const targets = $('net-targets').value.split(/[,\s]+/).filter(Boolean);
   const body = {
     targets, ports: $('net-ports').value, timing: $('net-timing').value,
-    probe: $('net-probe').checked, discover: $('net-discover').checked
+    probe: $('net-probe').checked, discover: $('net-discover').checked,
+    vuln_audit: $('net-vulns').checked, project_id: ACTIVE_PROJECT
   };
   try {
     const { job_id } = await api('/api/jobs/network-scan', {
@@ -484,7 +587,7 @@ async function runWeb() {
     fast: $('web-fast').checked,
     time_blind: +$('web-blind').value, max_urls: +$('web-max').value,
     depth: +$('web-depth').value, delay: +$('web-delay').value,
-    stealth: $('web-stealth').checked
+    stealth: $('web-stealth').checked, project_id: ACTIVE_PROJECT
   };
   try {
     const { job_id } = await api('/api/jobs/web-scan', {
@@ -544,7 +647,8 @@ async function runCrack() {
     hashes, rules: $('hash-rules').checked,
     wordlist: wl === 'none' ? null : wl,
     mask: $('hash-mask').value || null,
-    algo: $('hash-algo').value || null
+    algo: $('hash-algo').value || null,
+    project_id: ACTIVE_PROJECT
   };
   if ((wl === 'rockyou' || wl === 'auto') && WL_HAS_ROCKYOU)
     $('hash-out').textContent = 'Cracking against rockyou.txt (14.3M words) — this can take a few minutes.\nWatch live progress in the Jobs tab…';
@@ -578,7 +682,8 @@ loadWordlistInfo();
 async function runDemo() {
   try {
     const { job_id } = await api('/api/jobs/monitor-demo', {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id: ACTIVE_PROJECT})});
     await pollJob(job_id, $('mon-out'));
   } catch (e) { $('mon-out').textContent = 'Error: ' + e.message; }
 }
@@ -588,6 +693,7 @@ async function runPcap() {
   if (!f) { $('mon-out').textContent = 'Choose a .pcap/.pcapng file first.'; return; }
   const fd = new FormData();
   fd.append('file', f);
+  fd.append('project_id', ACTIVE_PROJECT);
   if ($('mon-gw').value) fd.append('gateway', $('mon-gw').value);
   try {
     const { job_id } = await api('/api/jobs/monitor-pcap', { method: 'POST', body: fd });
@@ -599,7 +705,8 @@ async function runLive() {
   const body = {
     seconds: +$('mon-secs').value,
     interface: $('mon-iface').value || null,
-    gateway: $('mon-gw').value || null
+    gateway: $('mon-gw').value || null,
+    project_id: ACTIVE_PROJECT
   };
   try {
     const { job_id } = await api('/api/jobs/monitor-live', {
@@ -613,9 +720,11 @@ let JOBS_TIMER = null;
 
 async function loadJobs() {
   try {
-    const r = await api('/api/jobs');
+    const q = ACTIVE_PROJECT && ACTIVE_PROJECT !== '__all__'
+      ? '?project_id=' + encodeURIComponent(ACTIVE_PROJECT) : '';
+    const r = await api('/api/jobs' + q);
     if (!r.jobs.length) { $('jobs-table').textContent = 'No jobs yet…'; return; }
-    let html = '<table><tr><th>Job</th><th>Kind</th><th>Status</th><th>Started</th>' +
+    let html = '<table><tr><th>Job</th><th>Project</th><th>Kind</th><th>Status</th><th>Started</th>' +
                '<th>Duration</th><th>Live progress</th><th></th></tr>';
     for (const j of r.jobs) {
       const dur = (j.finished_at && j.started_at)
@@ -630,7 +739,7 @@ async function loadJobs() {
       } else if (j.status === 'done') prog = '<span style="color:var(--green)">finished</span>';
       else if (j.status === 'error' || j.status === 'timeout')
                prog = '<span style="color:#ff8796">' + esc(j.status) + '</span>';
-      html += '<tr><td>' + esc(j.id) + '</td><td>' + esc(j.kind) + '</td>' +
+      html += '<tr><td>' + esc(j.id) + '</td><td>' + esc(j.project_id || 'default') + '</td><td>' + esc(j.kind) + '</td>' +
               '<td><span class="status s-' + esc(j.status) + '">' + esc(j.status) + '</span></td>' +
               '<td>' + new Date(j.started_at * 1000).toLocaleTimeString() + '</td>' +
               '<td>' + dur + '</td>' +
@@ -645,7 +754,6 @@ async function loadJobs() {
     }
     html += '</table>';
     $('jobs-table').innerHTML = html;
-    // keep the open detail pane in sync with the live status
     if (VIEWED_JOB) {
       const j = r.jobs.find(x => x.id === VIEWED_JOB);
       if (j) renderJob(j, $('job-detail'));
@@ -679,6 +787,162 @@ async function loadHealth() {
       ' on ' + esc(h.platform) + '\nTools: ' + esc(JSON.stringify(h.tools)) + '\n\n' + esc(h.legal);
   } catch (e) { $('job-detail').textContent = 'Error: ' + e.message; }
 }
+
+// ---- Platform: projects, target history, scan comparison, auth ----
+function onProjectChange() {
+  ACTIVE_PROJECT = $('active-project').value;
+  if ($('tab-jobs').classList.contains('active')) loadJobs();
+  if ($('tab-platform').classList.contains('active')) loadPlatform();
+}
+
+async function loadProjectsDropdown() {
+  try {
+    const r = await api('/api/projects');
+    const sel = $('active-project');
+    const prev = ACTIVE_PROJECT;
+    sel.innerHTML = '<option value="__all__">All Projects</option>' +
+      (r.projects || []).map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '</option>').join('');
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+    else { sel.value = 'default'; ACTIVE_PROJECT = 'default'; }
+    return r.projects || [];
+  } catch (e) { return []; }
+}
+
+async function loadPlatform() {
+  const projs = await loadProjectsDropdown();
+  let phtml = '<table><tr><th>ID</th><th>Name</th><th>Description</th><th></th></tr>';
+  for (const p of projs) {
+    phtml += '<tr><td><code>' + esc(p.id) + '</code></td><td><b>' + esc(p.name) + '</b></td>' +
+             '<td>' + esc(p.description || '-') + '</td><td>' +
+             (p.id !== 'default'
+               ? '<button class="run" style="background:var(--red);color:#fff;padding:3px 10px;font-size:11px" onclick="deleteProject(\'' + esc(p.id) + '\')">delete</button>'
+               : '<span style="color:var(--muted)">built-in</span>') +
+             '</td></tr>';
+  }
+  phtml += '</table>';
+  $('proj-list').innerHTML = phtml;
+
+  try {
+    const q = ACTIVE_PROJECT && ACTIVE_PROJECT !== '__all__'
+      ? '?project_id=' + encodeURIComponent(ACTIVE_PROJECT) : '';
+    const tr = await api('/api/targets' + q);
+    const tgts = tr.targets || [];
+    if (!tgts.length) {
+      $('targets-out').textContent = 'No targets scanned yet in this project.';
+    } else {
+      let thtml = '<table><tr><th>Target</th><th>Jobs</th><th>Last Status</th><th>Web Findings</th><th>Open Ports</th><th>Kinds</th></tr>';
+      for (const t of tgts) {
+        const sevs = Object.entries(t.by_severity || {}).map(([k, v]) => k + ':' + v).join(' ');
+        thtml += '<tr><td><b>' + esc(t.target) + '</b></td><td>' + t.jobs + '</td>' +
+                 '<td><span class="status s-' + esc(t.last_status || 'done') + '">' + esc(t.last_status || '-') + '</span></td>' +
+                 '<td>' + (t.findings_total || 0) + (sevs ? ' (' + esc(sevs) + ')' : '') + '</td>' +
+                 '<td>' + (t.open_ports || 0) + '</td>' +
+                 '<td style="font-size:11px">' + esc(Object.entries(t.kinds || {}).map(([k, v]) => k + '×' + v).join(', ')) + '</td></tr>';
+      }
+      thtml += '</table>';
+      $('targets-out').innerHTML = thtml;
+    }
+
+    const jr = await api('/api/jobs');
+    const done = (jr.jobs || []).filter(j => j.status === 'done' && (j.kind === 'web-scan' || j.kind === 'network-scan'));
+    const opts = done.map(j => '<option value="' + esc(j.id) + '">' + esc(j.id + ' · ' + j.kind + ' · ' + (j.target || '-')) + '</option>').join('');
+    $('cmp-a').innerHTML = opts || '<option value="">No completed scans</option>';
+    $('cmp-b').innerHTML = opts || '<option value="">No completed scans</option>';
+    if (done.length >= 2) { $('cmp-a').selectedIndex = 1; $('cmp-b').selectedIndex = 0; }
+  } catch (e) { $('targets-out').textContent = 'Error: ' + e.message; }
+}
+
+async function createProject() {
+  const name = $('proj-name').value.trim();
+  if (!name) return;
+  await api('/api/projects', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, description: $('proj-desc').value.trim()})
+  });
+  $('proj-name').value = ''; $('proj-desc').value = '';
+  await loadPlatform();
+}
+
+async function deleteProject(pid) {
+  await api('/api/projects/' + encodeURIComponent(pid), {method: 'DELETE'});
+  if (ACTIVE_PROJECT === pid) ACTIVE_PROJECT = 'default';
+  await loadPlatform();
+}
+
+async function runCompare() {
+  const a = $('cmp-a').value, b = $('cmp-b').value;
+  if (!a || !b) { $('cmp-out').textContent = 'Need two completed scans.'; return; }
+  try {
+    const d = await api('/api/compare?a=' + encodeURIComponent(a) + '&b=' + encodeURIComponent(b));
+    if (d.error) { $('cmp-out').textContent = d.error; return; }
+    let html = '<b>' + esc(d.verdict || '') + '</b> (' + esc(d.kind) + ')\n';
+    if (d.kind === 'web-scan') {
+      html += 'Risk delta: <b>' + d.risk_delta + '</b> | Added: <b style="color:var(--red)">' + d.counts.added +
+              '</b> | Resolved: <b style="color:var(--green)">' + d.counts.resolved +
+              '</b> | Still open: ' + d.counts.still_open + '\n\n';
+      for (const label of [['added', '🆕 Added in B'], ['resolved', '✅ Resolved since A']]) {
+        const list = d[label[0]] || [];
+        if (!list.length) continue;
+        html += '<b>' + label[1] + '</b><table><tr><th>Severity</th><th>Type</th><th>URL</th></tr>';
+        for (const f of list)
+          html += '<tr><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td><td>' + esc(f.vuln_type) + '</td><td>' + esc(f.url) + '</td></tr>';
+        html += '</table>\n';
+      }
+    } else {
+      html += 'Opened ports: <b style="color:var(--red)">' + d.counts.opened +
+              '</b> | Closed ports: <b style="color:var(--green)">' + d.counts.closed +
+              '</b> | Unchanged: ' + d.counts.unchanged + '\n';
+    }
+    $('cmp-out').innerHTML = html;
+  } catch (e) { $('cmp-out').textContent = 'Error: ' + e.message; }
+}
+
+async function refreshAuth() {
+  try {
+    const r = await fetch('/api/auth/status');
+    AUTH_STATE = await r.json();
+    $('auth-btn').textContent = AUTH_STATE.enabled
+      ? (AUTH_STATE.authenticated ? '🔒 Locked (Unlocked)' : '🔒 Login Required')
+      : '🔓 Unlocked';
+    if (AUTH_STATE.enabled && !AUTH_STATE.authenticated) openAuthModal(true);
+    else loadProjectsDropdown();
+  } catch (e) {}
+}
+
+function openAuthModal(forceLogin) {
+  $('auth-modal').style.display = 'flex';
+  const needLogin = AUTH_STATE.enabled && !AUTH_STATE.authenticated;
+  $('auth-msg').textContent = needLogin
+    ? 'Workspace is locked. Enter credentials to continue.'
+    : (AUTH_STATE.enabled ? 'Change password or disable workspace lock.' : 'Set a password to lock this DARK dashboard.');
+  $('auth-submit').textContent = needLogin ? 'LOGIN' : 'ENABLE / UPDATE LOCK';
+  $('auth-disable-btn').style.display = (AUTH_STATE.enabled && AUTH_STATE.authenticated) ? 'inline-block' : 'none';
+  $('auth-close-btn').style.display = (needLogin || forceLogin) && !AUTH_STATE.authenticated ? 'none' : 'inline-block';
+}
+function closeAuthModal() { $('auth-modal').style.display = 'none'; }
+
+async function submitAuth() {
+  const username = $('auth-user').value.trim() || 'dark';
+  const password = $('auth-pass').value;
+  const needLogin = AUTH_STATE.enabled && !AUTH_STATE.authenticated;
+  const url = needLogin ? '/api/auth/login' : '/api/auth/setup';
+  const r = await fetch(url, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username, password, enabled: true})
+  });
+  if (!r.ok) { alert('Auth failed: ' + (await r.text())); return; }
+  $('auth-pass').value = '';
+  closeAuthModal();
+  await refreshAuth();
+}
+
+async function disableAuth() {
+  await api('/api/auth/disable', {method: 'POST'});
+  closeAuthModal();
+  await refreshAuth();
+}
+
+refreshAuth();
 </script>
 </body>
 </html>

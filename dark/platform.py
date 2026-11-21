@@ -307,6 +307,11 @@ def build_target_history(jobs: List[dict]) -> List[dict]:
         elif j.get("kind") == "network-scan":
             hosts = ((r.get("report") or {}).get("hosts")) or []
             b["open_ports"] += sum(len(h.get("open_ports") or []) for h in hosts)
+            nf = r.get("findings") or (r.get("report") or {}).get("findings") or []
+            b["findings_total"] += len(nf)
+            for f in nf:
+                sev = f.get("severity") or "Info"
+                b["by_severity"][sev] = b["by_severity"].get(sev, 0) + 1
         elif j.get("kind") == "hash-crack":
             b["cracked"] += int((r.get("summary") or {}).get("cracked_count") or 0)
         elif str(j.get("kind", "")).startswith("monitor"):

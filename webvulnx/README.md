@@ -5,10 +5,17 @@ detector + XSS + directory brute-force + security misconfiguration auditing.
 
 ## ✨ Features
 
-### 🔍 Smart Crawler
+### 🔍 Smart Crawler & SPA Route Discovery
 - Same-origin crawling with configurable depth (`--depth`) and page cap (`--max-urls`)
 - Automatic form & parameter discovery
+- Passive extraction of same-origin API/route paths from inline `<script>` blocks and JS bundles
 - Static asset filtering (images, CSS, ...)
+
+### 🛡️ Nessus-Style Technology Fingerprinting, CVE & TLS Auditing
+- Multi-signal stack fingerprinting (headers, meta generators, cookies, CMS plugins, JS libraries)
+- Semantic-version CVE range matching (`nessus_plugins.py` — `DARK-WEB-*` plugins with CVE IDs, CWE, CVSS v3, and remediation)
+- Read-only TLS/SSL & certificate compliance audit (`tls_audit.py` — expiration, SAN mismatch, weak ciphers, TLS 1.0/1.1 acceptance, HSTS quality)
+- Soft-404 / catch-all SPA baseline calibration in `DirBuster` and dynamic-page stability calibration in `SqliScanner` / `ParamFuzzer` to eliminate false positives on external sites
 
 ### 🌐 Automatic Scope Expansion (why sub-page URLs no longer return nothing)
 Handing a scanner a deep URL such as `http://site/login.jsp` used to produce

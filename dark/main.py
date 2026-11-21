@@ -22,6 +22,7 @@ Docs: http://localhost:8000/docs
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -31,7 +32,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -39,6 +40,15 @@ from pydantic import BaseModel, Field
 import engine
 
 APP_DIR = Path(__file__).resolve().parent
+
+def _load_platform():
+    spec = importlib.util.spec_from_file_location("dark_platform", APP_DIR / "platform.py")
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(mod)
+    return mod
+
+dplat = _load_platform()
 LEGAL = ("Authorized security testing only — you must own the target or have "
          "explicit written permission before scanning anything.")
 
@@ -161,13 +171,16 @@ def _public(job: dict) -> dict:
     return {k: v for k, v in job.items() if not k.startswith("_")}
 
 
-def start_job(kind: str, runner, **payload) -> str:
+def start_job(kind: str, runner, project_id: str = "default",
+              target_hint: str = "", **payload) -> str:
     job_id = uuid.uuid4().hex[:12]
     now = time.time()
     logbuf = engine.JobLog()
+    pid = (project_id or "default").strip() or "default"
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id, "kind": kind, "status": "running",
+            "project_id": pid, "target": target_hint,
             "started_at": now, "finished_at": None,
             "deadline": now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT),
             "result": None, "error": None, "progress": None,
@@ -200,9 +213,12 @@ def start_job(kind: str, runner, **payload) -> str:
         try:
             with engine.bind_job_log(logbuf):
                 result = runner(**payload)
+            tgt = dplat.extract_target(kind, result if isinstance(result, dict) else {}, payload)
             with JOBS_LOCK:
                 if JOBS[job_id]["status"] == "timeout":
                     return
+                if tgt:
+                    JOBS[job_id]["target"] = tgt
                 if isinstance(result, dict) and result.get("error"):
                     JOBS[job_id].update(status="error", error=result["error"],
                                         result=result, finished_at=time.time())
@@ -233,6 +249,8 @@ class NetworkScanReq(BaseModel):
     timing: str = "normal"
     probe: bool = True
     discover: bool = False
+    vuln_audit: bool = True
+    project_id: str = "default"
 
 
 class WebScanReq(BaseModel):
@@ -254,6 +272,7 @@ class WebScanReq(BaseModel):
     cookie: Optional[str] = None
     proxy: Optional[str] = None
     stealth: bool = True
+    project_id: str = "default"
 
 
 class HashIdentifyReq(BaseModel):
@@ -269,6 +288,7 @@ class HashCrackReq(BaseModel):
     algo: Optional[str] = None
     salt: Optional[str] = None
     workers: Optional[int] = None
+    project_id: str = "default"
 
 
 class MonitorReq(BaseModel):
@@ -277,6 +297,28 @@ class MonitorReq(BaseModel):
     gateway: Optional[str] = None
     bpf: str = ""
     syn_threshold: int = 25
+    project_id: str = "default"
+
+
+class ProjectReq(BaseModel):
+    name: str
+    description: str = ""
+    color: str = "#22d3ee"
+
+
+class NoteReq(BaseModel):
+    text: str = ""
+
+
+class AuthLoginReq(BaseModel):
+    username: str = "dark"
+    password: str
+
+
+class AuthSetupReq(BaseModel):
+    username: str = "dark"
+    password: str
+    enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +334,17 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _auth_gate(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and not path.startswith("/api/auth/") and path != "/api/health":
+        if dplat.auth_status().get("enabled"):
+            tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+            if not dplat.session_user(tok):
+                return JSONResponse(status_code=401, content={"error": "workspace locked — login required"})
+    return await call_next(request)
 
 
 @app.get("/", include_in_schema=False)
@@ -318,11 +371,12 @@ def health():
 
 # ---- jobs: lifecycle ------------------------------------------------------
 @app.get("/api/jobs")
-def list_jobs():
+def list_jobs(project_id: Optional[str] = None):
     with JOBS_LOCK:
-        return {"jobs": [_public(j) for j in
-                         sorted(JOBS.values(), key=lambda x: x["started_at"],
-                                reverse=True)],
+        items = sorted(JOBS.values(), key=lambda x: x["started_at"], reverse=True)
+        if project_id:
+            items = [j for j in items if (j.get("project_id") or "default") == project_id]
+        return {"jobs": [_public(j) for j in items],
                 "max_parallel": MAX_PARALLEL_JOBS}
 
 
@@ -333,6 +387,16 @@ def get_job(job_id: str):
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
         return _public(job)
+
+
+@app.get("/api/jobs/{job_id}/note")
+def get_job_note(job_id: str):
+    return {"job_id": job_id, "note": dplat.get_note(job_id)}
+
+
+@app.put("/api/jobs/{job_id}/note")
+def set_job_note(job_id: str, req: NoteReq):
+    return {"job_id": job_id, "note": dplat.set_note(job_id, req.text)}
 
 
 @app.get("/api/jobs/{job_id}/report")
@@ -351,6 +415,23 @@ def job_report(job_id: str, download: int = 0):
     import report as dreport  # type: ignore
     if kind == "web-scan":
         html = dreport.render_html(result)
+    elif kind == "network-scan":
+        rep = result.get("report") or {}
+        hosts = rep.get("hosts") or []
+        total_ports = sum(len(h.get("open_ports") or []) for h in hosts)
+        html = dreport.render_html({
+            "target": result.get("target") or job.get("target") or "network-scan",
+            "stats": {
+                "urls_crawled": len(hosts), "forms": total_ports, "parameters": 0,
+                "requests_sent": rep.get("ports_per_host", 0) * max(len(hosts), 1),
+                "modules_run": ["netrecon", "service-fingerprinting", "nessus-vuln-plugins", "tls-audit"],
+                "duration_s": rep.get("duration_s") or round((job.get("finished_at") or 0) - (job.get("started_at") or 0), 1),
+            },
+            "findings": result.get("findings") or rep.get("findings") or [],
+            "diagnostics": [
+                f"DARK NetRecon + Nessus-style service CVE plugins — {len(hosts)} host(s), {total_ports} open port(s)"
+            ],
+        })
     else:
         # Wrap non-web jobs in the same cover so every DARK job has a report.
         html = dreport.render_html({
@@ -367,6 +448,101 @@ def job_report(job_id: str, download: int = 0):
     if download:
         headers["Content-Disposition"] = f'attachment; filename="DARK-{job_id}.html"'
     return HTMLResponse(html, headers=headers)
+
+
+# ---- platform: projects, targets, scan compare, auth ----------------------
+@app.get("/api/projects")
+def api_list_projects():
+    return {"projects": dplat.list_projects()}
+
+
+@app.post("/api/projects")
+def api_create_project(req: ProjectReq):
+    return {"project": dplat.create_project(req.name, req.description, req.color)}
+
+
+@app.patch("/api/projects/{pid}")
+def api_update_project(pid: str, req: ProjectReq):
+    p = dplat.update_project(pid, name=req.name, description=req.description, color=req.color)
+    if not p:
+        raise HTTPException(404, "project not found")
+    return {"project": p}
+
+
+@app.delete("/api/projects/{pid}")
+def api_delete_project(pid: str):
+    if not dplat.delete_project(pid):
+        raise HTTPException(400, "cannot delete default or unknown project")
+    return {"ok": True}
+
+
+@app.get("/api/targets")
+def api_targets(project_id: Optional[str] = None):
+    with JOBS_LOCK:
+        items = [_public(j) for j in JOBS.values()]
+    if project_id:
+        items = [j for j in items if (j.get("project_id") or "default") == project_id]
+    return {"targets": dplat.build_target_history(items)}
+
+
+@app.get("/api/compare")
+def api_compare(a: str, b: str):
+    with JOBS_LOCK:
+        ja = JOBS.get(a)
+        jb = JOBS.get(b)
+        if not ja or not jb:
+            raise HTTPException(404, "one or both jobs not found")
+        ja_p, jb_p = _public(ja), _public(jb)
+    return dplat.compare_jobs(ja_p, jb_p)
+
+
+@app.get("/api/auth/status")
+def api_auth_status(request: Request):
+    st = dplat.auth_status()
+    tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    st["authenticated"] = (not st["enabled"]) or bool(dplat.session_user(tok))
+    return st
+
+
+@app.post("/api/auth/login")
+def api_auth_login(req: AuthLoginReq):
+    if not dplat.verify_password(req.username, req.password):
+        raise HTTPException(401, "invalid credentials")
+    tok = dplat.create_session(req.username)
+    resp = JSONResponse({"ok": True, "token": tok, "username": req.username})
+    resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
+    return resp
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout(request: Request):
+    tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    dplat.drop_session(tok)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie("dark_session")
+    return resp
+
+
+@app.post("/api/auth/setup")
+def api_auth_setup(req: AuthSetupReq, request: Request):
+    if dplat.auth_status().get("enabled"):
+        tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+        if not dplat.session_user(tok):
+            raise HTTPException(401, "login first before changing workspace password")
+    try:
+        st = dplat.set_password(req.username, req.password, req.enabled)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return st
+
+
+@app.post("/api/auth/disable")
+def api_auth_disable(request: Request):
+    if dplat.auth_status().get("enabled"):
+        tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+        if not dplat.session_user(tok):
+            raise HTTPException(401, "login required")
+    return dplat.disable_auth()
 
 
 @app.get("/api/jobs/{job_id}/export.csv")
@@ -401,8 +577,10 @@ def job_csv(job_id: str):
 def job_network_scan(req: NetworkScanReq):
     job_id = start_job(
         "network-scan", engine.run_network_scan,
+        project_id=req.project_id,
+        target_hint=", ".join(req.targets[:4]),
         targets=req.targets, ports=req.ports, timing=req.timing,
-        probe=req.probe, discover=req.discover,
+        probe=req.probe, discover=req.discover, vuln_audit=req.vuln_audit,
     )
     return {"job_id": job_id, "legal": LEGAL}
 
@@ -411,7 +589,10 @@ def job_network_scan(req: NetworkScanReq):
 @app.post("/api/jobs/web-scan")
 def job_web_scan(req: WebScanReq):
     job_id = start_job(
-        "web-scan", engine.run_web_scan, url=req.url,
+        "web-scan", engine.run_web_scan,
+        project_id=req.project_id,
+        target_hint=req.url,
+        url=req.url,
         modules={"crawl": req.crawl, "sqli": req.sqli, "xss": req.xss,
                  "dirs": req.dirs, "audit": req.audit, "advanced": req.advanced,
                  "param_fuzz": req.param_fuzz, "default_creds": req.default_creds},
@@ -448,7 +629,10 @@ def job_hash_crack(req: HashCrackReq):
         if cand.is_file():
             wordlist_path = str(cand)
     job_id = start_job(
-        "hash-crack", engine.crack_hashes, hashes=req.hashes, words=words,
+        "hash-crack", engine.crack_hashes,
+        project_id=req.project_id,
+        target_hint=req.hashes[0][:24] if req.hashes else "hashes",
+        hashes=req.hashes, words=words,
         rules=req.rules, mask=req.mask, algo=req.algo, salt=req.salt,
         wordlist_path=wordlist_path, workers=req.workers,
     )
@@ -466,6 +650,8 @@ def job_hash_benchmark():
 @app.post("/api/jobs/monitor-demo")
 def job_monitor_demo(req: MonitorReq = MonitorReq()):
     job_id = start_job("monitor-demo", engine.run_monitor_demo,
+                       project_id=req.project_id,
+                       target_hint="monitor-demo",
                        syn_threshold=req.syn_threshold)
     return {"job_id": job_id, "legal": LEGAL}
 
@@ -473,12 +659,15 @@ def job_monitor_demo(req: MonitorReq = MonitorReq()):
 @app.post("/api/jobs/monitor-pcap")
 def job_monitor_pcap(file: UploadFile = File(...),
                      gateway: Optional[str] = None,
-                     syn_threshold: int = 25):
+                     syn_threshold: int = 25,
+                     project_id: str = "default"):
     suffix = Path(file.filename or "capture.pcap").suffix or ".pcap"
     tmp = APP_DIR / "uploads" / f"{uuid.uuid4().hex[:10]}{suffix}"
     tmp.parent.mkdir(exist_ok=True)
     tmp.write_bytes(file.file.read())
     job_id = start_job("monitor-pcap", engine.run_monitor_pcap,
+                       project_id=project_id,
+                       target_hint=file.filename or "pcap",
                        pcap_path=str(tmp), gateway=gateway,
                        syn_threshold=syn_threshold)
     return {"job_id": job_id, "file": file.filename, "legal": LEGAL}
@@ -487,7 +676,10 @@ def job_monitor_pcap(file: UploadFile = File(...),
 @app.post("/api/jobs/monitor-live")
 def job_monitor_live(req: MonitorReq = MonitorReq()):
     job_id = start_job(
-        "monitor-live", engine.run_monitor_live, seconds=req.seconds,
+        "monitor-live", engine.run_monitor_live,
+        project_id=req.project_id,
+        target_hint=req.interface or "live",
+        seconds=req.seconds,
         iface=req.interface, gateway=req.gateway, bpf=req.bpf,
         syn_threshold=req.syn_threshold,
     )

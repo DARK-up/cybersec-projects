@@ -193,6 +193,7 @@ class HostResult:
     os_hint: str = "Unknown"
     os_evidence: List[str] = field(default_factory=list)
     ports: List[PortResult] = field(default_factory=list)
+    vulnerabilities: List[Dict] = field(default_factory=list)
     scan_time: float = 0.0
 
     @property
@@ -295,6 +296,7 @@ class NetRecon:
         discover: bool = False,
         resolve: bool = True,
         randomize: bool = True,
+        vuln_audit: bool = True,
     ):
         self.targets = targets
         self.ports = ports
@@ -304,6 +306,7 @@ class NetRecon:
         self.discover = discover
         self.resolve = resolve
         self.randomize = randomize
+        self.vuln_audit = vuln_audit
         self.results: List[HostResult] = []
         self.start_ts = 0.0
 
@@ -520,6 +523,21 @@ class NetRecon:
                     best = (hint, _os_priority(hint))
         if best[0] != "Unknown":
             hr.os_hint = best[0]
+
+        if self.vuln_audit and hr.open_ports:
+            try:
+                import vuln_plugins  # type: ignore
+                hr.vulnerabilities = await vuln_plugins.evaluate_host(
+                    host, hr.open_ports, timeout=max(self.timeout, 2.5)
+                )
+                for v in hr.vulnerabilities:
+                    sev = v.get("severity", "Info")
+                    c = "red" if sev in ("Critical", "High") else "yellow"
+                    print(f"{colorize('[!]', c)} {host}:{v.get('port', '')} "
+                          f"[{sev}] {v.get('vuln_type')} — {v.get('evidence', '')[:90]}")
+            except Exception as e:
+                warn(f"vuln plugin audit failed on {host}: {type(e).__name__}: {e}")
+
         hr.scan_time = round(time.monotonic() - t0, 2)
         return hr
 
@@ -550,12 +568,24 @@ class NetRecon:
 
     # -- reporting ------------------------------------------------------------
     def to_dict(self) -> Dict:
+        all_vulns: List[Dict] = []
+        for h in self.results:
+            all_vulns.extend(h.vulnerabilities)
+        sev_counts: Dict[str, int] = {}
+        for v in all_vulns:
+            s = v.get("severity") or "Info"
+            sev_counts[s] = sev_counts.get(s, 0) + 1
         return {
             "tool": "NetRecon v2.0",
             "scanned_at": datetime.now(timezone.utc).isoformat(),
             "duration_s": round(time.time() - self.start_ts, 2),
             "timing": self.timing,
             "ports_per_host": len(self.ports),
+            "vuln_summary": {
+                "total": len(all_vulns),
+                "by_severity": sev_counts,
+            },
+            "findings": all_vulns,
             "hosts": [
                 {
                     **{k: v for k, v in asdict(h).items() if k != "ports"},

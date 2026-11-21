@@ -57,6 +57,12 @@ PROBES: List[Tuple[str, str, str, str, float]] = [
     ("wp-login.php", "CMS Fingerprint / Attack Surface", "Info", "wp_login", 3.1),
     ("xmlrpc.php", "CMS Fingerprint / Attack Surface", "Low", "xmlrpc", 3.1),
     ("wp-json/wp/v2/users", "CMS Fingerprint / Attack Surface", "Medium", "wp_users", 5.3),
+    ("server-status", "Debug / Diagnostic Endpoint Exposed", "Medium", "apache_status", 5.3),
+    ("nginx_status", "Debug / Diagnostic Endpoint Exposed", "Low", "nginx_status", 3.7),
+    ("metrics", "Debug / Diagnostic Endpoint Exposed", "Medium", "prometheus", 5.3),
+    ("elmah.axd", "Debug / Diagnostic Endpoint Exposed", "High", "elmah", 7.5),
+    ("trace.axd", "Debug / Diagnostic Endpoint Exposed", "High", "aspnet_trace", 7.5),
+    (".well-known/openid-configuration", "OpenID Connect Discovery Metadata", "Info", "oidc", 0.0),
 ]
 
 
@@ -130,6 +136,34 @@ def _looks_like(kind: str, body: str, headers: dict) -> Optional[str]:
                 and ("slug" in data[0] or "name" in data[0]):
             names = [u.get("slug") or u.get("name") for u in data[:5]]
             return f"{len(data)} user(s) enumerated: {', '.join(str(n) for n in names if n)}"
+        return None
+    if kind == "apache_status":
+        if "Apache Server Status" in text and "Server Version:" in text:
+            return "Apache mod_status server-status page"
+        return None
+    if kind == "nginx_status":
+        if "Active connections:" in text and "server accepts handled requests" in text:
+            return "nginx stub_status metrics exposed"
+        return None
+    if kind == "prometheus":
+        if "# HELP " in text and "# TYPE " in text:
+            return "Prometheus /metrics exposition endpoint"
+        return None
+    if kind == "elmah":
+        if "Error Log for" in text and "ELMAH" in text:
+            return "ASP.NET ELMAH error log exposed"
+        return None
+    if kind == "aspnet_trace":
+        if "Application Trace" in text and "Request Details" in text:
+            return "ASP.NET trace.axd exposed"
+        return None
+    if kind == "oidc":
+        try:
+            data = json.loads(text)
+        except Exception:
+            return None
+        if isinstance(data, dict) and data.get("issuer") and data.get("authorization_endpoint"):
+            return f"OIDC issuer={data.get('issuer')}"
         return None
     return None
 

@@ -17,3 +17,4 @@ hashbreaker/wordlists/rockyou.txt.gz
 # runtime state
 dark/jobs_state.json
 dark/jobs_state.tmp
+dark/data/
