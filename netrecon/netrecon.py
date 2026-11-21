@@ -297,6 +297,7 @@ class NetRecon:
         resolve: bool = True,
         randomize: bool = True,
         vuln_audit: bool = True,
+        stop_event=None,
     ):
         self.targets = targets
         self.ports = ports
@@ -307,6 +308,7 @@ class NetRecon:
         self.resolve = resolve
         self.randomize = randomize
         self.vuln_audit = vuln_audit
+        self.stop_event = stop_event
         self.results: List[HostResult] = []
         self.start_ts = 0.0
 
@@ -485,6 +487,8 @@ class NetRecon:
         chunk = max(self.concurrency, 256)
         found = 0
         for i in range(0, len(tasks), chunk):
+            if self.stop_event is not None and self.stop_event.is_set():
+                break
             batch = tasks[i:i + chunk]
             for pr in await asyncio.gather(*batch):
                 if pr:
@@ -558,6 +562,8 @@ class NetRecon:
         info(f"Targets: {len(self.targets)} | Ports/host: {len(self.ports)} | "
              f"Timing: {self.timing} | Concurrency: {self.concurrency}")
         for host in self.targets:
+            if self.stop_event is not None and self.stop_event.is_set():
+                break
             print(colorize(f"\n=== Scanning host {host} ===", "bold"))
             hr = await self.scan_host(host)
             self.results.append(hr)

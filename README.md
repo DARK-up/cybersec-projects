@@ -25,8 +25,13 @@
 ## 🚀 Quick Start
 
 ```bash
-# Requirements (only NetSentry & WebVulnX need third-party packages)
-pip install scapy requests
+# Install DARK + WebVulnX + NetSentry dependencies
+pip install -r dark/requirements.txt
+
+# 0) Launch the unified DARK platform (recommended)
+cd dark
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+# Open http://127.0.0.1:8000
 
 # 1) Start the local training lab
 cd demo-lab
@@ -58,10 +63,11 @@ python3 netsentry.py --demo --report reports/summary.json
 ## 🎯 Skills Covered
 
 ### Offensive / Red Team
-- **Network reconnaissance**: TCP scanning, banner grabbing, service fingerprinting, OS hinting
-- **Web application security**: SQLi (error-based, boolean-blind, time-based blind), reflected XSS, sensitive data exposure, security misconfigurations
-- **Password security**: hash identification (25+ formats), dictionary / rules / mask attacks, NTLM & MD4 internals
+- **Network & DNS reconnaissance**: async TCP scanning, banner grabbing, service/version fingerprinting, OS hinting, Nessus-style CVE plugins, DNS/SPF/DMARC/CAA audit, subdomain enumeration, and CNAME takeover detection
+- **Web application security**: SQLi (error-based, boolean-blind, time-based blind), context-aware deep XSS + DOM analysis, Nuclei-style YAML templates, OpenAPI/Swagger ingestion, auto-login (CSRF + JWT), soft-404 dirbusting, LFI/SSTI/CMDi/SSRF/XXE/CORS/CRLF, and TLS/SSL auditing
+- **Password security**: hash identification (25+ formats), multi-algorithm auto-matching (MD5, NTLM, MD4, MySQL5 `*...`, SHA1/SHA256/SHA512/SHA3/BLAKE2, LDAP, Django/Werkzeug PBKDF2, salted variants), dictionary / rules / mask attacks, and local hash generator
 - **Threat detection**: ARP poisoning, SYN/XMAS scans, DNS tunneling, cleartext credential exposure
+- **Unified DARK platform**: parallel isolated jobs, Stop & Partial Report, per-finding inline breakdown, project management, scan diff comparison, and unified Project Executive HTML/PDF reports
 
 ### Engineering Skills
 - High-concurrency async programming (asyncio)

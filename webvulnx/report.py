@@ -168,6 +168,7 @@ def _finding_card(i: int, f: dict) -> str:
     payload = f.get("payload") or ""
     evidence = f.get("evidence") or ""
     detail = f.get("detail") or ""
+    how_entered = f.get("how_it_entered") or ""
     return f"""
 <article class="card" id="{fid}">
   <header>
@@ -182,6 +183,7 @@ def _finding_card(i: int, f: dict) -> str:
     <div><dt>Parameter</dt><dd><code>{_esc(f.get("parameter") or "—")}</code></dd></div>
   </dl>
   <p class="url">URL <a href="{_esc(f.get('url') or '#')}">{_esc(f.get('url') or '—')}</a></p>
+  {"<h4>Entry Vector (How It Entered)</h4><p><code>" + _esc(how_entered) + "</code></p>" if how_entered else ""}
   <h4>Impact</h4>
   <p>{_esc(meta.get("impact"))}</p>
   {"<h4>What the scanner observed</h4><p>" + _esc(detail) + "</p>" if detail else ""}

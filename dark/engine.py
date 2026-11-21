@@ -248,7 +248,7 @@ def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "n
     scanner = nr.NetRecon(
         targets=hosts, ports=port_list, timing=timing,
         probe=probe, discover=discover, resolve=True, randomize=True,
-        vuln_audit=vuln_audit,
+        vuln_audit=vuln_audit, stop_event=stop_event,
     )
     with _Capture() as cap:
         asyncio.run(scanner.run())
