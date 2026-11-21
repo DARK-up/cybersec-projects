@@ -173,9 +173,11 @@ def _public(job: dict) -> dict:
 
 def start_job(kind: str, runner, project_id: str = "default",
               target_hint: str = "", **payload) -> str:
+    import inspect
     job_id = uuid.uuid4().hex[:12]
     now = time.time()
     logbuf = engine.JobLog()
+    stop_ev = threading.Event()
     pid = (project_id or "default").strip() or "default"
     with JOBS_LOCK:
         JOBS[job_id] = {
@@ -184,9 +186,16 @@ def start_job(kind: str, runner, project_id: str = "default",
             "started_at": now, "finished_at": None,
             "deadline": now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT),
             "result": None, "error": None, "progress": None,
-            "_log": logbuf,
+            "_log": logbuf, "_stop_event": stop_ev,
         }
     _jobs_to_disk()
+
+    try:
+        accepts_stop = "stop_event" in inspect.signature(runner).parameters
+    except Exception:
+        accepts_stop = False
+    if accepts_stop:
+        payload["stop_event"] = stop_ev
 
     def _run():
         # PARALLEL execution: grab a slot if one is free, otherwise wait for a
@@ -205,6 +214,12 @@ def start_job(kind: str, runner, project_id: str = "default",
             if JOBS[job_id]["status"] == "timeout":
                 JOB_SLOTS.release()
                 return                     # watchdog already gave up on it
+            if stop_ev.is_set():
+                JOBS[job_id].update(status="stopped", finished_at=time.time(),
+                                    result={"target": target_hint, "findings": [], "stopped_early": True})
+                JOB_SLOTS.release()
+                _jobs_to_disk()
+                return
             JOBS[job_id]["status"] = "running"
             JOBS[job_id]["started_at"] = time.time()
             JOBS[job_id]["deadline"] = (
@@ -219,7 +234,12 @@ def start_job(kind: str, runner, project_id: str = "default",
                     return
                 if tgt:
                     JOBS[job_id]["target"] = tgt
-                if isinstance(result, dict) and result.get("error"):
+                if stop_ev.is_set():
+                    if isinstance(result, dict):
+                        result["stopped_early"] = True
+                    JOBS[job_id].update(status="stopped", result=result,
+                                        finished_at=time.time())
+                elif isinstance(result, dict) and result.get("error"):
                     JOBS[job_id].update(status="error", error=result["error"],
                                         result=result, finished_at=time.time())
                 else:
@@ -263,6 +283,7 @@ class WebScanReq(BaseModel):
     advanced: bool = True          # LFI, SSTI, CMDi, open redirect, CORS, CRLF, ...
     param_fuzz: bool = True        # hidden parameter discovery
     default_creds: bool = False    # opt-in: tries admin:admin etc. on forms
+    templates: bool = True         # Nuclei-style YAML templates
     fast: bool = False             # skip time-based SQLi (recommended on remote sites)
     depth: int = 3
     max_urls: int = 80
@@ -270,9 +291,33 @@ class WebScanReq(BaseModel):
     delay: float = 0.0
     time_blind: float = 5.0
     cookie: Optional[str] = None
+    auth_header: Optional[str] = None
+    extra_headers: Optional[Dict[str, str]] = None
+    login_url: Optional[str] = None
+    login_user: Optional[str] = None
+    login_pass: Optional[str] = None
+    openapi_url: Optional[str] = None
     proxy: Optional[str] = None
     stealth: bool = True
     project_id: str = "default"
+
+
+class DnsReconReq(BaseModel):
+    target: str = Field(..., example="example.com")
+    subdomains: bool = True
+    passive_crtsh: bool = True
+    extra_words: Optional[List[str]] = None
+    project_id: str = "default"
+
+
+class HashGenerateReq(BaseModel):
+    text: str
+    algo: str = "all"
+    salt: str = ""
+
+
+class TemplateSaveReq(BaseModel):
+    yaml_text: str
 
 
 class HashIdentifyReq(BaseModel):
@@ -399,22 +444,66 @@ def set_job_note(job_id: str, req: NoteReq):
     return {"job_id": job_id, "note": dplat.set_note(job_id, req.text)}
 
 
+@app.post("/api/jobs/{job_id}/stop")
+def stop_job(job_id: str):
+    """Cooperatively stop a running job and flush all findings collected so far."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        ev = job.get("_stop_event")
+        if ev is not None:
+            ev.set()
+        if job.get("status") in ("running", "waiting"):
+            job["status"] = "stopping"
+    # Wait up to 4.0s for the worker thread to finish flushing its partial result
+    deadline = time.time() + 4.0
+    while time.time() < deadline:
+        with JOBS_LOCK:
+            st = JOBS[job_id]["status"]
+            if st in ("stopped", "done", "error", "timeout"):
+                return {"job": _public(JOBS[job_id])}
+        time.sleep(0.15)
+    with JOBS_LOCK:
+        return {"job": _public(JOBS[job_id])}
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        ev = job.get("_stop_event")
+        if ev is not None:
+            ev.set()
+        del JOBS[job_id]
+    _jobs_to_disk()
+    return {"ok": True}
+
+
 @app.get("/api/jobs/{job_id}/report")
 def job_report(job_id: str, download: int = 0):
-    """World-class executive HTML report (print-to-PDF from the browser)."""
+    """World-class executive HTML report (print-to-PDF from the browser).
+    Works for BOTH completed ('done') AND stopped ('stopped') scans."""
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
         job = _public(job)
-    if job.get("status") != "done":
-        raise HTTPException(409, f"job is {job.get('status')} — wait until it finishes")
+    if job.get("status") not in ("done", "stopped"):
+        raise HTTPException(409, f"job is {job.get('status')} — stop or wait until it finishes")
     result = job.get("result") or {}
     kind = job.get("kind")
     sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
     import report as dreport  # type: ignore
+    extra_diag = []
+    if job.get("status") == "stopped" or result.get("stopped_early"):
+        extra_diag.append("Scan stopped early by operator — report contains all findings discovered prior to stop.")
     if kind == "web-scan":
-        html = dreport.render_html(result)
+        payload = dict(result)
+        payload["diagnostics"] = extra_diag + list(payload.get("diagnostics") or [])
+        html = dreport.render_html(payload)
     elif kind == "network-scan":
         rep = result.get("report") or {}
         hosts = rep.get("hosts") or []
@@ -428,8 +517,23 @@ def job_report(job_id: str, download: int = 0):
                 "duration_s": rep.get("duration_s") or round((job.get("finished_at") or 0) - (job.get("started_at") or 0), 1),
             },
             "findings": result.get("findings") or rep.get("findings") or [],
-            "diagnostics": [
+            "diagnostics": extra_diag + [
                 f"DARK NetRecon + Nessus-style service CVE plugins — {len(hosts)} host(s), {total_ports} open port(s)"
+            ],
+        })
+    elif kind == "dns-recon":
+        subs = result.get("subdomains") or []
+        html = dreport.render_html({
+            "target": result.get("domain") or result.get("target") or "dns-recon",
+            "stats": {
+                "urls_crawled": len(subs), "forms": 0, "parameters": 0,
+                "requests_sent": len(subs) + 7,
+                "modules_run": ["dns-records", "spf-dmarc-caa-audit", "subdomain-enum", "takeover-check"],
+                "duration_s": result.get("duration_s") or round((job.get("finished_at") or 0) - (job.get("started_at") or 0), 1),
+            },
+            "findings": result.get("findings") or [],
+            "diagnostics": extra_diag + [
+                f"DARK DNS & Email Security Recon — {len(subs)} subdomain(s) discovered"
             ],
         })
     else:
@@ -442,11 +546,88 @@ def job_report(job_id: str, download: int = 0):
                 "duration_s": round((job.get("finished_at") or 0) - (job.get("started_at") or 0), 1),
             },
             "findings": result.get("findings") or result.get("alerts") or [],
-            "diagnostics": [f"DARK {kind} job {job_id}"],
+            "diagnostics": extra_diag + [f"DARK {kind} job {job_id}"],
         })
     headers = {}
     if download:
         headers["Content-Disposition"] = f'attachment; filename="DARK-{job_id}.html"'
+    return HTMLResponse(html, headers=headers)
+
+
+@app.get("/api/projects/{project_id}/report")
+def project_report(project_id: str, download: int = 0):
+    """Unified Project Executive HTML Report combining ALL jobs in a project."""
+    proj = next((p for p in dplat.list_projects() if p.get("id") == project_id), {"id": project_id, "name": project_id})
+    with JOBS_LOCK:
+        jobs = [_public(j) for j in JOBS.values()
+                if (j.get("project_id") or "default") == project_id
+                and j.get("status") in ("done", "stopped")]
+    sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
+    import report as dreport  # type: ignore
+
+    combined_findings: List[Dict[str, Any]] = []
+    targets: List[str] = []
+    modules: List[str] = []
+    total_urls = 0
+    total_reqs = 0
+    total_dur = 0.0
+    diagnostics: List[str] = [
+        f"Unified Project Report for '{proj.get('name')}' ({len(jobs)} completed/stopped job(s))"
+    ]
+
+    for j in jobs:
+        res = j.get("result") or {}
+        kind = j.get("kind") or "job"
+        tgt = res.get("target") or j.get("target") or kind
+        if tgt and tgt not in targets:
+            targets.append(tgt)
+        if kind not in modules:
+            modules.append(kind)
+        st = res.get("stats") or {}
+        total_urls += int(st.get("urls_crawled") or 0)
+        total_reqs += int(st.get("requests_sent") or 0)
+        total_dur += float(st.get("duration_s") or 0.0)
+        note = dplat.get_note(j["id"])
+        if note:
+            diagnostics.append(f"Operator Note [{j['id']} / {tgt}]: {note}")
+
+        raw_fs = res.get("findings") or (res.get("report") or {}).get("findings") or []
+        for f in raw_fs:
+            item = dict(f)
+            if not item.get("url"):
+                item["url"] = tgt
+            item["detail"] = f"[{kind} | {tgt}] " + (item.get("detail") or "")
+            combined_findings.append(item)
+
+        if kind == "hash-crack":
+            cracked = [r for r in (res.get("results") or []) if r.get("cracked")]
+            if cracked:
+                combined_findings.append({
+                    "vuln_type": f"Cracked Credential Hashes ({len(cracked)})",
+                    "severity": "High",
+                    "url": tgt,
+                    "parameter": "HashBreaker",
+                    "evidence": ", ".join(f"{c.get('used_algo')}:{c.get('password')}" for c in cracked[:6]),
+                    "detail": "Weak or dictionary passwords cracked during offline audit.",
+                    "cvss_hint": 7.5,
+                })
+
+    html = dreport.render_html({
+        "target": f"Project: {proj.get('name')} ({', '.join(targets[:4]) or 'no targets'})",
+        "stats": {
+            "urls_crawled": total_urls,
+            "forms": len(jobs),
+            "parameters": len(targets),
+            "requests_sent": total_reqs,
+            "modules_run": modules or ["unified-project"],
+            "duration_s": round(total_dur, 1),
+        },
+        "findings": combined_findings,
+        "diagnostics": diagnostics,
+    })
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="DARK-Project-{project_id}.html"'
     return HTMLResponse(html, headers=headers)
 
 
@@ -572,7 +753,7 @@ def job_csv(job_id: str):
                     headers={"Content-Disposition": f'attachment; filename="DARK-{job_id}.csv"'})
 
 
-# ---- jobs: network --------------------------------------------------------
+# ---- jobs: network & dns recon --------------------------------------------
 @app.post("/api/jobs/network-scan")
 def job_network_scan(req: NetworkScanReq):
     job_id = start_job(
@@ -581,6 +762,18 @@ def job_network_scan(req: NetworkScanReq):
         target_hint=", ".join(req.targets[:4]),
         targets=req.targets, ports=req.ports, timing=req.timing,
         probe=req.probe, discover=req.discover, vuln_audit=req.vuln_audit,
+    )
+    return {"job_id": job_id, "legal": LEGAL}
+
+
+@app.post("/api/jobs/dns-recon")
+def job_dns_recon(req: DnsReconReq):
+    job_id = start_job(
+        "dns-recon", engine.run_dns_recon,
+        project_id=req.project_id,
+        target_hint=req.target,
+        target=req.target, subdomains=req.subdomains,
+        passive_crtsh=req.passive_crtsh, extra_words=req.extra_words,
     )
     return {"job_id": job_id, "legal": LEGAL}
 
@@ -595,18 +788,72 @@ def job_web_scan(req: WebScanReq):
         url=req.url,
         modules={"crawl": req.crawl, "sqli": req.sqli, "xss": req.xss,
                  "dirs": req.dirs, "audit": req.audit, "advanced": req.advanced,
-                 "param_fuzz": req.param_fuzz, "default_creds": req.default_creds},
+                 "param_fuzz": req.param_fuzz, "default_creds": req.default_creds,
+                 "templates": req.templates},
         depth=req.depth, max_urls=req.max_urls, timeout=req.timeout,
         delay=req.delay, time_blind=None if req.fast else req.time_blind,
         cookie=req.cookie, proxy=req.proxy, stealth=req.stealth,
+        auth_header=req.auth_header, extra_headers=req.extra_headers,
+        login_url=req.login_url, login_user=req.login_user, login_pass=req.login_pass,
+        openapi_url=req.openapi_url,
     )
     return {"job_id": job_id, "legal": LEGAL}
+
+
+# ---- templates (Nuclei-style YAML) ----------------------------------------
+@app.get("/api/templates")
+def api_list_templates():
+    sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
+    import templates_engine as te  # type: ignore
+    tpls = te.load_all_templates()
+    return {
+        "templates": [
+            {
+                "id": t.get("id"),
+                "source": t.get("_source"),
+                "file": t.get("_file"),
+                "name": (t.get("info") or {}).get("name"),
+                "severity": (t.get("info") or {}).get("severity"),
+                "tags": (t.get("info") or {}).get("tags") or [],
+                "description": (t.get("info") or {}).get("description") or "",
+            }
+            for t in tpls
+        ]
+    }
+
+
+@app.post("/api/templates")
+def api_save_template(req: TemplateSaveReq):
+    sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
+    import templates_engine as te  # type: ignore
+    try:
+        res = te.save_custom_template(req.yaml_text)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid template YAML: {e}")
+    return {"saved": res}
+
+
+@app.delete("/api/templates/{tid}")
+def api_delete_template(tid: str):
+    sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
+    import templates_engine as te  # type: ignore
+    if not te.delete_custom_template(tid):
+        raise HTTPException(404, "custom template not found")
+    return {"ok": True}
 
 
 # ---- hashes ---------------------------------------------------------------
 @app.post("/api/hash/identify")
 def hash_identify(req: HashIdentifyReq):
     return engine.identify_hashes(req.hashes)
+
+
+@app.post("/api/hash/generate")
+def hash_generate(req: HashGenerateReq):
+    try:
+        return engine.generate_hash(req.text, req.algo, req.salt)
+    except Exception as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/jobs/hash-crack")

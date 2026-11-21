@@ -35,7 +35,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -114,6 +114,7 @@ PREFIX_FORMATS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"^[0-9a-f]{32}:[0-9a-f]{32}$"), "MD5(pass:pass) double-dash"),
     (re.compile(r"^0x0100[0-9a-f]{88}$", re.I), "MSSQL 2005+"),
     (re.compile(r"^0x0100[0-9a-f]{48}$", re.I), "MSSQL 2000"),
+    (re.compile(r"^\*[0-9a-f]{40}$", re.I), "MySQL 4.1/5.x (*SHA1-SHA1)"),
     (re.compile(r"^[0-9a-f]{40}:[0-9a-f]{20}$", re.I), "MySQL 4.1+ (hash:salt)"),
     (re.compile(r"^sha1\$[^\$]+\$[0-9a-f]{40}$", re.I), "Django SHA1"),
     (re.compile(r"^sha256\$[^\$]+\$[0-9a-f]{64}$", re.I), "Django SHA256"),
@@ -278,6 +279,37 @@ class Target:
     algo: str = ""
     salt: str = ""
     plain: str = ""
+    candidate_algos: List[str] = field(default_factory=list)
+
+
+def _check_special_hash(algo: str, password: str, target_hash: str) -> bool:
+    pw = password.encode("utf-8", errors="ignore")
+    if algo == "ldap_sha":
+        expected = "{SHA}" + base64.b64encode(hashlib.sha1(pw).digest()).decode("ascii")
+        return expected == target_hash
+    if algo == "ldap_ssha":
+        try:
+            raw = base64.b64decode(target_hash[6:])
+            digest, salt = raw[:20], raw[20:]
+            return hashlib.sha1(pw + salt).digest() == digest
+        except Exception:
+            return False
+    if algo == "django_pbkdf2_sha256":
+        try:
+            _, iters_s, salt, b64_hash = target_hash.split("$", 3)
+            dk = hashlib.pbkdf2_hmac("sha256", pw, salt.encode("utf-8"), int(iters_s))
+            return base64.b64encode(dk).decode("ascii") == b64_hash
+        except Exception:
+            return False
+    if algo == "werkzeug_pbkdf2_sha256":
+        try:
+            hdr, salt, hx = target_hash.split("$", 2)
+            iters = int(hdr.split(":")[2])
+            dk = hashlib.pbkdf2_hmac("sha256", pw, salt.encode("utf-8"), iters)
+            return dk.hex() == hx.lower()
+        except Exception:
+            return False
+    return False
 
 
 def compute(algo: str, password: str, salt: str = "") -> str:
@@ -299,22 +331,50 @@ def compute(algo: str, password: str, salt: str = "") -> str:
         return hashlib.sha384(pw).hexdigest()
     if algo == "sha512":
         return hashlib.sha512(pw).hexdigest()
+    if algo == "sha3-256":
+        return hashlib.sha3_256(pw).hexdigest()
+    if algo == "sha3-512":
+        return hashlib.sha3_512(pw).hexdigest()
+    if algo == "blake2s":
+        return hashlib.blake2s(pw).hexdigest()
+    if algo == "blake2b":
+        return hashlib.blake2b(pw).hexdigest()
+    if algo == "ripemd160":
+        return hashlib.new("ripemd160", pw).hexdigest()
+    if algo == "mysql5":
+        return "*" + hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()
+    if algo == "mysql5_raw" or algo == "sha1(sha1)":
+        return hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()
     if algo == "md5+salt":
         return hashlib.md5(pw + sl).hexdigest()
+    if algo == "salt+md5":
+        return hashlib.md5(sl + pw).hexdigest()
     if algo == "sha1+salt":
         return hashlib.sha1(pw + sl).hexdigest()
+    if algo == "salt+sha1":
+        return hashlib.sha1(sl + pw).hexdigest()
     if algo == "sha256+salt":
         return hashlib.sha256(pw + sl).hexdigest()
+    if algo == "salt+sha256":
+        return hashlib.sha256(sl + pw).hexdigest()
     if algo == "sha512+salt":
         return hashlib.sha512(pw + sl).hexdigest()
+    if algo == "salt+sha512":
+        return hashlib.sha512(sl + pw).hexdigest()
     if algo == "hmac-sha256":
         return hmac.new(sl, pw, hashlib.sha256).hexdigest()
     if algo == "hmac-sha512":
         return hmac.new(sl, pw, hashlib.sha512).hexdigest()
     if algo == "md5(md5)":
         return hashlib.md5(hashlib.md5(pw).digest()).hexdigest()
+    if algo == "md5(md5_hex)":
+        return hashlib.md5(hashlib.md5(pw).hexdigest().encode()).hexdigest()
+    if algo == "sha224(sha224)":
+        return hashlib.sha224(hashlib.sha224(pw).digest()).hexdigest()
     if algo == "sha256(sha256)":
         return hashlib.sha256(hashlib.sha256(pw).digest()).hexdigest()
+    if algo == "sha384(sha384)":
+        return hashlib.sha384(hashlib.sha384(pw).digest()).hexdigest()
     if algo == "sha512(sha512)":
         return hashlib.sha512(hashlib.sha512(pw).digest()).hexdigest()
     if algo == "mysql3":
@@ -334,12 +394,17 @@ def compute(algo: str, password: str, salt: str = "") -> str:
 
 ALGO_MAP = {
     "MD5": "md5", "MD4": "md4", "NTLM": "ntlm", "LM (partial)": "md4",
-    "Double MD5": "md5(md5)", "Double SHA1": "sha1", "Double SHA256": "sha256(sha256)",
+    "Double MD5": "md5(md5)", "Double SHA1": "sha1(sha1)", "Double SHA256": "sha256(sha256)",
     "Double SHA512": "sha512(sha512)", "SHA1": "sha1", "SHA224": "sha224",
     "SHA256": "sha256", "SHA384": "sha384", "SHA512": "sha512",
-    "MySQL 3.x (old)": "mysql3", "MySQL 4.1/5.x (20-byte)": "sha1",
+    "SHA3-256": "sha3-256", "SHA3-512": "sha3-512",
+    "BLAKE2s": "blake2s", "BLAKE2b": "blake2b", "RIPEMD-160": "ripemd160",
+    "MySQL 3.x (old)": "mysql3", "MySQL 4.1/5.x (20-byte)": "mysql5_raw",
+    "MySQL 4.1/5.x (*SHA1-SHA1)": "mysql5",
     "MySQL HASH(short)": "mysql3",
 }
+
+SPECIAL_ALGOS = {"ldap_sha", "ldap_ssha", "django_pbkdf2_sha256", "werkzeug_pbkdf2_sha256"}
 
 
 # ============================================================================
@@ -398,15 +463,25 @@ def estimate_mask(mask: str) -> int:
 # ============================================================================
 # Cracking engine (multiprocessing)
 # ============================================================================
-def _worker_check(args) -> Optional[Tuple[str, str]]:
-    """Check a batch of passwords against one target. Returns (password, user)."""
-    algo, salt, target_hash, batch, user = args
-    for pw in batch:
-        try:
-            if compute(algo, pw, salt) == target_hash.lower():
-                return pw, user
-        except Exception:
-            continue
+def _worker_check(args) -> Optional[Tuple[str, str, str]]:
+    """Check a batch of passwords against one target across candidate algos.
+    Returns (password, user, matched_algo)."""
+    algos, salt, target_hash, batch, user = args
+    if isinstance(algos, str):
+        algos = [algos]
+    low_target = target_hash.lower()
+    for algo in algos:
+        is_special = algo in SPECIAL_ALGOS
+        for pw in batch:
+            try:
+                if is_special:
+                    if _check_special_hash(algo, pw, target_hash):
+                        return pw, user, algo
+                else:
+                    if compute(algo, pw, salt) == low_target:
+                        return pw, user, algo
+            except Exception:
+                continue
     return None
 
 
@@ -425,7 +500,7 @@ class Cracker:
     def __init__(self, targets: List[Target], wordlist: Optional[List[str]],
                  workers: Optional[int] = None, use_rules: bool = False,
                  mask: Optional[str] = None, custom_charsets: Optional[Dict[str, str]] = None,
-                 max_mask: int = 5_000_000):
+                 max_mask: int = 5_000_000, stop_event=None):
         self.targets = targets
         self.wordlist = wordlist or []
         self.workers = workers or max(1, (os.cpu_count() or 2) - 0)
@@ -433,17 +508,20 @@ class Cracker:
         self.mask = mask
         self.custom_charsets = custom_charsets or {}
         self.max_mask = max_mask
+        self.stop_event = stop_event
         self.cracked: List[Dict] = []
         self.attempts = 0
 
     def _password_stream(self) -> Iterable[str]:
         if self.wordlist:
             for w in self.wordlist:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return
                 if self.use_rules:
                     yield from mangle(w)
                 else:
-                    yield w.rstrip("\n")
-        if self.mask:
+                    yield w.rstrip("\r\n")
+        if self.mask and not (self.stop_event is not None and self.stop_event.is_set()):
             positions = parse_mask(self.mask, self.custom_charsets)
             est = 1
             for p in positions:
@@ -466,29 +544,32 @@ class Cracker:
         pool = mp.Pool(self.workers)
         try:
             for batch in _chunked(stream, batch_size * self.workers):
-                if not remaining:
+                if not remaining or (self.stop_event is not None and self.stop_event.is_set()):
                     break
-                self.attempts += len(batch) * max(len(remaining), 1)
                 tasks = []
                 for idx, t in list(remaining.items()):
-                    tasks.append((t.algo, t.salt, t.hash_str.lower(), batch, t.user or f"#{idx}"))
+                    algos = t.candidate_algos or [t.algo]
+                    self.attempts += len(batch) * len(algos)
+                    # Case-sensitive for Base64/PBKDF2/LDAP; hex compares lowercase
+                    raw_target = t.hash_str
+                    tasks.append((algos, t.salt, raw_target, batch, t.user or f"#{idx}"))
                 for res in pool.imap_unordered(_worker_check, tasks):
                     if res:
-                        pw, user = res
+                        pw, user, matched_algo = res
                         for idx, t in list(remaining.items()):
                             if (t.user or f"#{idx}") == user:
                                 t.plain = pw
+                                t.algo = matched_algo
                                 self.cracked.append(asdict(t))
-                                found(f"user={user} algo={t.algo} password={colorize(pw, 'yellow')}")
+                                found(f"user={user} algo={matched_algo} password={colorize(pw, 'yellow')}")
                                 del remaining[idx]
-                # progress
                 sys.stdout.write(
                     f"\r{colorize('[~]', 'cyan')} attempts≈{self.attempts:,} "
                     f"remaining={len(remaining)}   "
                 )
                 sys.stdout.flush()
         finally:
-            pool.close()
+            pool.terminate()
             pool.join()
             sys.stdout.write("\r" + " " * 60 + "\r")
 
@@ -532,35 +613,76 @@ def parse_hash_file(path: str) -> List[Target]:
 
 
 def resolve_algos(t: Target, force_algo: Optional[str]) -> None:
-    """Assign concrete cracking algo + salt from hash format."""
-    if force_algo:
-        t.algo = force_algo
+    """Assign concrete cracking algo(s) + salt from hash format."""
+    fa = (force_algo or "").strip().lower()
+    if fa and fa not in ("auto", "none", "detect"):
+        fa = ALGO_MAP.get(force_algo.strip(), fa)
+        t.algo = fa
+        t.candidate_algos = [fa]
         return
     hi = identify_hash(t.hash_str)
     name = hi.name
-    h = t.hash_str
+    h = t.hash_str.strip()
+    t.hash_str = h
 
-    # salted formats first
-    if re.fullmatch(r"[0-9a-fA-F]{40}:[0-9a-f]+", h):
-        digest, _, salt = h.partition(":")
-        t.hash_str, t.salt, t.algo = digest, salt, "sha1+salt"
+    # Salted & prefix formats first
+    if h.startswith("{SSHA}"):
+        t.algo, t.candidate_algos = "ldap_ssha", ["ldap_ssha"]
         return
-    if re.fullmatch(r"[0-9a-fA-F]{64}:[0-9a-f]+", h):
-        digest, _, salt = h.partition(":")
-        t.hash_str, t.salt, t.algo = digest, salt, "sha256+salt"
+    if h.startswith("{SHA}"):
+        t.algo, t.candidate_algos = "ldap_sha", ["ldap_sha"]
         return
-    if re.fullmatch(r"[0-9a-fA-F]{32}:[0-9a-f]+", h):
-        digest, _, salt = h.partition(":")
-        t.hash_str, t.salt, t.algo = digest, salt, "md5+salt"
+    if h.startswith("pbkdf2_sha256$"):
+        t.algo, t.candidate_algos = "django_pbkdf2_sha256", ["django_pbkdf2_sha256"]
         return
+    if h.startswith("pbkdf2:sha256:"):
+        t.algo, t.candidate_algos = "werkzeug_pbkdf2_sha256", ["werkzeug_pbkdf2_sha256"]
+        return
+    if re.fullmatch(r"\*[0-9a-fA-F]{40}", h):
+        t.algo, t.candidate_algos = "mysql5", ["mysql5"]
+        return
+    if re.fullmatch(r"[0-9a-fA-F]{40}:[^\s]+", h):
+        digest, _, salt = h.partition(":")
+        t.hash_str, t.salt = digest, salt
+        t.algo, t.candidate_algos = "sha1+salt", ["sha1+salt", "salt+sha1"]
+        return
+    if re.fullmatch(r"[0-9a-fA-F]{64}:[^\s]+", h):
+        digest, _, salt = h.partition(":")
+        t.hash_str, t.salt = digest, salt
+        t.algo, t.candidate_algos = "sha256+salt", ["sha256+salt", "salt+sha256", "hmac-sha256"]
+        return
+    if re.fullmatch(r"[0-9a-fA-F]{32}:[^\s]+", h):
+        digest, _, salt = h.partition(":")
+        t.hash_str, t.salt = digest, salt
+        t.algo, t.candidate_algos = "md5+salt", ["md5+salt", "salt+md5"]
+        return
+
+    # Pure hex digests: try ALL fast compatible algos for that length (CrackStation parity)
+    if re.fullmatch(r"[0-9a-fA-F]+", h):
+        by_len = {
+            16: ["mysql3"],
+            32: ["md5", "ntlm", "md4", "md5(md5)", "md5(md5_hex)"],
+            40: ["sha1", "mysql5_raw", "sha1(sha1)", "ripemd160"],
+            56: ["sha224", "sha224(sha224)"],
+            64: ["sha256", "sha3-256", "sha256(sha256)", "blake2s"],
+            96: ["sha384", "sha384(sha384)"],
+            128: ["sha512", "sha3-512", "blake2b", "sha512(sha512)"],
+        }
+        cands = by_len.get(len(h))
+        if cands:
+            t.algo = cands[0]
+            t.candidate_algos = cands
+            return
+
     if name in ALGO_MAP:
         t.algo = ALGO_MAP[name]
+        t.candidate_algos = [t.algo]
     elif name.startswith("Base64"):
         t.algo = "sha1"
+        t.candidate_algos = ["sha1"]
     else:
-        t.algo = "md5" if len(h) == 32 else ("sha1" if len(h) == 40 else
-                                             "sha256" if len(h) == 64 else
-                                             "sha512" if len(h) == 128 else "md5")
+        t.algo = "md5"
+        t.candidate_algos = ["md5"]
 
 
 # ============================================================================

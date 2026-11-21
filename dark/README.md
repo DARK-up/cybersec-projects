@@ -179,21 +179,38 @@ dark/
 All long-running scans execute as **background jobs** — the API stays
 responsive; poll `GET /api/jobs/{id}` or watch them in the dashboard.
 
-## 📄 Executive report
+## 📄 Executive report & platform capabilities
 
-Every finished web-scan job has a client-ready HTML report:
+Every finished **or stopped** (`POST /api/jobs/{id}/stop`) job produces a
+client-ready HTML report containing every finding discovered up to that moment,
+with inline attack-vector (`how_it_entered`), payload, evidence, CWE, CVSS,
+impact, and remediation details:
 
 ```
-GET /api/jobs/{id}/report            # open in the browser
-GET /api/jobs/{id}/report?download=1 # save DARK-{id}.html
-GET /api/jobs/{id}/export.csv        # findings spreadsheet
+POST /api/jobs/{id}/stop                  # stop cleanly & flush partial findings
+GET  /api/jobs/{id}/report                # open executive HTML/PDF report (done or stopped)
+GET  /api/jobs/{id}/report?download=1     # save DARK-{id}.html
+GET  /api/jobs/{id}/export.csv            # findings spreadsheet
+GET  /api/projects/{project_id}/report    # unified Project Executive Report across all tools
 ```
 
-The report includes a cover with a 0–100 risk score, OWASP Top 10 coverage
-matrix, CWE / CVSS / impact / remediation per finding, and a methodology
-appendix. Print it from the browser (**Save as PDF**) for a deliverable that
-looks like a commercial DAST report. The dashboard **Jobs** tab has a
-`report` button on every finished job.
+Additional DARK v2 capabilities:
+
+- **Authenticated Scanning & OpenAPI/Swagger Ingestion**: pass `cookie`,
+  `auth_header`, `extra_headers`, `login_url`/`login_user`/`login_pass` (HTML
+  form CSRF-aware or JSON Bearer token), and `openapi_url` (or auto-probed
+  `/openapi.json`, `/swagger.json`, `/v3/api-docs`).
+- **DNS, Subdomain & Email Security Recon (`POST /api/jobs/dns-recon`)**:
+  resolves A/AAAA/MX/NS/TXT/CAA records, audits SPF & DMARC policies,
+  enumerates subdomains (wordlist + `crt.sh`), and checks dangling CNAME
+  subdomain takeover fingerprints.
+- **Nuclei-Style YAML Templates (`GET/POST/DELETE /api/templates`)**:
+  ships 15+ safe built-in templates (`webvulnx/templates/safe_pack.yaml`) plus
+  custom operator YAML templates.
+- **HashBreaker Multi-Algorithm & Generator (`POST /api/hash/generate`)**:
+  automatically tests all candidate digest algorithms per length (MD5, NTLM,
+  MD4, Double-MD5, SHA1, MySQL5 `*...`, SHA256, SHA3-256, BLAKE2, LDAP
+  `{SHA}`/`{SSHA}`, Django/Werkzeug PBKDF2, and `salt+pw` / `pw+salt`).
 
 ## ⚖️ Legal
 

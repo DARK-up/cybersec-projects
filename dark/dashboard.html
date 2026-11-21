@@ -56,9 +56,27 @@
   .s-running{background:#0d2e3b;color:var(--cyan)}
   .s-waiting{background:#3b320d;color:var(--yellow)}
   .s-done{background:#0d3b2a;color:var(--green)}
+  .s-stopped{background:#2d2a0d;color:var(--yellow)}
+  .s-stopping{background:#2d2a0d;color:var(--yellow)}
   .s-error{background:#3b0d16;color:#ff8796}
   .s-timeout{background:#3b1f0d;color:#ffb27d}
   .s-interrupted{background:#2b2440;color:#c3b0ff}
+  .vuln-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0 8px;
+                padding:8px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:8px}
+  .vuln-toolbar input{padding:6px 10px;font-size:12px;min-width:190px;flex:1}
+  .vuln-toolbar select{padding:6px 10px;font-size:12px}
+  .vuln-card{background:#0d1420;border:1px solid var(--border);border-left:4px solid var(--cyan);
+             border-radius:8px;padding:12px 14px;margin:8px 0;white-space:normal;line-height:1.5}
+  .vuln-card.sev-Critical{border-left-color:var(--red)}
+  .vuln-card.sev-High{border-left-color:#f97316}
+  .vuln-card.sev-Medium{border-left-color:var(--yellow)}
+  .vuln-card.sev-Low{border-left-color:var(--cyan)}
+  .vuln-card.sev-Info{border-left-color:#3b82f6}
+  .vuln-head{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+  .vuln-meta{font-size:11px;color:var(--muted)}
+  .vuln-grid{display:grid;grid-template-columns:140px 1fr;gap:4px 10px;font-size:12px;margin-top:6px}
+  .vuln-grid .k{color:var(--cyan);font-weight:700}
+  .vuln-grid code{background:#090d14;padding:2px 6px;border-radius:4px;word-break:break-all;color:#e6f1ff}
   .crack-word{font-size:26px;font-weight:800;color:var(--green);letter-spacing:.5px;
               background:#0d3b2a;border:1px solid #1d6b4c;border-radius:10px;
               padding:14px 18px;margin:10px 0;display:inline-block;word-break:break-all}
@@ -82,6 +100,10 @@
         <option value="default">Default</option>
       </select>
     </label>
+    <button class="run" onclick="openProjectReport()"
+            style="background:var(--panel2);color:var(--green);border:1px solid var(--border);padding:8px 14px;font-size:12px">
+      📄 Project Report
+    </button>
     <button id="auth-btn" class="run" onclick="openAuthModal()"
             style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:8px 14px;font-size:12px">
       🔓 Unlocked
@@ -127,12 +149,30 @@
   </div>
   <button class="run" onclick="runNetwork()">▶ RUN SCAN</button>
   <div class="out" id="net-out">Results will appear here…</div>
+
+  <hr style="border:0;border-top:1px solid var(--border);margin:24px 0">
+  <h2>DNS, Subdomain &amp; Email Security Recon</h2>
+  <p class="desc">Resolves DNS records (A/AAAA/MX/NS/TXT/CAA), audits SPF &amp; DMARC spoofing posture, enumerates subdomains (wordlist + crt.sh), and checks dangling CNAME subdomain takeovers.</p>
+  <div class="row">
+    <label>Domain / Host
+      <input id="dns-target" value="example.com" placeholder="example.com">
+    </label>
+    <label>Extra Subdomains (optional, comma-separated)
+      <input id="dns-extra" placeholder="internal, dev2, partner">
+    </label>
+  </div>
+  <div class="checks">
+    <label><input type="checkbox" id="dns-subs" checked> Enumerate subdomains + takeover check</label>
+    <label><input type="checkbox" id="dns-crtsh" checked> Passive crt.sh Certificate Transparency</label>
+  </div>
+  <button class="run" onclick="runDnsRecon()" style="background:var(--cyan)">🌐 RUN DNS RECON</button>
+  <div class="out" id="dns-out">DNS Recon results will appear here…</div>
 </section>
 
 <!-- ============ WEB ============ -->
 <section id="tab-web">
   <h2>WebVulnX — Web Application Scanner</h2>
-  <p class="desc">SQLi (error / boolean-blind / time-blind) + Reflected XSS + crawler + dirbuster + misconfig audit.</p>
+  <p class="desc">SQLi (error / boolean-blind / time-blind) + Deep XSS + crawler + OpenAPI/Swagger + YAML templates + dirbuster + misconfig audit.</p>
   <div class="row">
     <label>Target URL
       <input id="web-url" value="http://127.0.0.1:8080" placeholder="http://target.com  (http:// is added automatically)">
@@ -156,12 +196,57 @@
     <label><input type="checkbox" id="web-sqli" checked> SQLi</label>
     <label><input type="checkbox" id="web-xss" checked> XSS</label>
     <label><input type="checkbox" id="web-advanced" checked> Advanced (LFI/SSTI/CMDi/Redirect/CORS...)</label>
+    <label><input type="checkbox" id="web-templates" checked> 🧩 YAML Templates (Nuclei-style)</label>
     <label><input type="checkbox" id="web-dirs" checked> DirBuster</label>
     <label><input type="checkbox" id="web-audit" checked> Misconfig audit</label>
     <label><input type="checkbox" id="web-creds"> Default creds</label>
     <label><input type="checkbox" id="web-fast" checked> ⚡ Fast (skip time-based SQLi)</label>
     <label><input type="checkbox" id="web-stealth" checked> 🥷 Stealth (browser fingerprint, no scanner banner, WAF backoff)</label>
   </div>
+
+  <details style="margin:8px 0 14px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <summary style="cursor:pointer;color:var(--cyan);font-size:13px;font-weight:700">🔑 Authentication, Cookies, Headers &amp; OpenAPI / Swagger Ingestion (optional)</summary>
+    <div class="row" style="margin-top:10px">
+      <label>Session Cookie
+        <input id="web-cookie" placeholder="PHPSESSID=abc123; session=xyz">
+      </label>
+      <label>Authorization Header
+        <input id="web-auth" placeholder="Bearer eyJhbGciOi...  or  Basic ...">
+      </label>
+      <label>OpenAPI / Swagger URL (auto-probed if blank)
+        <input id="web-openapi" placeholder="https://target.com/openapi.json">
+      </label>
+    </div>
+    <div class="row">
+      <label>Auto-Login URL (HTML form or JSON)
+        <input id="web-login-url" placeholder="https://target.com/login">
+      </label>
+      <label>Login Username / Email
+        <input id="web-login-user" placeholder="admin@target.com">
+      </label>
+      <label>Login Password
+        <input id="web-login-pass" type="password" placeholder="••••••">
+      </label>
+    </div>
+    <div class="row">
+      <label>Extra Headers (one per line: Name: Value)
+        <textarea id="web-headers" style="min-height:54px" placeholder="X-API-Key: secret&#10;X-Custom-Role: admin"></textarea>
+      </label>
+    </div>
+  </details>
+
+  <details style="margin:0 0 14px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <summary style="cursor:pointer;color:var(--cyan);font-size:13px;font-weight:700" onclick="loadTemplates()">🧩 Nuclei-Style YAML Templates Pack &amp; Custom Templates</summary>
+    <div id="tpl-list" style="margin-top:8px;font-size:12px">Click to load templates…</div>
+    <div class="row" style="margin-top:10px">
+      <label>Add Custom YAML Template
+        <textarea id="tpl-yaml" style="min-height:110px" placeholder="id: custom-admin-panel&#10;info:&#10;  name: Exposed Custom Admin&#10;  severity: Medium&#10;http:&#10;  - method: GET&#10;    path: ['{{BaseURL}}/admin-panel']&#10;    matchers:&#10;      - type: status&#10;        status: [200]"></textarea>
+      </label>
+    </div>
+    <button class="run" onclick="saveTemplate()" style="padding:7px 14px;font-size:12px">💾 SAVE CUSTOM TEMPLATE</button>
+    <span id="tpl-msg" style="font-size:12px;margin-left:10px"></span>
+  </details>
+
   <div class="row" style="align-items:center">
     <span style="font-size:12px;color:var(--dim)">Preset:</span>
     <button class="run" style="background:var(--panel2);color:var(--green);border:1px solid var(--border);padding:6px 12px"
@@ -173,8 +258,9 @@
   </div>
   <button class="run" onclick="runWeb()">▶ RUN SCAN</button>
   <button class="run" onclick="maxScan()" style="background:var(--red);color:#fff">🔥 MAX SCAN (everything)</button>
+  <button class="run" id="web-stop-btn" onclick="stopActiveWebScan()" style="display:none;background:var(--yellow);color:#111">🛑 STOP &amp; REPORT</button>
   <span style="font-size:11px;color:#7d90a8;margin-left:10px">
-    Watch live progress in the <b>Jobs</b> tab — a long scan is not a stuck scan.
+    Watch live progress or stop anytime to generate a partial report.
   </span>
   <div class="out" id="web-out">Results will appear here…</div>
 </section>
@@ -211,6 +297,29 @@
   <button class="run" onclick="runIdentify()">🔎 IDENTIFY</button>
   <button class="run" onclick="runCrack()" style="background:var(--red);color:#fff">💥 CRACK</button>
   <div class="out" id="hash-out">Results will appear here…</div>
+
+  <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+  <h3 style="color:var(--cyan);font-size:15px;margin:0 0 8px">🧪 Hash Generator &amp; CrackStation Verifier</h3>
+  <p class="desc">Compute MD5, SHA1, SHA256, SHA512, SHA3-256, NTLM, and MySQL5 hashes locally and verify matching against CrackStation.</p>
+  <div class="row">
+    <label>Plaintext word
+      <input id="hgen-text" placeholder="e.g. password123">
+    </label>
+    <label>Algorithm
+      <select id="hgen-algo">
+        <option value="all" selected>All common (MD5/SHA1/SHA256/SHA512/NTLM/MySQL5)</option>
+        <option value="md5">MD5</option>
+        <option value="sha1">SHA1</option>
+        <option value="sha256">SHA256</option>
+        <option value="sha512">SHA512</option>
+        <option value="sha3-256">SHA3-256</option>
+        <option value="ntlm">NTLM</option>
+        <option value="mysql5">MySQL5 (*SHA1-SHA1)</option>
+      </select>
+    </label>
+  </div>
+  <button class="run" onclick="runHashGen()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:9px 16px">⚙ GENERATE HASH</button>
+  <div class="out" id="hgen-out">Generated hashes will appear here…</div>
 </section>
 
 <!-- ============ MONITOR ============ -->
@@ -339,9 +448,13 @@ async function api(path, opts) {
 
 function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
+let ACTIVE_WEB_JOB = null;
+
 async function pollJob(jobId, outEl) {
   const t0 = Date.now();
-  outEl.textContent = 'Job ' + jobId + ' starting…';
+  outEl.innerHTML = 'Job <code>' + esc(jobId) + '</code> starting… ' +
+    '<button class="run" style="background:var(--yellow);color:#111;padding:4px 12px;font-size:11px;margin-left:10px" ' +
+    'onclick="stopAndReport(\'' + esc(jobId) + '\')">🛑 STOP &amp; REPORT</button>';
   while (true) {
     await new Promise(r => setTimeout(r, 1500));
     let j;
@@ -351,22 +464,139 @@ async function pollJob(jobId, outEl) {
         ') — the server may have restarted. Check the Jobs tab.';
       return null;
     }
-    if (j.status === 'running' || j.status === 'waiting') {
+    if (j.status === 'running' || j.status === 'waiting' || j.status === 'stopping') {
       const p = j.progress || {};
-      outEl.textContent = 'Job ' + jobId + ' ' + j.status + '… (' + j.kind + ', ' +
-        (p.elapsed_s !== undefined ? p.elapsed_s + 's' : Math.round((Date.now() - t0) / 1000) + 's') +
-        ', ' + (p.log_lines || 0) + ' log lines)\n▶ ' + (p.last_line || 'working…');
-      if ((Date.now() - t0) / 1000 > 4 * 3600) {   // never poll forever in the browser
+      const elapsed = p.elapsed_s !== undefined ? p.elapsed_s + 's' : Math.round((Date.now() - t0) / 1000) + 's';
+      outEl.innerHTML = 'Job <code>' + esc(jobId) + '</code> <span class="status s-' + esc(j.status) + '">' +
+        esc(j.status) + '</span> (' + esc(j.kind) + ', ' + elapsed + ', ' + (p.log_lines || 0) + ' log lines) ' +
+        (j.status !== 'stopping'
+          ? '<button class="run" style="background:var(--yellow);color:#111;padding:4px 12px;font-size:11px;margin-left:10px" ' +
+            'onclick="stopAndReport(\'' + esc(jobId) + '\')">🛑 STOP &amp; REPORT</button>'
+          : '<b>stopping cleanly &amp; building partial report…</b>') +
+        '\n▶ ' + esc(p.last_line || 'working…');
+      if ((Date.now() - t0) / 1000 > 4 * 3600) {
         outEl.textContent = 'Job ' + jobId + ' is still ' + j.status +
           ' after 4h — open the Jobs tab to keep watching it.';
         return null;
       }
       continue;
     }
+    if (ACTIVE_WEB_JOB === jobId) {
+      ACTIVE_WEB_JOB = null;
+      if ($('web-stop-btn')) $('web-stop-btn').style.display = 'none';
+    }
     renderJob(j, outEl);
-    loadJobs();          // keep the queue table in sync the moment a job ends
+    loadJobs();
     return j;
   }
+}
+
+async function stopAndReport(jobId) {
+  try {
+    const res = await api('/api/jobs/' + encodeURIComponent(jobId) + '/stop', {method: 'POST'});
+    const j = res.job;
+    if (j && (j.status === 'stopped' || j.status === 'done')) {
+      window.open('/api/jobs/' + encodeURIComponent(jobId) + '/report', '_blank');
+    }
+    loadJobs();
+  } catch (e) { alert('Stop failed: ' + e.message); }
+}
+
+function stopActiveWebScan() {
+  if (ACTIVE_WEB_JOB) stopAndReport(ACTIVE_WEB_JOB);
+}
+
+async function deleteJob(jobId) {
+  await api('/api/jobs/' + encodeURIComponent(jobId), {method: 'DELETE'});
+  if (VIEWED_JOB === jobId) { VIEWED_JOB = null; $('job-detail').textContent = 'Job deleted.'; }
+  loadJobs();
+}
+
+function filterFindings(uid) {
+  const sev = ($('flt-sev-' + uid) || {}).value || 'ALL';
+  const q = (($('flt-q-' + uid) || {}).value || '').toLowerCase();
+  const cards = document.querySelectorAll('#fcards-' + uid + ' .vuln-card');
+  let vis = 0;
+  cards.forEach(c => {
+    const okSev = (sev === 'ALL') || (c.dataset.sev === sev);
+    const okQ = !q || (c.dataset.search || '').includes(q);
+    const show = okSev && okQ;
+    c.style.display = show ? '' : 'none';
+    if (show) vis++;
+  });
+  const cnt = $('flt-cnt-' + uid);
+  if (cnt) cnt.textContent = vis + ' / ' + cards.length + ' shown';
+}
+
+function renderFindingsBlock(jobId, findings) {
+  const uid = jobId.replace(/[^a-zA-Z0-9]/g, '');
+  if (!findings || !findings.length) return '';
+  let h = '<div class="vuln-toolbar">' +
+    '<b style="color:var(--cyan);font-size:12px">🔍 Vulnerabilities (' + findings.length + ')</b>' +
+    '<select id="flt-sev-' + uid + '" onchange="filterFindings(\'' + uid + '\')">' +
+      '<option value="ALL">All severities</option>' +
+      '<option>Critical</option><option>High</option><option>Medium</option><option>Low</option><option>Info</option>' +
+    '</select>' +
+    '<input id="flt-q-' + uid + '" placeholder="Search type, URL, parameter, payload, CWE…" oninput="filterFindings(\'' + uid + '\')">' +
+    '<span id="flt-cnt-' + uid + '" style="font-size:11px;color:var(--muted)">' + findings.length + ' / ' + findings.length + ' shown</span>' +
+  '</div><div id="fcards-' + uid + '">';
+
+  findings.forEach((f, idx) => {
+    const sev = f.severity || 'Info';
+    const name = f.vuln_type || f.category || 'Finding';
+    const url = f.url || f.src || '-';
+    const param = f.parameter || (f.port ? 'port ' + f.port : '-');
+    const payload = f.payload || '-';
+    const entered = f.how_it_entered || ((param && param !== '-') ? ('Injected via ' + param + ' at ' + url) : ('Observed at ' + url));
+    const ev = f.evidence || '-';
+    const impact = f.impact || f.detail || '-';
+    const remed = f.remediation || 'Validate input, apply least privilege, and patch affected component.';
+    const meta = [f.cwe, f.owasp, (f.cvss || f.cvss_hint) ? ('CVSS ' + (f.cvss || f.cvss_hint)) : ''].filter(Boolean).join(' · ');
+    const searchBlob = (sev + ' ' + name + ' ' + url + ' ' + param + ' ' + payload + ' ' + ev + ' ' + meta).toLowerCase();
+
+    h += '<div class="vuln-card sev-' + esc(sev) + '" data-sev="' + esc(sev) + '" data-search="' + esc(searchBlob) + '">' +
+      '<div class="vuln-head">' +
+        '<span class="badge b-' + esc(sev) + '">' + esc(sev) + '</span>' +
+        '<b style="font-size:13px;color:var(--text)">#' + (idx + 1) + ' ' + esc(name) + '</b>' +
+        (meta ? '<span class="vuln-meta">(' + esc(meta) + ')</span>' : '') +
+      '</div>' +
+      '<div class="vuln-grid">' +
+        '<div class="k">How it entered</div><div>' + esc(entered) + '</div>' +
+        '<div class="k">URL / Target</div><div><code>' + esc(url) + '</code></div>' +
+        '<div class="k">Parameter / Port</div><div><code>' + esc(param) + '</code></div>' +
+        (payload && payload !== '-' ? '<div class="k">Payload</div><div><code>' + esc(payload.slice(0, 300)) + '</code></div>' : '') +
+        '<div class="k">Evidence</div><div><code>' + esc(String(ev).slice(0, 350)) + '</code></div>' +
+        '<div class="k">Impact</div><div>' + esc(impact) + '</div>' +
+        '<div class="k">Remediation</div><div style="color:var(--green)">' + esc(remed) + '</div>' +
+      '</div>' +
+    '</div>';
+  });
+  h += '</div>';
+  return h;
+}
+
+async function saveJobNote(jobId) {
+  const txt = ($('note-' + jobId) || {}).value || '';
+  await api('/api/jobs/' + encodeURIComponent(jobId) + '/note', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text: txt})
+  });
+  const st = $('note-st-' + jobId);
+  if (st) { st.textContent = 'Saved ✓'; setTimeout(() => st.textContent = '', 2000); }
+}
+
+function renderNotesAndReport(j) {
+  return '\n<div style="margin-top:12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:10px">' +
+    '<b style="font-size:12px;color:var(--cyan)">📝 Operator Notes</b>' +
+    '<textarea id="note-' + esc(j.id) + '" style="width:100%;min-height:52px;margin-top:6px" placeholder="Add engagement notes, false-positive triage, or retest remarks…">' + esc(j.note || '') + '</textarea>' +
+    '<div style="display:flex;gap:10px;align-items:center;margin-top:6px;flex-wrap:wrap">' +
+      '<button class="run" style="padding:6px 14px;font-size:12px" onclick="saveJobNote(\'' + esc(j.id) + '\')">💾 SAVE NOTE</button>' +
+      '<span id="note-st-' + esc(j.id) + '" style="font-size:11px;color:var(--green)"></span>' +
+      '<a class="run" style="display:inline-block;text-decoration:none;padding:7px 16px;font-size:12px" href="/api/jobs/' + encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a>' +
+      '<a class="run" style="display:inline-block;text-decoration:none;padding:7px 16px;font-size:12px;background:var(--panel);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' + encodeURIComponent(j.id) + '/report?download=1">⬇ HTML</a>' +
+      '<a class="run" style="display:inline-block;text-decoration:none;padding:7px 16px;font-size:12px;background:var(--panel);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' + encodeURIComponent(j.id) + '/export.csv">⬇ CSV</a>' +
+    '</div>' +
+  '</div>';
 }
 
 function renderJob(j, outEl) {
@@ -381,8 +611,10 @@ function renderJob(j, outEl) {
   }
   const r = j.result || {};
   const secs = (j.finished_at && j.started_at) ? Math.round(j.finished_at - j.started_at) + 's' : '';
-  let html = '<span class="status s-done">DONE</span> ' + esc(j.kind) +
-             (secs ? ' in ' + secs : '') + '\n';
+  const stBadge = j.status === 'stopped'
+    ? '<span class="status s-stopped">STOPPED EARLY (PARTIAL REPORT)</span>'
+    : '<span class="status s-done">DONE</span>';
+  let html = stBadge + ' ' + esc(j.kind) + (secs ? ' in ' + secs : '') + '\n';
 
   if (r.report && r.report.hosts) {                       // network scan
     const vs = r.report.vuln_summary || {};
@@ -410,22 +642,25 @@ function renderJob(j, outEl) {
                 '<td><code>' + esc((p.banner || '-').slice(0, 70)) + '</code></td></tr>';
       }
       html += '</table>';
-      if (h.vulnerabilities && h.vulnerabilities.length) {
-        html += '<table><tr><th>Severity</th><th>Plugin / CVE Finding</th><th>Port</th><th>CVSS</th><th>Evidence</th></tr>';
-        for (const v of h.vulnerabilities) {
-          html += '<tr><td><span class="badge b-' + esc(v.severity) + '">' + esc(v.severity) + '</span></td>' +
-                  '<td>' + esc(v.vuln_type) + '</td><td>' + esc(v.port || '-') + '</td>' +
-                  '<td>' + esc(v.cvss_hint || '-') + '</td>' +
-                  '<td>' + esc((v.evidence || '-').slice(0, 110)) + '</td></tr>';
-        }
-        html += '</table>';
-      }
     }
     html += '\nTotal open ports: ' + r.report.hosts.reduce((a, h) => a + h.open_ports.length, 0);
-    html += '\n\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
-            encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a> ' +
-            '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
-            encodeURIComponent(j.id) + '/export.csv">⬇ CSV</a>';
+    html += renderFindingsBlock(j.id, r.findings || r.report.findings || []);
+    html += renderNotesAndReport(j);
+  } else if (r.records && r.domain) {                     // dns-recon
+    html += '\nDomain: <b>' + esc(r.domain) + '</b> | Duration: ' + (r.duration_s || 0) + 's\n';
+    html += '<table><tr><th>Record</th><th>Values</th></tr>';
+    for (const [rt, vals] of Object.entries(r.records || {}))
+      html += '<tr><td><b>' + esc(rt) + '</b></td><td><code>' + esc((vals || []).join(' | ') || '— none —') + '</code></td></tr>';
+    html += '</table>';
+    if (r.subdomains && r.subdomains.length) {
+      html += '\n<b>Discovered Subdomains (' + r.subdomains.length + ')</b>' +
+              '<table><tr><th>Host</th><th>IPs</th><th>CNAME</th></tr>';
+      for (const s of r.subdomains)
+        html += '<tr><td><b>' + esc(s.host) + '</b></td><td><code>' + esc((s.ips || []).join(', ') || '-') + '</code></td><td><code>' + esc(s.cname || '-') + '</code></td></tr>';
+      html += '</table>';
+    }
+    html += renderFindingsBlock(j.id, r.findings || []);
+    html += renderNotesAndReport(j);
   } else if (r.findings) {                                // web scan
     const st = r.stats || {};
     html += '\nTarget: ' + esc(r.target || '');
@@ -488,20 +723,8 @@ function renderJob(j, outEl) {
              +  ' | size: ' + r.debug.content_length + ' bytes | final URL: ' + esc(r.debug.final_url) + '\n'
              +  'Preview: ' + esc((r.debug.preview || '').slice(0, 160)) + '\n';
     }
-    html += '\n\n<table><tr><th>Severity</th><th>Type</th><th>Param</th><th>URL</th><th>Evidence</th></tr>';
-    for (const f of r.findings) {
-      html += '<tr><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td><td>' +
-              esc(f.vuln_type) + '</td><td>' + esc(f.parameter || '-') + '</td><td>' + esc(f.url) +
-              '</td><td>' + esc((f.evidence || '-').slice(0, 90)) + '</td></tr>';
-    }
-    html += '</table>';
-    html += '\n\n<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px" href="/api/jobs/' +
-            encodeURIComponent(j.id) + '/report" target="_blank">📄 EXECUTIVE REPORT</a> ';
-    html += '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
-            encodeURIComponent(j.id) + '/report?download=1">⬇ HTML</a> ';
-    html += '<a class="run" style="display:inline-block;text-decoration:none;padding:8px 16px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
-            encodeURIComponent(j.id) + '/export.csv">⬇ CSV</a>';
-    html += '<div style="font-size:11px;color:#7d90a8;margin-top:6px">Open the report → Print → Save as PDF for a client-ready deliverable.</div>';
+    html += renderFindingsBlock(j.id, r.findings || []);
+    html += renderNotesAndReport(j);
   } else if (r.results && r.results.length && r.results[0].hash_type !== undefined) {  // hash crack (new format)
     const s = r.summary || {};
     html += '\n<b>── CRACK RESULT ──</b>\n';
@@ -577,26 +800,121 @@ async function runNetwork() {
   } catch (e) { $('net-out').textContent = 'Error: ' + e.message; }
 }
 
+async function runDnsRecon() {
+  const extra = ($('dns-extra').value || '').split(/[,\s]+/).filter(Boolean);
+  const body = {
+    target: $('dns-target').value.trim(),
+    subdomains: $('dns-subs').checked,
+    passive_crtsh: $('dns-crtsh').checked,
+    extra_words: extra.length ? extra : null,
+    project_id: ACTIVE_PROJECT
+  };
+  try {
+    const { job_id } = await api('/api/jobs/dns-recon', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    loadJobs();
+    await pollJob(job_id, $('dns-out'));
+  } catch (e) { $('dns-out').textContent = 'Error: ' + e.message; }
+}
+
 async function runWeb() {
+  const extraHeaders = {};
+  ($('web-headers').value || '').split('\n').forEach(ln => {
+    const idx = ln.indexOf(':');
+    if (idx > 0) extraHeaders[ln.slice(0, idx).trim()] = ln.slice(idx + 1).trim();
+  });
   const body = {
     url: $('web-url').value,
     crawl: $('web-crawl').checked, sqli: $('web-sqli').checked,
     xss: $('web-xss').checked, dirs: $('web-dirs').checked, audit: $('web-audit').checked,
     advanced: $('web-advanced').checked, param_fuzz: $('web-paramfuzz').checked,
     default_creds: $('web-creds').checked,
+    templates: $('web-templates').checked,
     fast: $('web-fast').checked,
     time_blind: +$('web-blind').value, max_urls: +$('web-max').value,
     depth: +$('web-depth').value, delay: +$('web-delay').value,
+    cookie: $('web-cookie').value.trim() || null,
+    auth_header: $('web-auth').value.trim() || null,
+    extra_headers: Object.keys(extraHeaders).length ? extraHeaders : null,
+    login_url: $('web-login-url').value.trim() || null,
+    login_user: $('web-login-user').value.trim() || null,
+    login_pass: $('web-login-pass').value || null,
+    openapi_url: $('web-openapi').value.trim() || null,
     stealth: $('web-stealth').checked, project_id: ACTIVE_PROJECT
   };
   try {
     const { job_id } = await api('/api/jobs/web-scan', {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    ACTIVE_WEB_JOB = job_id;
+    if ($('web-stop-btn')) $('web-stop-btn').style.display = 'inline-block';
     loadJobs();
-    $('web-out').textContent = 'Job ' + job_id + ' started — running in parallel with any other job.\n' +
-      'Live progress appears below and in the Jobs tab…';
     await pollJob(job_id, $('web-out'));
   } catch (e) { $('web-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadTemplates() {
+  try {
+    const r = await api('/api/templates');
+    const list = r.templates || [];
+    let html = '<table><tr><th>ID</th><th>Severity</th><th>Name</th><th>Source</th><th></th></tr>';
+    for (const t of list) {
+      html += '<tr><td><code>' + esc(t.id) + '</code></td><td><span class="badge b-' + esc(t.severity || 'Info') + '">' +
+              esc(t.severity || 'Info') + '</span></td><td>' + esc(t.name) + '</td><td>' + esc(t.source) + '</td><td>' +
+              (t.source === 'custom'
+                ? '<button class="run" style="background:var(--red);color:#fff;padding:2px 8px;font-size:11px" onclick="deleteTemplate(\'' + esc(t.id) + '\')">delete</button>'
+                : '') +
+              '</td></tr>';
+    }
+    html += '</table>';
+    $('tpl-list').innerHTML = html;
+  } catch (e) { $('tpl-list').textContent = 'Error: ' + e.message; }
+}
+
+async function saveTemplate() {
+  const yaml_text = $('tpl-yaml').value.trim();
+  if (!yaml_text) return;
+  try {
+    const r = await api('/api/templates', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({yaml_text})
+    });
+    $('tpl-msg').textContent = 'Saved template: ' + r.saved.id;
+    $('tpl-msg').style.color = 'var(--green)';
+    loadTemplates();
+  } catch (e) {
+    $('tpl-msg').textContent = e.message;
+    $('tpl-msg').style.color = 'var(--red)';
+  }
+}
+
+async function deleteTemplate(tid) {
+  await api('/api/templates/' + encodeURIComponent(tid), {method: 'DELETE'});
+  loadTemplates();
+}
+
+async function runHashGen() {
+  const text = $('hgen-text').value;
+  if (!text) { $('hgen-out').textContent = 'Enter a plaintext word first.'; return; }
+  try {
+    const r = await api('/api/hash/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text, algo: $('hgen-algo').value})
+    });
+    if (r.hashes) {
+      let html = '<table><tr><th>Algorithm</th><th>Hash</th></tr>';
+      for (const [k, v] of Object.entries(r.hashes))
+        html += '<tr><td><b>' + esc(k.toUpperCase()) + '</b></td><td><code>' + esc(v) + '</code></td></tr>';
+      html += '</table>';
+      $('hgen-out').innerHTML = html;
+    } else {
+      $('hgen-out').innerHTML = '<b>' + esc((r.algo || '').toUpperCase()) + '</b>: <code>' + esc(r.hash) + '</code>';
+    }
+  } catch (e) { $('hgen-out').textContent = 'Error: ' + e.message; }
+}
+
+function openProjectReport() {
+  const pid = ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT;
+  window.open('/api/projects/' + encodeURIComponent(pid) + '/report', '_blank');
 }
 
 const PRESETS = {
@@ -746,10 +1064,16 @@ async function loadJobs() {
               '<td style="font-size:11px">' + prog + '</td>' +
               '<td><button class="run" style="padding:4px 12px;font-size:11px" ' +
               "onclick=\"viewJob('" + j.id + "')\">view</button>" +
-              (j.status === 'done'
+              ((j.status === 'running' || j.status === 'waiting')
+                ? ' <button class="run" style="padding:4px 10px;font-size:11px;background:var(--yellow);color:#111" ' +
+                  "onclick=\"stopAndReport('" + j.id + "')\">stop &amp; report</button>"
+                : '') +
+              ((j.status === 'done' || j.status === 'stopped')
                 ? ' <a class="run" style="padding:4px 12px;font-size:11px;text-decoration:none;display:inline-block" href="/api/jobs/' +
                   j.id + '/report" target="_blank">report</a>'
                 : '') +
+              ' <button class="run" style="padding:4px 9px;font-size:11px;background:var(--red);color:#fff" ' +
+              "onclick=\"deleteJob('" + j.id + "')\">✕</button>" +
               '</td></tr>';
     }
     html += '</table>';

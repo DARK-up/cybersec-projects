@@ -195,12 +195,47 @@ class _Capture:
         return self.buf.snapshot()
 
 
+def _enrich_finding_dict(f: Dict, default_method: str = "HTTP") -> Dict:
+    """Attach catalog metadata (CWE, OWASP, CVSS, impact, remediation) and a
+    clear `how_it_entered` attack-vector explanation onto every finding."""
+    import catalog as dcat
+    out = dict(f)
+    vt = str(out.get("vuln_type") or "")
+    meta = dcat.enrich(vt, float(out.get("cvss_hint") or 0.0))
+    out.setdefault("cwe", meta.get("cwe", "CWE-693"))
+    out.setdefault("owasp", meta.get("owasp", "A05:2021 Security Misconfiguration"))
+    if not out.get("cvss"):
+        out["cvss"] = meta.get("cvss", 0.0)
+    if not out.get("impact"):
+        out["impact"] = meta.get("impact", out.get("detail") or "")
+    if not out.get("remediation"):
+        out["remediation"] = meta.get("remediation", "")
+    if not out.get("refs"):
+        out["refs"] = meta.get("refs", [])
+    if not out.get("how_it_entered"):
+        param = out.get("parameter") or ""
+        payload = out.get("payload") or ""
+        url = out.get("url") or ""
+        parts = []
+        if default_method:
+            parts.append(default_method)
+        if url:
+            parts.append(f"at {url}")
+        if param:
+            parts.append(f"via parameter/vector '{param}'")
+        if payload:
+            parts.append(f"using payload `{payload[:120]}`")
+        out["how_it_entered"] = " ".join(parts) if parts else (out.get("evidence") or "")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # NetRecon
 # ---------------------------------------------------------------------------
 def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "normal",
                      probe: bool = True, discover: bool = False,
-                     vuln_audit: bool = True) -> Dict:
+                     vuln_audit: bool = True,
+                     stop_event=None) -> Dict:
     import netrecon as nr
 
     hosts = nr.parse_targets(targets)
@@ -218,12 +253,34 @@ def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "n
     with _Capture() as cap:
         asyncio.run(scanner.run())
     rep = scanner.to_dict()
+    findings = [_enrich_finding_dict(f, default_method="TCP/Service Probe")
+                for f in (rep.get("findings") or [])]
     return {
         "target": ", ".join(hosts[:6]),
         "report": rep,
-        "findings": rep.get("findings") or [],
+        "findings": findings,
+        "stopped_early": bool(stop_event is not None and stop_event.is_set()),
         "log": cap.text,
     }
+
+
+def run_dns_recon(target: str, subdomains: bool = True,
+                  passive_crtsh: bool = True,
+                  extra_words: Optional[List[str]] = None,
+                  stop_event=None) -> Dict:
+    import dns_recon as dr
+    with _Capture() as cap:
+        res = dr.run_dns_recon(
+            target=target, subdomains=subdomains,
+            passive_crtsh=passive_crtsh, extra_words=extra_words,
+            stop_event=stop_event,
+        )
+    if "error" in res:
+        return res
+    res["findings"] = [_enrich_finding_dict(f, default_method="DNS / Email Audit")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +291,14 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                  delay: float = 0.0, time_blind: float = 5.0,
                  wordlist_path: Optional[str] = None,
                  cookie: Optional[str] = None, proxy: Optional[str] = None,
-                 stealth: bool = True) -> Dict:
+                 stealth: bool = True,
+                 auth_header: Optional[str] = None,
+                 extra_headers: Optional[Dict[str, str]] = None,
+                 login_url: Optional[str] = None,
+                 login_user: Optional[str] = None,
+                 login_pass: Optional[str] = None,
+                 openapi_url: Optional[str] = None,
+                 stop_event=None) -> Dict:
     import webvulnx as wx
 
     modules = modules or {}
@@ -246,6 +310,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
     do_advanced = modules.get("advanced", True)
     do_param_fuzz = modules.get("param_fuzz", True)
     do_default_creds = modules.get("default_creds", False)
+    do_templates = modules.get("templates", True)
 
     url = wx.ensure_scheme(url)
     cookies = {}
@@ -255,9 +320,19 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                 k, _, v = part.partition("=")
                 cookies[k.strip()] = v.strip()
 
-    client = wx.HttpClient(timeout=timeout, delay=delay, cookies=cookies, proxy=proxy,
+    hdrs: Dict[str, str] = {}
+    if extra_headers:
+        for k, v in extra_headers.items():
+            if k and v is not None:
+                hdrs[str(k).strip()] = str(v).strip()
+    if auth_header and auth_header.strip():
+        hdrs["Authorization"] = auth_header.strip()
+
+    client = wx.HttpClient(timeout=timeout, delay=delay, cookies=cookies,
+                           headers=hdrs or None, proxy=proxy,
                            stealth=stealth, target=url)
-    state = wx.ScanState(base_url=url, start_ts=time.time())
+    client.stop_event = stop_event
+    state = wx.ScanState(base_url=url, start_ts=time.time(), stop_event=stop_event)
 
     probe = client.get(url)
     if probe is None:
@@ -275,6 +350,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
     }
 
     def run_module(name, fn, *a, **kw):
+        if state.should_stop():
+            return None
         client.module = name
         state.modules_run.append(name)
         try:
@@ -285,8 +362,33 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             return None
 
     seeds = [url]
+    auth_info = None
+    openapi_info = None
     with _Capture() as cap:
-        if do_crawl:
+        if login_url and login_user and not state.should_stop():
+            try:
+                import openapi_auth as oa
+                auth_info = oa.perform_auto_login(client, wx.ensure_scheme(login_url),
+                                                  login_user, login_pass or "")
+                print(f"[*] Auto-login ({auth_info.get('method') or 'none'}): {auth_info.get('detail')}")
+                if not auth_info.get("ok"):
+                    state.note(f"Auto-login warning: {auth_info.get('detail')}")
+            except Exception as e:
+                print(f"[!] Auto-login error: {e}")
+
+        if not state.should_stop():
+            try:
+                import openapi_auth as oa
+                openapi_info = oa.ingest_openapi(
+                    client, url, state, wx.Finding,
+                    openapi_url=(wx.ensure_scheme(openapi_url) if openapi_url else None),
+                )
+                if openapi_info.get("found"):
+                    print(f"[+] OpenAPI/Swagger ingested {openapi_info['endpoints']} endpoint(s) from {openapi_info['spec_url']}")
+            except Exception as e:
+                print(f"[!] OpenAPI ingestion error: {e}")
+
+        if do_crawl and not state.should_stop():
             seeds = wx.discover_seeds(client, url, state, expand_root=True,
                                       probe_paths=True)
             wx.Crawler(client, state, max_depth=depth,
@@ -294,14 +396,15 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             state.crawled_urls.add(url)
         else:
             state.crawled_urls.add(url)
-            state.note("Crawling disabled: only the given URL was tested")
-        if do_param_fuzz:
+            if not do_crawl:
+                state.note("Crawling disabled: only the given URL was tested")
+        if do_param_fuzz and not state.should_stop():
             run_module("param-discovery", wx.ParamFuzzer(client, state).run)
-        if do_audit:
+        if do_audit and not state.should_stop():
             run_module("misconfig-audit", wx.MisconfigAudit(client, state).run, url)
-        if do_sqli:
+        if do_sqli and not state.should_stop():
             run_module("sqli", wx.SqliScanner(client, state, time_delay=time_blind).run)
-        if do_xss:
+        if do_xss and not state.should_stop():
             try:
                 import xss_deep as xd
                 deep = xd.DeepXssScanner(
@@ -319,11 +422,17 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                 print(f"[!] deep XSS engine unavailable ({type(e).__name__}: {e}) "
                       f"— falling back to legacy XSS")
                 run_module("xss", wx.XssScanner(client, state).run)
-        if do_dirs:
+        if do_dirs and not state.should_stop():
             wordlist = wx.load_wordlist(wordlist_path)
             run_module("dirbuster",
                        wx.DirBuster(client, state, wordlist).run, url)
-        if do_advanced:
+        if do_templates and not state.should_stop():
+            try:
+                import templates_engine as te
+                run_module("yaml-templates", te.run_templates, client, url, state, wx.Finding)
+            except Exception as e:
+                print(f"[!] yaml-templates module failed: {type(e).__name__}: {e}")
+        if do_advanced and not state.should_stop():
             adv = wx.AdvancedScanner(client, state)
             for nm, fn in (("lfi", adv.scan_lfi), ("ssti", adv.scan_ssti),
                            ("cmdi", adv.scan_cmdi),
@@ -338,11 +447,13 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                            ("host-header", adv.scan_host_header),
                            ("jwt", adv.scan_jwt),
                            ("stored-xss", adv.scan_stored_xss)):
+                if state.should_stop():
+                    break
                 run_module(nm, fn)
-        if do_default_creds:
+        if do_default_creds and not state.should_stop():
             run_module("default-creds",
                        wx.AdvancedScanner(client, state).scan_default_creds)
-        if do_advanced or do_audit or do_dirs:
+        if (do_advanced or do_audit or do_dirs) and not state.should_stop():
             try:
                 import worldscan as ws
                 run_module("world-surface",
@@ -357,7 +468,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
     n_params = sum(len(v) for v in state.params.values())
     state.tests_run = st["requests"]
 
-    if st["waf_hits"] or block_ratio > 0.35:
+    if st["waf_hits"] >= 5 or (st["waf_hits"] / total) > 0.10 or block_ratio > 0.35:
         state.degraded = True
         msg = (f"SCAN DEGRADED — {st['waf_hits']} WAF/challenge page(s), "
                f"{round(block_ratio * 100)}% of {st['requests']} requests were "
@@ -390,9 +501,14 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         counts[f.severity] = counts.get(f.severity, 0) + 1
     actionable = [f for f in state.findings if f.severity != "Info"]
 
+    enriched_findings = [_enrich_finding_dict(asdict(f), default_method="HTTP")
+                         for f in state.findings]
     return {
         "target": url,
         "debug": debug,
+        "stopped_early": bool(state.stopped_early or (stop_event is not None and stop_event.is_set())),
+        "auth_info": auth_info,
+        "openapi_info": openapi_info,
         "stats": {
             "urls_crawled": len(state.crawled_urls),
             "forms": len(state.forms),
@@ -415,7 +531,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         "diagnostics": state.diagnostics,
         "tech_stack": getattr(state, "tech_stack", []) or [],
         "tls_summary": getattr(state, "tls_summary", {}) or {},
-        "findings": [asdict(f) for f in state.findings],
+        "findings": enriched_findings,
         "xss_deep": getattr(state, "xss_deep", {}) or {},
         "log": cap.text,
     }
@@ -424,6 +540,18 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
 # ---------------------------------------------------------------------------
 # HashBreaker
 # ---------------------------------------------------------------------------
+def generate_hash(text: str, algo: str = "md5", salt: str = "") -> Dict:
+    import hashbreaker as hb
+    a = (algo or "md5").strip().lower()
+    if a == "all":
+        algos = ["md5", "sha1", "sha256", "sha512", "sha3-256", "ntlm", "mysql5"]
+        return {
+            "text": text,
+            "hashes": {k: hb.compute(k, text, salt) for k in algos},
+        }
+    return {"text": text, "algo": a, "hash": hb.compute(a, text, salt)}
+
+
 def identify_hashes(hashes: List[str]) -> Dict:
     import hashbreaker as hb
 
@@ -438,7 +566,8 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
                  rules: bool = True, mask: Optional[str] = None,
                  algo: Optional[str] = None, salt: Optional[str] = None,
                  wordlist_path: Optional[str] = None,
-                 workers: Optional[int] = None) -> Dict:
+                 workers: Optional[int] = None,
+                 stop_event=None) -> Dict:
     import hashbreaker as hb
 
     def _count_lines(p: str) -> int:
@@ -492,7 +621,7 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
 
     cracker = hb.Cracker(
         targets=targets, wordlist=(words if words else stream), workers=workers,
-        use_rules=use_rules, mask=mask,
+        use_rules=use_rules, mask=mask, stop_event=stop_event,
     )
     t0 = time.time()
     with _Capture() as cap:
@@ -511,7 +640,8 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
             "hash": t.hash_str,
             "hash_type": info_["type"],
             "candidates": info_["candidates"],
-            "used_algo": t.algo,
+            "used_algo": (c or {}).get("algo") or t.algo,
+            "tried_algos": getattr(t, "candidate_algos", None) or [t.algo],
             "salt": t.salt or None,
             "cracked": bool(c),
             "password": (c or {}).get("plain"),

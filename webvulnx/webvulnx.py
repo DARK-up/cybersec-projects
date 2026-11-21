@@ -221,6 +221,14 @@ class ScanState:
     xss_deep: Dict[str, Any] = field(default_factory=dict)      # deep XSS engine stats
     tech_stack: List[Dict[str, Any]] = field(default_factory=list)
     tls_summary: Dict[str, Any] = field(default_factory=dict)
+    stop_event: Any = None
+    stopped_early: bool = False
+
+    def should_stop(self) -> bool:
+        if self.stop_event is not None and self.stop_event.is_set():
+            self.stopped_early = True
+            return True
+        return False
 
     def note(self, msg: str) -> None:
         if msg not in self.diagnostics:
@@ -345,14 +353,14 @@ class HttpClient:
         self._referer: Optional[str] = None
         local = stl.is_local_target(target) if target else False
         if self.stealth and delay <= 0 and not local:
-            # Remote + stealth + no explicit delay → human-like spacing.
-            min_i, jit = 0.12, 0.18
+            # Remote + stealth + no explicit delay → polite pacing with auto-backoff on 429/WAF.
+            min_i, jit = 0.04, 0.05
         elif delay > 0:
             min_i, jit = delay, min(0.25, delay)
         else:
             min_i, jit = 0.0, 0.0
         self.gate = stl.RateGate(min_interval=min_i, jitter=jit)
-        self.workers = 6 if local else (2 if self.stealth else 4)
+        self.workers = 6 if local else 3
 
     def _cache_key(self, method: str, url: str, kw: dict) -> Optional[str]:
         if method.upper() != "GET":
@@ -364,6 +372,8 @@ class HttpClient:
         return url
 
     def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
+        if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+            return None
         cacheable = kw.pop("cache", False)
         key = self._cache_key(method, url, kw) if cacheable else None
         if key and key in self._cache:
@@ -667,6 +677,8 @@ class Crawler:
         seen: Set[str] = set()
 
         while queue and len(self.state.crawled_urls) < self.max_urls:
+            if self.state.should_stop():
+                break
             url, depth = queue.pop(0)
             if url in seen or depth > self.max_depth:
                 continue
@@ -807,6 +819,8 @@ class SqliScanner:
         tf_ceiling = 0.80 if base_noise >= 0.96 else min(0.65, base_noise - 0.15)
 
         for param in params:
+            if self.state.should_stop():
+                return
             info(f"SQLi tests on {url} [{param}] ({method})")
             tested_error = False
 
@@ -933,20 +947,39 @@ class SqliScanner:
                             break
 
     def run(self) -> None:
-        # Query-string params
+        tested: Set[Tuple[str, str, str]] = set()
+        # Query-string params (dedup by path + param)
         for url, params in list(self.state.params.items()):
-            if params:
-                self.scan_params(url, sorted(params), method="GET")
-        # Forms
+            if self.state.should_stop():
+                return
+            if not params:
+                continue
+            path = urllib.parse.urlsplit(url).path
+            fresh = [p for p in sorted(params) if (path, "GET", p) not in tested]
+            for p in fresh:
+                tested.add((path, "GET", p))
+            if fresh:
+                self.scan_params(url, fresh, method="GET")
+        # Forms (dedup by path + method + param)
         for form in self.state.forms:
+            if self.state.should_stop():
+                return
             names = [i["name"] for i in form["inputs"] if i["name"]
                      and i["type"] not in ("submit", "button", "image", "file", "reset")]
             if not names:
                 continue
-            base = {n: "test" for n in names}
-            self.scan_params(form["url"], names, method=form["method"], base_params=base)
+            path = urllib.parse.urlsplit(form["url"]).path
+            m = form["method"].upper()
+            fresh = [n for n in names if (path, m, n) not in tested]
+            for n in fresh:
+                tested.add((path, m, n))
+            if fresh:
+                base = {n: "test" for n in names}
+                self.scan_params(form["url"], fresh, method=form["method"], base_params=base)
         # Path-based IDs
         for url in list(self.state.crawled_urls):
+            if self.state.should_stop():
+                return
             self.scan_path(url)
 
 
@@ -1009,19 +1042,39 @@ class XssScanner:
                 return
 
     def run(self) -> None:
+        tested: Set[Tuple[str, str, str]] = set()
         for url, params in list(self.state.params.items()):
-            if params:
-                info(f"XSS tests on {url} params={sorted(params)}")
-                self._test_target(url, "GET", sorted(params)[0], {p: "1" for p in params})
-                for p in sorted(params)[1:]:
-                    self._test_target(url, "GET", p, {q: "1" for q in params})
+            if self.state.should_stop():
+                return
+            if not params:
+                continue
+            path = urllib.parse.urlsplit(url).path
+            fresh = [p for p in sorted(params) if (path, "GET", p) not in tested]
+            if not fresh:
+                continue
+            info(f"XSS tests on {url} params={fresh}")
+            for p in fresh:
+                if self.state.should_stop():
+                    return
+                tested.add((path, "GET", p))
+                self._test_target(url, "GET", p, {q: "1" for q in params})
         for form in self.state.forms:
+            if self.state.should_stop():
+                return
             names = [i["name"] for i in form["inputs"] if i["name"]
                      and i["type"] not in ("submit", "button", "image", "file", "reset")]
             if not names:
                 continue
+            path = urllib.parse.urlsplit(form["url"]).path
+            m = form["method"].upper()
+            fresh = [n for n in names if (path, m, n) not in tested]
+            if not fresh:
+                continue
             info(f"XSS tests on form {form['url']} ({form['method']})")
-            for n in names:
+            for n in fresh:
+                if self.state.should_stop():
+                    return
+                tested.add((path, m, n))
                 self._test_target(form["url"], form["method"], n,
                                   {x: "test" for x in names})
 
@@ -1043,7 +1096,13 @@ class DirBuster:
 
     def _calibrate_404(self, base: str) -> None:
         self._soft404_baselines = []
-        for probe in (".dark-404-a8f3b2", "dark-nonexistent-9e1c4a.html"):
+        for probe in (
+            ".dark-404-a8f3b2",
+            ".git/dark-nonexistent-9e1c",
+            ".env.dark404",
+            "dark-nonexistent-9e1c4a.html",
+            "dark-nonexistent-9e1c4a.bak",
+        ):
             url = urllib.parse.urljoin(base, probe)
             resp = self.client.get(url, allow_redirects=False)
             if resp is None:
@@ -1093,6 +1152,8 @@ class DirBuster:
                 pass
 
     def _hit(self, base, word, interesting):
+        if self.state.should_stop():
+            return
         url = urllib.parse.urljoin(base, word.strip().lstrip("/"))
         resp = self.client.get(url, allow_redirects=False)
         if resp is None or resp.status_code not in interesting:
@@ -1110,12 +1171,15 @@ class DirBuster:
             "text/html" in ct or body_head.lstrip().startswith(("<!doctype", "<html"))
         ):
             return
+        # HTTP 403/401 on a secret file is blocked by server/WAF, not exposed!
+        if resp.status_code in (401, 403):
+            return
         size = len(resp.content)
         loc = resp.headers.get("Location", "")
         note = f" -> {loc}" if loc else ""
         sev = "Medium" if resp.status_code in (200, 201, 500) else "Low"
         if is_secret_file or "phpinfo" in word:
-            sev = "High" if resp.status_code == 200 else "Medium"
+            sev = "High" if resp.status_code == 200 else "Low"
         self.state.add(Finding(
             vuln_type="Sensitive Path Exposed" if sev in ("High", "Medium")
                       else "Hidden Path Found",
@@ -1288,18 +1352,20 @@ COMMON_PARAMS = [
 
 
 class ParamFuzzer:
-    """Discovers hidden/undocumented parameters by probing each candidate
-    and checking for reflection or significant response change."""
+    """Discovers hidden/undocumented parameters using 8-at-a-time batched probes
+    with individual fallback only when response length shifts (8x faster remotely)."""
 
-    def __init__(self, client: HttpClient, state: ScanState, max_pages: int = 25):
+    def __init__(self, client: HttpClient, state: ScanState, max_pages: int = 8):
         self.client = client
         self.state = state
         self.max_pages = max_pages
 
     def run(self) -> None:
-        info("Parameter discovery (hidden parameter fuzzing)")
+        info("Parameter discovery (batched hidden parameter fuzzing)")
         found = 0
         for url in list(self.state.crawled_urls)[: self.max_pages]:
+            if self.state.should_stop():
+                break
             existing = self.state.params.get(url, set())
             if len(existing) >= 2:
                 continue
@@ -1309,19 +1375,55 @@ class ParamFuzzer:
             base_resp2 = self.client.get(clean) if base_resp is not None else None
             if base_resp is None:
                 continue
-            base_len = len(base_resp.text)
-            jitter = abs(len(base_resp2.text) - base_len) if base_resp2 is not None else 0
-            len_thresh = max(140, jitter * 3 + 80)
-            for p in COMMON_PARAMS:
-                if p in existing:
-                    continue
-                resp = self.client.get(clean, params={p: PARAM_MARKER})
+            base_norm = SqliScanner._strip_dynamic(base_resp.text or "")
+            base_norm2 = SqliScanner._strip_dynamic(base_resp2.text or "") if base_resp2 is not None else base_norm
+            jitter = abs(len(base_norm2) - len(base_norm))
+            len_thresh = max(250, jitter * 4 + 120)
+            # Also verify a random impossible param does not already cause huge diff
+            noise_resp = self.client.get(clean, params={"__d4rk_noise_99": "1"})
+            noisy_page = False
+            if noise_resp is not None:
+                noise_norm = SqliScanner._strip_dynamic(noise_resp.text or "")
+                if abs(len(noise_norm) - len(base_norm)) > len_thresh:
+                    noisy_page = True
+
+            candidates = [p for p in COMMON_PARAMS if p not in existing]
+            len_hits: List[str] = []
+            for i in range(0, len(candidates), 8):
+                if self.state.should_stop():
+                    break
+                batch = candidates[i:i + 8]
+                probe_params = {p: f"{PARAM_MARKER}_{i + j}" for j, p in enumerate(batch)}
+                resp = self.client.get(clean, params=probe_params)
                 if resp is None:
                     continue
-                if PARAM_MARKER in resp.text:
-                    self.state.params.setdefault(url, set()).add(p)
-                    found += 1
-                elif abs(len(resp.text) - base_len) > len_thresh:
+                reflected_any = False
+                for j, p in enumerate(batch):
+                    if f"{PARAM_MARKER}_{i + j}" in (resp.text or ""):
+                        self.state.params.setdefault(url, set()).add(p)
+                        found += 1
+                        reflected_any = True
+                if not reflected_any and not noisy_page:
+                    r_norm = SqliScanner._strip_dynamic(resp.text or "")
+                    if abs(len(r_norm) - len(base_norm)) > len_thresh and \
+                       difflib.SequenceMatcher(None, base_norm[:4000], r_norm[:4000]).ratio() < 0.90:
+                        for p in batch:
+                            if self.state.should_stop():
+                                break
+                            r1 = self.client.get(clean, params={p: PARAM_MARKER})
+                            if r1 is None:
+                                continue
+                            if PARAM_MARKER in (r1.text or ""):
+                                self.state.params.setdefault(url, set()).add(p)
+                                found += 1
+                            else:
+                                r1_norm = SqliScanner._strip_dynamic(r1.text or "")
+                                if abs(len(r1_norm) - len(base_norm)) > len_thresh and \
+                                   difflib.SequenceMatcher(None, base_norm[:4000], r1_norm[:4000]).ratio() < 0.90:
+                                    len_hits.append(p)
+            # Only keep length-only hits if sparse (<= 3); >=4 means noisy endpoint
+            if 0 < len(len_hits) <= 3:
+                for p in len_hits:
                     self.state.params.setdefault(url, set()).add(p)
                     found += 1
         ok(f"Parameter discovery: {found} active parameter(s) found")
@@ -1746,8 +1848,11 @@ class AdvancedScanner:
                 import tls_audit  # type: ignore
                 port = parsed.port or 443
                 hsts = resp.headers.get("Strict-Transport-Security", "")
+                # Only pass hsts_header if present (weak max-age check); MisconfigAudit
+                # already reports Missing Security Header for absent HSTS.
                 tls_findings, tls_sum = tls_audit.audit_tls(
-                    parsed.hostname, port=port, timeout=5.0, hsts_header=hsts
+                    parsed.hostname, port=port, timeout=5.0,
+                    hsts_header=(hsts if hsts else None)
                 )
                 self.state.tls_summary = tls_sum
                 for tf in tls_findings:

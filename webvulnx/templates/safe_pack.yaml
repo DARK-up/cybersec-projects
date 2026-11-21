@@ -1,0 +1,330 @@
+# DARK Safe Nuclei-Style YAML Detection Pack (non-destructive verification)
+- id: git-config-exposed
+  info:
+    name: Exposed .git/config Repository Metadata
+    severity: High
+    cwe: CWE-538
+    cvss: 7.5
+    tags: [exposure, git, secret]
+    description: Git repository configuration file is publicly readable and can expose source code and internal remotes.
+    remediation: Block public access to /.git/ at the web server or reverse proxy level and remove repository metadata from web roots.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/.git/config"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["[core]", "[remote"]
+          condition: or
+
+- id: env-file-exposed
+  info:
+    name: Exposed .env Environment File
+    severity: Critical
+    cwe: CWE-538
+    cvss: 9.1
+    tags: [exposure, env, secrets]
+    description: Environment file (.env) is directly readable over HTTP and may leak database credentials, API keys, and app secrets.
+    remediation: Remove .env from public web directories and deny dotfile access in Nginx/Apache/CDN rules.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/.env"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: regex
+          regex: ["(?m)^[A-Z0-9_]{3,40}="]
+        - type: word
+          words: ["<html", "<!doctype"]
+          condition: or
+          negative: true
+
+- id: spring-actuator-env
+  info:
+    name: Spring Boot Actuator /env Exposed
+    severity: High
+    cwe: CWE-200
+    cvss: 7.5
+    tags: [spring, actuator, exposure]
+    description: Spring Boot Actuator environment endpoint exposes configuration properties and potentially masked/unmasked secrets.
+    remediation: Restrict /actuator/* endpoints to localhost/management network or require admin authentication.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/actuator/env"
+        - "{{BaseURL}}/env"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["propertySources", "activeProfiles"]
+          condition: or
+
+- id: spring-actuator-health
+  info:
+    name: Spring Boot Actuator /health Exposed
+    severity: Info
+    cwe: CWE-200
+    cvss: 2.0
+    tags: [spring, actuator]
+    description: Spring Boot Actuator health endpoint is publicly reachable.
+    remediation: Restrict actuator endpoints behind authentication or internal-only listeners.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/actuator/health"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ['"status":"UP"', '"status": "UP"']
+          condition: or
+
+- id: swagger-ui-exposed
+  info:
+    name: Swagger UI API Explorer Exposed
+    severity: Info
+    cwe: CWE-200
+    cvss: 2.5
+    tags: [api, swagger, openapi]
+    description: Interactive Swagger UI documentation is exposed publicly, mapping all API routes and schemas.
+    remediation: Disable Swagger UI in production builds or restrict it to authenticated developers.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/swagger-ui.html"
+        - "{{BaseURL}}/swagger-ui/"
+        - "{{BaseURL}}/api-docs"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["swagger-ui", "SwaggerUIBundle"]
+          condition: or
+
+- id: graphql-introspection
+  info:
+    name: GraphQL Introspection Enabled
+    severity: Low
+    cwe: CWE-200
+    cvss: 3.7
+    tags: [graphql, api]
+    description: GraphQL __schema introspection is enabled, allowing full schema enumeration.
+    remediation: Disable GraphQL introspection in production environments.
+  http:
+    - method: POST
+      path:
+        - "{{BaseURL}}/graphql"
+        - "{{BaseURL}}/api/graphql"
+      headers:
+        Content-Type: application/json
+      body: '{"query":"{__schema{types{name}}}"}'
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["__schema", "queryType"]
+          condition: and
+
+- id: phpinfo-exposed
+  info:
+    name: phpinfo() Diagnostic Page Exposed
+    severity: Medium
+    cwe: CWE-200
+    cvss: 5.3
+    tags: [php, exposure]
+    description: phpinfo() output discloses PHP version, loaded extensions, environment variables, and filesystem paths.
+    remediation: Delete phpinfo.php / info.php from web roots immediately.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/phpinfo.php"
+        - "{{BaseURL}}/info.php"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["PHP Version", "Configuration"]
+          condition: and
+
+- id: wp-config-backup
+  info:
+    name: WordPress wp-config.php Backup Exposed
+    severity: Critical
+    cwe: CWE-530
+    cvss: 9.1
+    tags: [wordpress, backup, secrets]
+    description: Backup copy of wp-config.php is readable as plaintext and discloses DB credentials and WordPress salts.
+    remediation: Remove editor/backup files (*.bak, *~, *.swp, *.save) from the web root.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/wp-config.php~"
+        - "{{BaseURL}}/wp-config.php.bak"
+        - "{{BaseURL}}/wp-config.php.save"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["DB_NAME", "DB_PASSWORD"]
+          condition: and
+
+- id: docker-api-exposed
+  info:
+    name: Unauthenticated Docker Engine API Exposed
+    severity: Critical
+    cwe: CWE-306
+    cvss: 9.8
+    tags: [docker, container, exposure]
+    description: Docker HTTP API /version responded without authentication, potentially enabling full host container control.
+    remediation: Disable unauthenticated Docker TCP listeners and enforce mutual TLS.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/version"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ['"ApiVersion"', '"Os"', '"KernelVersion"']
+          condition: and
+
+- id: prometheus-metrics
+  info:
+    name: Prometheus /metrics Endpoint Exposed
+    severity: Medium
+    cwe: CWE-200
+    cvss: 5.3
+    tags: [metrics, prometheus, exposure]
+    description: Unauthenticated Prometheus metrics endpoint exposes runtime telemetry, routes, and internal counters.
+    remediation: Protect /metrics behind internal network ACLs or bearer authentication.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/metrics"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["# HELP", "# TYPE"]
+          condition: and
+
+- id: apache-server-status
+  info:
+    name: Apache mod_status /server-status Exposed
+    severity: Medium
+    cwe: CWE-200
+    cvss: 5.3
+    tags: [apache, misconfig]
+    description: Apache server-status leaks live worker requests, client IPs, and requested URLs.
+    remediation: Restrict /server-status to 127.0.0.1 in Apache configuration.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/server-status"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["Apache Server Status", "Total accesses"]
+          condition: and
+
+- id: ds-store-exposed
+  info:
+    name: macOS .DS_Store File Exposed
+    severity: Low
+    cwe: CWE-538
+    cvss: 3.7
+    tags: [exposure, macos]
+    description: Exposed .DS_Store binary metadata reveals filenames inside the directory.
+    remediation: Remove .DS_Store files and deny dotfile requests at the web server.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/.DS_Store"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["Bud1"]
+          condition: and
+
+- id: tomcat-manager-exposed
+  info:
+    name: Apache Tomcat Manager Interface Exposed
+    severity: Medium
+    cwe: CWE-284
+    cvss: 5.3
+    tags: [tomcat, admin]
+    description: Tomcat Web Application Manager endpoint is reachable externally.
+    remediation: Restrict /manager/html to internal admin networks and enforce strong credentials.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/manager/html"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200, 401]
+        - type: word
+          part: all
+          words: ["Tomcat Web Application Manager", "Tomcat Manager Application"]
+          condition: or
+
+- id: laravel-telescope
+  info:
+    name: Laravel Telescope Debug Dashboard Exposed
+    severity: High
+    cwe: CWE-215
+    cvss: 7.5
+    tags: [laravel, debug]
+    description: Laravel Telescope debug console is reachable without authentication, exposing HTTP requests, queries, and exceptions.
+    remediation: Disable Telescope in production or guard it with strict admin authorization gates.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/telescope/requests"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["Laravel Telescope", "telescope"]
+          condition: and
+
+- id: symfony-profiler
+  info:
+    name: Symfony Web Profiler (_profiler) Exposed
+    severity: High
+    cwe: CWE-215
+    cvss: 7.5
+    tags: [symfony, debug]
+    description: Symfony debug profiler is publicly accessible and leaks environment variables, routes, and PHP config.
+    remediation: Disable web_profiler bundle in production environments.
+  http:
+    - method: GET
+      path:
+        - "{{BaseURL}}/_profiler/phpinfo"
+        - "{{BaseURL}}/_profiler/"
+      matchers-condition: and
+      matchers:
+        - type: status
+          status: [200]
+        - type: word
+          words: ["Symfony Profiler", "sf-toolbar"]
+          condition: or
