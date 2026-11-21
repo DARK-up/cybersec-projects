@@ -230,3 +230,56 @@ def test_api_endpoints_and_api_key_auth():
     r_ak = client.get("/api/verification", headers={"X-API-Key": ak["raw_key"]})
     assert r_ak.status_code == 200
     edb.revoke_api_key(ak["id"])
+
+
+def test_cyclonedx_pdf_csrf_and_postgres_adapter():
+    import db_migrations as dbm
+
+    # 1. CycloneDX v1.5 JSON Export
+    cdx = integ.export_cyclonedx({
+        "target": "app-container",
+        "result": {
+            "sbom": {"components": [{"name": "flask", "version": "2.2.0"}]},
+            "findings": [{"vuln_type": "Outdated Package", "severity": "High", "url": "requirements.txt", "cve_id": "CVE-2023-30861"}],
+        },
+    })
+    assert cdx["bomFormat"] == "CycloneDX" and cdx["specVersion"] == "1.5"
+    assert len(cdx["components"]) == 1 and len(cdx["vulnerabilities"]) == 1
+
+    # 2. Server-side PDF 1.4 generation
+    pdf_bytes = rpt.render_pdf_bytes("Unit Test Report", [
+        {"vuln_type": "SQL Injection", "severity": "Critical", "url": "https://example.com/item?id=1", "evidence": "Authorization: Bearer secret_token_12345"},
+    ], {"modules_run": ["sqli"], "duration_s": 1.2})
+    assert pdf_bytes.startswith(b"%PDF-1.4") and b"%%EOF" in pdf_bytes
+    assert b"secret_token_12345" not in pdf_bytes
+
+    # 3. PostgreSQL SQL translator & CompatConnection adapter
+    pg_sql = dbm.translate_sql_to_postgres("INSERT OR IGNORE INTO tenants(id, name) VALUES(?, ?)")
+    assert "%s, %s" in pg_sql and "ON CONFLICT DO NOTHING" in pg_sql
+    ddl_pg = dbm.translate_sql_to_postgres("CREATE TABLE t(id INTEGER PRIMARY KEY AUTOINCREMENT, score REAL)")
+    assert "SERIAL PRIMARY KEY" in ddl_pg and "DOUBLE PRECISION" in ddl_pg
+
+    # 4. Double-submit CSRF enforcement for cookie-based sessions + PDF project endpoint
+    client = TestClient(dark_main.app)
+    uname = f"csrf_user_{int(__import__('time').time() * 1000)}"
+    edb.create_user(uname, "CsrfPass!123", role="analyst")
+    login_r = client.post("/api/admin/users/login", json={"username": uname, "password": "CsrfPass!123"})
+    assert login_r.status_code == 200 and login_r.cookies.get("dark_csrf")
+
+    # Mutating POST with session cookie ONLY (missing X-CSRF-Token) -> 403
+    bad_csrf = client.post("/api/assets", json={"kind": "domain", "name": "csrf-blocked.example"})
+    assert bad_csrf.status_code == 403
+
+    # Mutating POST with matching X-CSRF-Token -> 200
+    good_csrf = client.post(
+        "/api/assets",
+        json={"kind": "domain", "name": "csrf-ok.example"},
+        headers={"X-CSRF-Token": login_r.cookies.get("dark_csrf")},
+    )
+    assert good_csrf.status_code == 200
+
+    # PDF project report endpoint
+    pdf_r = client.get("/api/projects/default/report.pdf")
+    assert pdf_r.status_code == 200 and pdf_r.headers["content-type"].startswith("application/pdf")
+    assert pdf_r.content.startswith(b"%PDF-1.4")
+

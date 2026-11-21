@@ -483,7 +483,9 @@ async def _auth_gate(request: Request, call_next):
         return await _finish(JSONResponse(status_code=429, content={"error": f"Rate limit exceeded (max ~{rlim // 2} req/s)"}))
 
     api_key_hdr = request.headers.get("X-API-Key") or ""
-    tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    header_tok = request.headers.get("X-Dark-Token") or ""
+    cookie_tok = request.cookies.get("dark_session") or ""
+    tok = cookie_tok or header_tok
     if not tok:
         auth_h = request.headers.get("Authorization") or ""
         if auth_h.lower().startswith("bearer "):
@@ -492,6 +494,14 @@ async def _auth_gate(request: Request, call_next):
                 api_key_hdr = cand
             else:
                 tok = cand
+                header_tok = cand
+
+    # Enforce double-submit CSRF token when browser authenticates purely via session cookie
+    if request.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and cookie_tok and not header_tok and not api_key_hdr:
+        csrf_cookie = request.cookies.get("dark_csrf") or ""
+        csrf_hdr = request.headers.get("X-CSRF-Token") or ""
+        if csrf_cookie and (not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr)):
+            return await _finish(JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"}))
 
     api_key_rec = edb.authenticate_api_key(api_key_hdr) if api_key_hdr else None
     rbac_sess = edb.get_rbac_session(tok) if tok else None
@@ -879,8 +889,10 @@ def api_auth_login(req: AuthLoginReq):
     if not dplat.verify_password(req.username, req.password):
         raise HTTPException(401, "invalid credentials")
     tok = dplat.create_session(req.username)
-    resp = JSONResponse({"ok": True, "token": tok, "username": req.username})
+    csrf_tok = edb.secrets.token_urlsafe(24)
+    resp = JSONResponse({"ok": True, "token": tok, "csrf_token": csrf_tok, "username": req.username})
     resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
+    resp.set_cookie("dark_csrf", csrf_tok, httponly=False, samesite="lax", max_age=7 * 24 * 3600)
     return resp
 
 

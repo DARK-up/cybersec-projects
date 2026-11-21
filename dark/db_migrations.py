@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Any, List, Tuple
 
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
@@ -255,3 +256,57 @@ def apply_sqlite_migrations(conn: sqlite3.Connection) -> List[int]:
 def list_applied_migrations(conn: sqlite3.Connection) -> List[dict]:
     rows = conn.execute("SELECT version, name, applied_at FROM schema_migrations ORDER BY version ASC").fetchall()
     return [{"version": r[0], "name": r[1], "applied_at": r[2]} for r in rows]
+
+
+def translate_sql_to_postgres(sql: str) -> str:
+    """Translate SQLite SQL idioms (?, AUTOINCREMENT, INSERT OR IGNORE) to PostgreSQL."""
+    out = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "SERIAL PRIMARY KEY", sql, flags=re.I)
+    out = re.sub(r"\bREAL\b", "DOUBLE PRECISION", out)
+    # Replace ? placeholders outside single-quoted literals
+    parts = re.split(r"('(?:[^']|'')*')", out)
+    for i in range(0, len(parts), 2):
+        parts[i] = parts[i].replace("?", "%s")
+    out = "".join(parts)
+    if re.search(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\b", out, flags=re.I):
+        out = re.sub(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", out, flags=re.I)
+        if "ON CONFLICT" not in out.upper():
+            out = out.rstrip(" ;") + " ON CONFLICT DO NOTHING"
+    return out
+
+
+class PostgresCompatCursor:
+    def __init__(self, pg_cur: Any):
+        self._cur = pg_cur
+        self.rowcount = 0
+
+    def execute(self, sql: str, params: Tuple[Any, ...] = ()) -> "PostgresCompatCursor":
+        self._cur.execute(translate_sql_to_postgres(sql), params)
+        self.rowcount = getattr(self._cur, "rowcount", 0)
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+
+class PostgresCompatConnection:
+    """Drop-in wrapper around psycopg connection matching sqlite3 usage in enterprise_db."""
+    def __init__(self, pg_conn: Any):
+        self._conn = pg_conn
+
+    def execute(self, sql: str, params: Tuple[Any, ...] = ()) -> PostgresCompatCursor:
+        cur = PostgresCompatCursor(self._conn.cursor())
+        return cur.execute(sql, params)
+
+    def executescript(self, script: str) -> None:
+        for stmt in [s.strip() for s in script.split(";") if s.strip()]:
+            self.execute(stmt)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+

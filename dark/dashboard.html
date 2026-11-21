@@ -102,7 +102,12 @@
     <div class="tag">DETECTION &amp; ATTACK RECONNAISSANCE KIT — UNIFIED SECURITY SUITE</div>
   </div>
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <label style="min-width:170px;margin:0;flex:0">Project
+    <label style="min-width:140px;margin:0;flex:0">Tenant
+      <select id="active-tenant" onchange="onTenantChange()" style="padding:6px 10px;font-size:12px">
+        <option value="default">Default Org</option>
+      </select>
+    </label>
+    <label style="min-width:160px;margin:0;flex:0">Project
       <select id="active-project" onchange="onProjectChange()" style="padding:6px 10px;font-size:12px">
         <option value="default">Default</option>
       </select>
@@ -114,6 +119,10 @@
     <button class="run" onclick="openProjectReport()"
             style="background:var(--panel2);color:var(--green);border:1px solid var(--border);padding:8px 14px;font-size:12px">
       📄 Project Report
+    </button>
+    <button class="run" onclick="openProjectPdf()"
+            style="background:var(--panel2);color:var(--yellow);border:1px solid var(--border);padding:8px 12px;font-size:12px">
+      📑 PDF
     </button>
     <button id="auth-btn" class="run" onclick="openAuthModal()"
             style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border);padding:8px 14px;font-size:12px">
@@ -502,6 +511,15 @@
     <svg id="asm-graph-svg" viewBox="0 0 900 320" style="width:100%;height:300px;background:#070b12;border:1px solid var(--border);border-radius:8px;margin-top:8px"></svg>
   </div>
   <div class="out" id="assets-out">Click refresh to load assets &amp; relationships…</div>
+  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">⚖️ 5-Axis Risk Scoring Weights (Configurable Formula)</h3>
+  <div class="row">
+    <label>Severity <input id="rw-sev" type="number" step="0.02" min="0" max="1" value="0.28"></label>
+    <label>Confidence <input id="rw-conf" type="number" step="0.02" min="0" max="1" value="0.16"></label>
+    <label>Exploitability <input id="rw-expl" type="number" step="0.02" min="0" max="1" value="0.24"></label>
+    <label>Business Impact <input id="rw-imp" type="number" step="0.02" min="0" max="1" value="0.18"></label>
+    <label>Exposure <input id="rw-exp" type="number" step="0.02" min="0" max="1" value="0.14"></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="saveRiskWeights()" style="padding:10px 14px">💾 SAVE WEIGHTS</button></div>
+  </div>
   <div class="out" id="risk-out">Risk prioritization queue…</div>
   <div class="out" id="cve-out">CVE / CVSS / EPSS / KEV feed…</div>
 </section>
@@ -529,6 +547,10 @@
     <label>Correlate Observables (comma-separated) <input id="ioc-match-q" placeholder="198.51.100.44, evil-c2.example"></label>
     <div style="display:flex;align-items:flex-end"><button class="run" onclick="matchObservables()" style="padding:10px 14px">🔎 CORRELATE IOCS</button></div>
   </div>
+  <div class="row">
+    <label>Import STIX 2.1 Bundle JSON <textarea id="stix-json" style="min-height:54px" placeholder='{"type":"bundle","objects":[...]}'></textarea></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="importStixBundle()" style="padding:10px 14px">📥 IMPORT STIX</button></div>
+  </div>
   <div class="out" id="threat-out">Loading Threat Intelligence IOCs…</div>
 
   <h3 style="color:var(--cyan);font-size:14px;margin:16px 0 8px">🔌 Enterprise Integrations (Webhooks / Jira / GitHub / SIEM) &amp; SARIF</h3>
@@ -538,6 +560,10 @@
     <label>Endpoint URL (blank for local SIEM format) <input id="int-url" placeholder="https://hooks.example.com/dark"></label>
     <label>HMAC Secret (optional) <input id="int-sec" type="password" placeholder="whsec_..."></label>
     <div style="display:flex;align-items:flex-end"><button class="run" onclick="registerIntegration()" style="padding:10px 14px">+ INTEGRATION</button></div>
+  </div>
+  <div class="row">
+    <label>Import SARIF v2.1.0 JSON <textarea id="sarif-json" style="min-height:54px" placeholder='{"version":"2.1.0","runs":[...]}'></textarea></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="importSarifDoc()" style="padding:10px 14px">📥 IMPORT SARIF</button></div>
   </div>
   <div class="out" id="integ-out">Loading integrations…</div>
 </section>
@@ -557,6 +583,13 @@
     <svg id="posture-chart-svg" viewBox="0 0 820 200" style="width:100%;height:190px;background:#070b12;border:1px solid var(--border);border-radius:8px;margin-top:8px"></svg>
   </div>
   <div class="out" id="bench-out">Benchmark &amp; QA Lab history…</div>
+  <h3 style="color:var(--cyan);font-size:14px;margin:16px 0 8px">📑 Custom Report Templates</h3>
+  <div class="row">
+    <label>Template Name <input id="rtpl-name" placeholder="Executive Board Brief"></label>
+    <label>Sections (comma-separated) <input id="rtpl-secs" value="executive_summary,risk_distribution,compliance_status,top_findings"></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="saveReportTemplate()" style="padding:10px 14px">+ SAVE TEMPLATE</button></div>
+  </div>
+  <div class="out" id="rtpl-out">Loading report templates…</div>
 </section>
 
 <!-- ============ REMEDIATION CENTER ============ -->
@@ -738,10 +771,22 @@ function exportSvgChart(svgId, filename) {
 }
 
 let ACTIVE_PROJECT = 'default';
+let ACTIVE_TENANT = 'default';
 let AUTH_STATE = {enabled: false, authenticated: true};
 
+function _getCookie(name) {
+  const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const cfg = Object.assign({}, opts || {});
+  const hdrs = Object.assign({}, cfg.headers || {});
+  if (ACTIVE_TENANT && !hdrs['X-Tenant-ID']) hdrs['X-Tenant-ID'] = ACTIVE_TENANT;
+  const csrf = _getCookie('dark_csrf');
+  if (csrf && !hdrs['X-CSRF-Token']) hdrs['X-CSRF-Token'] = csrf;
+  cfg.headers = hdrs;
+  const r = await fetch(path, cfg);
   if (r.status === 401) { openAuthModal(true); throw new Error('Workspace locked — login required'); }
   if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()));
   return r.json();
@@ -1397,8 +1442,14 @@ async function loadJobs() {
                   "onclick=\"stopAndReport('" + j.id + "')\">stop &amp; report</button>"
                 : '') +
               ((j.status === 'done' || j.status === 'stopped')
-                ? ' <a class="run" style="padding:4px 12px;font-size:11px;text-decoration:none;display:inline-block" href="/api/jobs/' +
-                  j.id + '/report" target="_blank">report</a>'
+                ? ' <a class="run" style="padding:4px 10px;font-size:11px;text-decoration:none;display:inline-block" href="/api/jobs/' +
+                  j.id + '/report" target="_blank">report</a>' +
+                  ' <a class="run" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-block;background:var(--panel2);color:var(--yellow);border:1px solid var(--border)" href="/api/jobs/' +
+                  j.id + '/report.pdf" target="_blank">PDF</a>' +
+                  ' <a class="run" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-block;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/jobs/' +
+                  j.id + '/export.sarif" target="_blank">SARIF</a>' +
+                  ' <a class="run" style="padding:4px 8px;font-size:11px;text-decoration:none;display:inline-block;background:var(--panel2);color:var(--green);border:1px solid var(--border)" href="/api/jobs/' +
+                  j.id + '/export.cyclonedx" target="_blank">CDX</a>'
                 : '') +
               ' <button class="run" style="padding:4px 9px;font-size:11px;background:var(--red);color:#fff" ' +
               "onclick=\"deleteJob('" + j.id + "')\">✕</button>" +
@@ -1440,7 +1491,31 @@ async function loadHealth() {
   } catch (e) { $('job-detail').textContent = 'Error: ' + e.message; }
 }
 
-// ---- Platform: projects, target history, scan comparison, auth ----
+// ---- Platform: projects, tenants, target history, scan comparison, auth ----
+function onTenantChange() {
+  ACTIVE_TENANT = $('active-tenant').value || 'default';
+  if ($('tab-jobs').classList.contains('active')) loadJobs();
+  if ($('tab-intel').classList.contains('active')) loadAssetsAndRisk();
+  if ($('tab-threat').classList.contains('active')) loadThreatAndVerify();
+  if ($('tab-posture').classList.contains('active')) loadPostureAndBench();
+}
+
+function openProjectPdf() {
+  const pid = ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT;
+  window.open('/api/projects/' + encodeURIComponent(pid) + '/report.pdf', '_blank');
+}
+
+async function loadTenantsDropdown() {
+  try {
+    const r = await api('/api/admin/tenants');
+    const sel = $('active-tenant');
+    if (!sel) return;
+    const prev = ACTIVE_TENANT;
+    sel.innerHTML = (r.tenants || []).map(t => '<option value="' + esc(t.id) + '">' + esc(t.name) + '</option>').join('') || '<option value="default">Default Org</option>';
+    if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  } catch (e) {}
+}
+
 function onProjectChange() {
   ACTIVE_PROJECT = $('active-project').value;
   if ($('tab-jobs').classList.contains('active')) loadJobs();
@@ -1448,6 +1523,7 @@ function onProjectChange() {
 }
 
 async function loadProjectsDropdown() {
+  loadTenantsDropdown();
   try {
     const r = await api('/api/projects');
     const sel = $('active-project');
@@ -1770,12 +1846,21 @@ async function loadAssetsAndRisk() {
   const qs = qp.length ? '?' + qp.join('&') : '';
   const pidOnly = ACTIVE_PROJECT === '__all__' ? '' : '?project_id=' + encodeURIComponent(ACTIVE_PROJECT);
   try {
-    const [ar, gr, rk, fd] = await Promise.all([
+    const [ar, gr, rk, fd, rw] = await Promise.all([
       api('/api/assets' + qs),
       api('/api/assets/graph' + pidOnly),
       api('/api/intel/risk' + pidOnly),
       api('/api/intel/feed?limit=25'),
+      api('/api/intel/risk/weights'),
     ]);
+    if (rw && rw.weights) {
+      const w = rw.weights;
+      if ($('rw-sev')) $('rw-sev').value = w.severity_weight ?? 0.28;
+      if ($('rw-conf')) $('rw-conf').value = w.confidence_weight ?? 0.16;
+      if ($('rw-expl')) $('rw-expl').value = w.exploitability_weight ?? 0.24;
+      if ($('rw-imp')) $('rw-imp').value = w.business_impact_weight ?? 0.18;
+      if ($('rw-exp')) $('rw-exp').value = w.exposure_weight ?? 0.14;
+    }
     renderAttackSurfaceSvg(gr);
     const idMap = {};
     for (const a of (ar.assets || [])) idMap[a.id] = a.name;
@@ -1995,7 +2080,58 @@ async function loadPostureAndBench() {
             '<td>' + b.duration_s + 's</td><td>' + b.ram_mb + 'MB / ' + b.cpu_pct + '%</td></tr>';
     bh += '</table>';
     $('bench-out').innerHTML = bh;
+
+    const rt = await api('/api/reports/templates');
+    if ($('rtpl-out')) {
+      const list = rt.templates || [];
+      $('rtpl-out').innerHTML = list.length
+        ? '<b>Saved Report Templates (' + list.length + ')</b><table><tr><th>Name</th><th>Sections</th></tr>' +
+          list.map(t => '<tr><td>' + esc(t.name) + '</td><td><code>' + esc((t.sections || []).join(', ')) + '</code></td></tr>').join('') + '</table>'
+        : 'No custom report templates saved yet.';
+    }
   } catch (e) { $('posture-summary').textContent = 'Error: ' + e.message; }
+}
+
+async function saveRiskWeights() {
+  const body = {
+    severity: +$('rw-sev').value, confidence: +$('rw-conf').value,
+    exploitability: +$('rw-expl').value, business_impact: +$('rw-imp').value, exposure: +$('rw-exp').value
+  };
+  await api('/api/intel/risk/weights', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  loadAssetsAndRisk();
+}
+
+async function importStixBundle() {
+  const raw = ($('stix-json').value || '').trim();
+  if (!raw) return;
+  const r = await api('/api/threat-intel/stix/import', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: raw});
+  $('stix-json').value = '';
+  alert('Imported ' + r.imported + ' STIX 2.1 indicator(s).');
+  loadThreatAndVerify();
+}
+
+async function importSarifDoc() {
+  const raw = ($('sarif-json').value || '').trim();
+  if (!raw) return;
+  const pid = ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT;
+  const r = await api('/api/integrations/sarif/import?project_id=' + encodeURIComponent(pid), {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: raw
+  });
+  $('sarif-json').value = '';
+  alert('Imported ' + r.imported + ' SARIF finding(s) into Verification Queue.');
+  loadThreatAndVerify();
+}
+
+async function saveReportTemplate() {
+  const name = ($('rtpl-name').value || '').trim();
+  if (!name) return;
+  const secs = ($('rtpl-secs').value || '').split(',').map(s => s.trim()).filter(Boolean);
+  await api('/api/reports/templates', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, sections: secs})
+  });
+  $('rtpl-name').value = '';
+  loadPostureAndBench();
 }
 
 async function runBenchmarkSuite() {

@@ -224,3 +224,48 @@ def parse_sarif_import(sarif_doc: dict) -> List[dict]:
                 "remediation": "Review imported SARIF rule recommendation and remediate.",
             })
     return findings
+
+
+def export_cyclonedx(job: dict) -> dict:
+    """Export job SBOM components and vulnerability findings in CycloneDX v1.5 JSON."""
+    res = job.get("result") or {}
+    sbom_comps = ((res.get("sbom") or {}).get("components")) or []
+    fs = res.get("findings") or (res.get("report") or {}).get("findings") or []
+
+    cdx_components = []
+    for c in sbom_comps:
+        nm = str(c.get("name") or "unknown")
+        ver = str(c.get("version") or "0.0.0")
+        cdx_components.append({
+            "type": "library",
+            "bom-ref": f"{nm}@{ver}",
+            "name": nm,
+            "version": ver,
+            "purl": c.get("purl") or f"pkg:generic/{nm}@{ver}",
+        })
+
+    cdx_vulns = []
+    for idx, f in enumerate(fs, 1):
+        sev = str(f.get("severity") or "info").lower()
+        cdx_vulns.append({
+            "id": str(f.get("cve_id") or f"DARK-{idx}"),
+            "source": {"name": "DARK Enterprise Platform"},
+            "ratings": [{"severity": sev, "score": float(f.get("cvss_v31") or f.get("cvss_hint") or 5.0)}],
+            "description": f"{f.get('vuln_type') or 'Finding'} at {f.get('url') or ''} — {f.get('evidence') or ''}"[:400],
+            "recommendation": str(f.get("remediation") or "")[:300],
+        })
+
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+        "version": 1,
+        "metadata": {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "tools": [{"vendor": "DARK", "name": "DARK Enterprise Platform", "version": "3.0.0"}],
+            "component": {"type": "application", "name": str(job.get("target") or job.get("kind") or "target")},
+        },
+        "components": cdx_components,
+        "vulnerabilities": cdx_vulns,
+    }
+

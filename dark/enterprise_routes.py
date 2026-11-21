@@ -632,6 +632,61 @@ def export_job_sarif(job_id: str):
     return integ.export_sarif(snap)
 
 
+@router.get("/api/jobs/{job_id}/export.cyclonedx")
+def export_job_cyclonedx(job_id: str):
+    jobs = _HOOKS.get("JOBS") or {}
+    lock = _HOOKS.get("JOBS_LOCK")
+    with lock:
+        j = jobs.get(job_id)
+        if not j:
+            raise HTTPException(404, "Job not found")
+        snap = {k: v for k, v in j.items() if not k.startswith("_")}
+    return integ.export_cyclonedx(snap)
+
+
+@router.get("/api/jobs/{job_id}/report.pdf")
+def export_job_pdf(job_id: str):
+    jobs = _HOOKS.get("JOBS") or {}
+    lock = _HOOKS.get("JOBS_LOCK")
+    with lock:
+        j = jobs.get(job_id)
+        if not j:
+            raise HTTPException(404, "Job not found")
+        snap = {k: v for k, v in j.items() if not k.startswith("_")}
+    res = snap.get("result") or {}
+    role_now = edb.get_current_actor().get("role", "admin")
+    raw_fs = res.get("findings") or (res.get("report") or {}).get("findings") or res.get("alerts") or []
+    fs = [rpt.redact_finding_for_role(f, role_now) for f in raw_fs]
+    pdf_bytes = rpt.render_pdf_bytes(f"Job {job_id} ({snap.get('target') or snap.get('kind')})", fs, res.get("stats"))
+    return Response(
+        pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="DARK-{job_id}.pdf"'},
+    )
+
+
+@router.get("/api/projects/{project_id}/report.pdf")
+def export_project_pdf(project_id: str):
+    role_now = edb.get_current_actor().get("role", "admin")
+    jobs = [j for j in _all_jobs(project_id=project_id) if j.get("status") in ("done", "stopped")]
+    fs: List[dict] = []
+    seen = set()
+    for j in jobs:
+        res = j.get("result") or {}
+        for f in (res.get("findings") or (res.get("report") or {}).get("findings") or []):
+            fk = (str(f.get("vuln_type")), str(f.get("url")).rstrip("/"), str(f.get("parameter")))
+            if fk in seen:
+                continue
+            seen.add(fk)
+            fs.append(rpt.redact_finding_for_role(f, role_now))
+    pdf_bytes = rpt.render_pdf_bytes(f"Project {project_id}", fs, {"modules_run": sorted({j.get("kind", "") for j in jobs})})
+    return Response(
+        pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="DARK-Project-{project_id}.pdf"'},
+    )
+
+
 @router.post("/api/integrations/sarif/import")
 def import_sarif(sarif_doc: Dict[str, Any], project_id: str = "default"):
     try:
@@ -764,8 +819,10 @@ def admin_user_login(req: UserLoginReq, request: Request):
     if not ok or not user:
         raise HTTPException(401, msg)
     tok = edb.create_rbac_session(user["username"], user["role"], tenant_id=user.get("tenant_id", "default"))
-    resp = JSONResponse({"ok": True, "user": user, "token": tok})
+    csrf_tok = edb.secrets.token_urlsafe(24)
+    resp = JSONResponse({"ok": True, "user": user, "token": tok, "csrf_token": csrf_tok})
     resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
+    resp.set_cookie("dark_csrf", csrf_tok, httponly=False, samesite="lax", max_age=7 * 24 * 3600)
     return resp
 
 

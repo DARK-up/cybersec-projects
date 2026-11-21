@@ -170,3 +170,80 @@ def build_executive_analytics(
         "vulnerability_trends": trends[-20:],
         "top_findings": risk_data["findings"][:30],
     }
+
+
+def _pdf_escape(text: str) -> str:
+    clean = "".join(ch if 32 <= ord(ch) <= 126 else "?" for ch in (text or ""))
+    return clean.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def render_pdf_bytes(title: str, findings: List[dict], stats: Optional[Dict[str, Any]] = None) -> bytes:
+    """Generate a valid multi-page PDF 1.4 document with zero external dependencies."""
+    st = stats or {}
+    by_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
+    for f in findings:
+        s = str(f.get("severity") or "Info").title()
+        by_sev[s] = by_sev.get(s, 0) + 1
+
+    lines: List[str] = [
+        f"DARK ENTERPRISE SECURITY REPORT - {title}",
+        f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+        f"Total Findings: {len(findings)} | Critical: {by_sev['Critical']} | High: {by_sev['High']} | Medium: {by_sev['Medium']} | Low: {by_sev['Low']} | Info: {by_sev['Info']}",
+    ]
+    if st:
+        lines.append(f"Modules: {', '.join(st.get('modules_run') or [])} | Duration: {st.get('duration_s', 0)}s")
+    lines.append("-" * 88)
+    for idx, f in enumerate(findings[:150], 1):
+        vt = str(f.get("vuln_type") or "Finding")[:65]
+        sev = str(f.get("severity") or "Info")
+        url = str(f.get("url") or "-")[:75]
+        ev = sh.redact_sensitive(str(f.get("evidence") or "-"), max_len=90).replace("\n", " ")
+        rem_txt = str(f.get("remediation") or "")[:85].replace("\n", " ")
+        lines.append(f"#{idx} [{sev}] {vt}")
+        lines.append(f"   Target: {url} | Param: {str(f.get('parameter') or '-')[:30]}")
+        lines.append(f"   Evidence: {ev}")
+        if rem_txt:
+            lines.append(f"   Fix: {rem_txt}")
+    if not findings:
+        lines.append("No vulnerabilities detected during this assessment.")
+
+    # Paginate 46 lines per US-Letter page
+    pages = [lines[i:i + 46] for i in range(0, len(lines), 46)] or [["Empty Report"]]
+    objects: List[bytes] = []
+    # Obj 1: Catalog, Obj 2: Pages, Obj 3: Font
+    objects.append(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+    page_obj_nums = [4 + i * 2 for i in range(len(pages))]
+    kids_str = " ".join(f"{n} 0 R" for n in page_obj_nums)
+    objects.append(f"2 0 obj\n<< /Type /Pages /Kids [{kids_str}] /Count {len(pages)} >>\nendobj\n".encode("ascii"))
+    objects.append(b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n")
+
+    for i, pg_lines in enumerate(pages):
+        p_num = 4 + i * 2
+        c_num = p_num + 1
+        objects.append(
+            f"{p_num} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 3 0 R >> >> /Contents {c_num} 0 R >>\nendobj\n".encode("ascii")
+        )
+        stream_cmds = ["BT", "/F1 9 Tf", "36 756 Td", "14 TL"]
+        for ln in pg_lines:
+            stream_cmds.append(f"({_pdf_escape(ln[:98])}) Tj T*")
+        stream_cmds.append("ET")
+        stream_bytes = "\n".join(stream_cmds).encode("ascii")
+        objects.append(
+            f"{c_num} 0 obj\n<< /Length {len(stream_bytes)} >>\nstream\n".encode("ascii")
+            + stream_bytes
+            + b"\nendstream\nendobj\n"
+        )
+
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(buf))
+        buf.extend(obj)
+    xref_pos = len(buf)
+    buf.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii"))
+    for off in offsets[1:]:
+        buf.extend(f"{off:010d} 00000 n \n".encode("ascii"))
+    buf.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("ascii"))
+    return bytes(buf)
+

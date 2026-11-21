@@ -56,7 +56,15 @@ ROLES: Dict[str, List[str]] = {
 }
 
 
-def _conn() -> sqlite3.Connection:
+def _conn() -> Any:
+    pg_dsn = os.environ.get("DARK_POSTGRES_DSN", "").strip()
+    if pg_dsn:
+        try:
+            import psycopg  # type: ignore
+            from psycopg.rows import dict_row  # type: ignore
+            return _dbm.PostgresCompatConnection(psycopg.connect(pg_dsn, row_factory=dict_row))
+        except ImportError:
+            pass
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=15.0)
     c.row_factory = sqlite3.Row
