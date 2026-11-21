@@ -116,8 +116,13 @@
 <nav>
   <button data-tab="net" class="active">🌐 Network Scan</button>
   <button data-tab="web">🕸️ Web Scan</button>
+  <button data-tab="devsec">🛡️ DevSecOps &amp; API</button>
   <button data-tab="hash">🔐 Hashes</button>
-  <button data-tab="mon">📡 Monitor</button>
+  <button data-tab="mon">📡 Monitor &amp; Forensics</button>
+  <button data-tab="intel">🧠 Assets &amp; Risk</button>
+  <button data-tab="remed">🩺 Remediation</button>
+  <button data-tab="comp">📜 Compliance</button>
+  <button data-tab="admin">🧩 Plugins &amp; Admin</button>
   <button data-tab="platform">🏢 Platform &amp; Compare</button>
   <button data-tab="jobs">🧾 Jobs</button>
 </nav>
@@ -344,6 +349,17 @@
   <button class="run" onclick="runPcap()" style="background:var(--yellow);color:#222">📂 ANALYZE PCAP</button>
   <button class="run" onclick="runLive()" style="background:var(--red);color:#fff">📡 LIVE CAPTURE</button>
   <div class="out" id="mon-out">Results will appear here…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:20px 0 8px">🔬 Digital Forensics — Logs, Timeline &amp; IOC Matching</h3>
+  <div class="row">
+    <label>Log Type <select id="for-type"><option value="auto">Auto-detect</option><option value="linux_auth">Linux auth.log</option><option value="windows">Windows Event Log</option></select></label>
+    <label>Custom IOCs (comma-separated IPs/domains/hashes) <input id="for-iocs" placeholder="198.51.100.44, evil-c2.example"></label>
+  </div>
+  <label>Paste Security Logs
+    <textarea id="for-logs" style="min-height:90px" placeholder="Oct 12 10:01:02 srv sshd[99]: Failed password for root from 198.51.100.44 port 5522&#10;EventID=1102 Security audit log cleared"></textarea>
+  </label>
+  <button class="run" style="margin-top:8px" onclick="runForensics()">▶ ANALYZE LOGS &amp; IOCS</button>
+  <div class="out" id="for-out">Forensics timeline &amp; IOC matches…</div>
 </section>
 
 <!-- ============ PLATFORM & COMPARE ============ -->
@@ -382,6 +398,136 @@
     </div>
   </div>
   <div class="out" id="cmp-out">Select two finished scans of the same type (web-scan or network-scan) to diff.</div>
+</section>
+
+<!-- ============ DEVSECOPS & API ============ -->
+<section id="tab-devsec">
+  <h2>DARK DevSecOps — API, Cloud, Container/SBOM &amp; Code SAST</h2>
+  <p class="desc">Defensive security auditing across REST/GraphQL APIs, AWS/Azure/GCP IaC, Docker/Kubernetes/SBOM, and Source Code (Python, JS/TS, Java, PHP, C/C++).</p>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:8px 0">🔌 API Security Auditor</h3>
+  <div class="row">
+    <label>API Base URL <input id="api-url" placeholder="http://127.0.0.1:8080"></label>
+    <label>OpenAPI / Swagger URL (optional) <input id="api-spec-url" placeholder="https://api.example.com/openapi.json"></label>
+    <label>Authorization Header (optional) <input id="api-auth-hdr" placeholder="Bearer ..."></label>
+  </div>
+  <button class="run" onclick="runApiAudit()">▶ AUDIT API</button>
+  <div class="out" id="api-out">API audit output…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:18px 0 8px">☁️ Cloud Security (AWS / Azure / GCP)</h3>
+  <div class="row">
+    <label>Provider
+      <select id="cld-prov"><option value="auto">Auto-detect</option><option value="aws">AWS</option><option value="azure">Azure</option><option value="gcp">GCP</option></select>
+    </label>
+    <label>Workspace Path (optional) <input id="cld-path" placeholder="/path/to/terraform-or-iam.json"></label>
+  </div>
+  <label>Or Paste IAM Policy / Terraform / ARM JSON
+    <textarea id="cld-txt" style="min-height:80px" placeholder='{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}'></textarea>
+  </label>
+  <button class="run" style="margin-top:8px" onclick="runCloudAudit()">▶ AUDIT CLOUD CONFIG</button>
+  <div class="out" id="cld-out">Cloud security output…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:18px 0 8px">🐳 Container, Kubernetes &amp; SBOM</h3>
+  <div class="row">
+    <label>Path (Dockerfile / K8s YAML / requirements.txt) <input id="cnt-path" placeholder="/path/to/repo"></label>
+  </div>
+  <label>Or Paste Dockerfile / Kubernetes YAML / requirements.txt
+    <textarea id="cnt-txt" style="min-height:80px" placeholder="FROM python:latest&#10;USER root"></textarea>
+  </label>
+  <button class="run" style="margin-top:8px" onclick="runContainerAudit()">▶ AUDIT CONTAINER &amp; GENERATE SBOM</button>
+  <div class="out" id="cnt-out">Container &amp; SBOM output…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:18px 0 8px">🧬 Code Security (SAST)</h3>
+  <div class="row">
+    <label>Language
+      <select id="sast-lang"><option value="auto">Auto-detect</option><option>Python</option><option>JavaScript</option><option>Java</option><option>PHP</option><option>C/C++</option></select>
+    </label>
+    <label>Source File or Folder Path <input id="sast-path" placeholder="/path/to/source"></label>
+  </div>
+  <label>Or Paste Source Code
+    <textarea id="sast-code" style="min-height:80px" placeholder="import yaml&#10;yaml.load(user_data)"></textarea>
+  </label>
+  <button class="run" style="margin-top:8px" onclick="runSastAudit()">▶ RUN SAST</button>
+  <div class="out" id="sast-out">SAST output…</div>
+</section>
+
+<!-- ============ ASSETS & RISK INTEL ============ -->
+<section id="tab-intel">
+  <h2>DARK Asset &amp; Vulnerability Risk Intelligence</h2>
+  <p class="desc">Asset Inventory &amp; Relationship Mapping, NVD/CISA KEV/EPSS Vulnerability Feed, and Risk Prioritization Queue.</p>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <button class="run" onclick="loadAssetsAndRisk()">🔄 REFRESH ASSETS &amp; RISK</button>
+    <button class="run" onclick="syncIntelFeed()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🌐 SYNC NVD / CISA KEV FEED</button>
+  </div>
+  <div class="row">
+    <label>Add Asset Kind <select id="ast-kind"><option>domain</option><option>ip</option><option>service</option><option>api</option><option>cloud</option><option>container</option></select></label>
+    <label>Asset Name <input id="ast-name" placeholder="api.example.com"></label>
+    <label>Criticality <select id="ast-crit"><option>critical</option><option>high</option><option selected>medium</option><option>low</option></select></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="addAsset()" style="padding:10px 16px">+ ADD ASSET</button></div>
+  </div>
+  <div class="out" id="assets-out">Click refresh to load assets &amp; relationships…</div>
+  <div class="out" id="risk-out">Risk prioritization queue…</div>
+  <div class="out" id="cve-out">CVE / CVSS / EPSS / KEV feed…</div>
+</section>
+
+<!-- ============ REMEDIATION CENTER ============ -->
+<section id="tab-remed">
+  <h2>DARK Remediation Center</h2>
+  <p class="desc">Assign vulnerabilities, set SLA due dates, track fix status, attach evidence, and close after verified retest.</p>
+  <button class="run" onclick="loadRemediation()">🔄 REFRESH TICKETS</button>
+  <div class="out" id="remed-out">Loading remediation tickets…</div>
+</section>
+
+<!-- ============ COMPLIANCE ============ -->
+<section id="tab-comp">
+  <h2>DARK Compliance Scorecard</h2>
+  <p class="desc">Real-time control evaluation against OWASP ASVS, CIS Benchmarks, NIST CSF 2.0, ISO/IEC 27001, and PCI DSS v4.0.</p>
+  <button class="run" onclick="loadCompliance()">🔄 EVALUATE COMPLIANCE</button>
+  <div class="out" id="comp-out">Click Evaluate Compliance to inspect controls…</div>
+</section>
+
+<!-- ============ PLUGINS & ADMIN ============ -->
+<section id="tab-admin">
+  <h2>DARK Plugin Marketplace &amp; Enterprise Administration</h2>
+  <p class="desc">Signed Plugins, Users &amp; RBAC + 2FA, Tamper-Evident Audit Trail, Credential Vault, Scope Allowlist, Workers, Scheduler, Emergency Stop &amp; Backup/Restore.</p>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <button class="run" onclick="loadAdminPanel()">🔄 REFRESH ALL</button>
+    <button class="run" onclick="triggerEmergencyStop(true)" style="background:var(--red);color:#fff">🛑 EMERGENCY STOP ALL</button>
+    <button class="run" onclick="triggerEmergencyStop(false)" style="background:var(--green);color:#04222b">✅ RESUME OPERATIONS</button>
+    <a class="run" style="display:inline-block;text-decoration:none;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" href="/api/admin/backup" target="_blank">💾 EXPORT BACKUP JSON</a>
+  </div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:12px 0 6px">🧩 Signed Plugin Marketplace</h3>
+  <div class="out" id="plugins-out">Loading plugins…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">🎯 Scope Allowlist &amp; Governance</h3>
+  <div class="row">
+    <label>Pattern (domain, *.domain, CIDR) <input id="scp-pat" placeholder="*.example.com"></label>
+    <label>Rule <select id="scp-type"><option value="allow">allow</option><option value="deny">deny</option></select></label>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <button class="run" onclick="addScopeRule()" style="padding:10px 14px">+ RULE</button>
+      <button class="run" onclick="toggleScopeEnforce()" style="background:var(--panel2);color:var(--yellow);border:1px solid var(--border);padding:10px 14px">TOGGLE ENFORCE</button>
+    </div>
+  </div>
+  <div class="out" id="scope-out">Loading scope rules…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">👥 RBAC Users, 2FA &amp; Credential Vault</h3>
+  <div class="row">
+    <label>Username <input id="usr-name" placeholder="sec-analyst"></label>
+    <label>Password <input id="usr-pw" type="password" placeholder="StrongPass123"></label>
+    <label>Role <select id="usr-role"><option>analyst</option><option>admin</option><option>auditor</option><option>viewer</option></select></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="createRbacUser()" style="padding:10px 14px">+ USER</button></div>
+  </div>
+  <div class="row">
+    <label>Vault Secret Name <input id="vlt-name" placeholder="aws-readonly-token"></label>
+    <label>Secret Value <input id="vlt-val" type="password" placeholder="secret value"></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="storeVaultSecret()" style="padding:10px 14px">🔐 STORE</button></div>
+  </div>
+  <div class="out" id="admin-users-out">Loading users &amp; vault…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">⚙️ Workers, Scheduler &amp; Tamper-Evident Audit Trail</h3>
+  <div class="out" id="admin-ops-out">Loading workers, schedules &amp; audit trail…</div>
 </section>
 
 <!-- ============ JOBS ============ -->
@@ -432,6 +578,10 @@ document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.add('active');
     $('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'jobs') loadJobs();
+    if (btn.dataset.tab === 'intel') loadAssetsAndRisk();
+    if (btn.dataset.tab === 'remed') loadRemediation();
+    if (btn.dataset.tab === 'comp') loadCompliance();
+    if (btn.dataset.tab === 'admin') loadAdminPanel();
     if (btn.dataset.tab === 'platform') loadPlatform();
   };
 });
@@ -551,14 +701,22 @@ function renderFindingsBlock(jobId, findings) {
     const ev = f.evidence || '-';
     const impact = f.impact || f.detail || '-';
     const remed = f.remediation || 'Validate input, apply least privilege, and patch affected component.';
-    const meta = [f.cwe, f.owasp, (f.cvss || f.cvss_hint) ? ('CVSS ' + (f.cvss || f.cvss_hint)) : ''].filter(Boolean).join(' · ');
+    const meta = [f.cve_id, f.cwe, f.owasp, (f.cvss_v31 || f.cvss || f.cvss_hint) ? ('CVSS ' + (f.cvss_v31 || f.cvss || f.cvss_hint)) : ''].filter(Boolean).join(' · ');
+    const confStr = f.confidence_label ? (f.confidence_label + ' (' + Math.round((f.confidence || 0.7) * 100) + '%)') : '';
+    const explStr = f.exploitability_label ? (f.exploitability_label + ' (' + Math.round((f.exploitability || 0.4) * 100) + '%)') : '';
+    const riskStr = (f.risk_score !== undefined) ? ('Risk ' + f.risk_score) : '';
     const searchBlob = (sev + ' ' + name + ' ' + url + ' ' + param + ' ' + payload + ' ' + ev + ' ' + meta).toLowerCase();
 
     h += '<div class="vuln-card sev-' + esc(sev) + '" data-sev="' + esc(sev) + '" data-search="' + esc(searchBlob) + '">' +
       '<div class="vuln-head">' +
         '<span class="badge b-' + esc(sev) + '">' + esc(sev) + '</span>' +
+        (confStr ? '<span class="badge b-Low">Confidence: ' + esc(confStr) + '</span>' : '') +
+        (explStr ? '<span class="badge b-Medium">Exploitability: ' + esc(explStr) + '</span>' : '') +
+        (riskStr ? '<span class="badge b-Info">' + esc(riskStr) + '</span>' : '') +
+        (f.kev ? '<span class="badge b-Critical">CISA KEV</span>' : '') +
         '<b style="font-size:13px;color:var(--text)">#' + (idx + 1) + ' ' + esc(name) + '</b>' +
         (meta ? '<span class="vuln-meta">(' + esc(meta) + ')</span>' : '') +
+        '<button class="run" style="margin-left:auto;padding:3px 10px;font-size:11px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" onclick="sendToRemediation(\'' + esc(jobId) + '\',' + idx + ')">🩺 Create Ticket</button>' +
       '</div>' +
       '<div class="vuln-grid">' +
         '<div class="k">How it entered</div><div>' + esc(entered) + '</div>' +
@@ -780,6 +938,25 @@ function renderJob(j, outEl) {
               esc(a.category) + '</td><td>' + esc(a.src) + '</td><td>' + esc((a.detail || '').slice(0, 90)) + '</td></tr>';
     }
     html += '</table>';
+  } else if (r.findings) {                                // Cloud / Container / SAST / API / Forensics
+    if (r.sbom && r.sbom.components) {
+      html += '\n<b>SBOM (' + esc(r.sbom.bomFormat) + ' ' + esc(r.sbom.specVersion) + '): ' +
+              r.sbom.components.length + ' component(s)</b>\n';
+    }
+    if (r.inventory && r.inventory.length) {
+      html += '\n<b>API Inventory (' + r.inventory.length + ' endpoints)</b><table><tr><th>Method</th><th>Path</th><th>Auth</th></tr>';
+      for (const ep of r.inventory.slice(0, 40))
+        html += '<tr><td><b>' + esc(ep.method) + '</b></td><td><code>' + esc(ep.path) + '</code></td><td>' + (ep.authenticated ? '🔒 Yes' : '⚠️ No') + '</td></tr>';
+      html += '</table>';
+    }
+    if (r.timeline && r.timeline.length) {
+      html += '\n<b>Forensics Timeline (' + (r.timeline_count || r.timeline.length) + ' events)</b><table><tr><th>Time</th><th>Source</th><th>Event</th><th>Detail</th></tr>';
+      for (const ev of r.timeline.slice(0, 30))
+        html += '<tr><td><code>' + esc(ev.ts) + '</code></td><td>' + esc(ev.source) + '</td><td><b>' + esc(ev.event) + '</b></td><td><code>' + esc(ev.detail) + '</code></td></tr>';
+      html += '</table>';
+    }
+    html += renderFindingsBlock(j.id, r.findings || []);
+    html += renderNotesAndReport(j);
   }
   if (r.log) html += '\n\n--- console output ---\n' + esc(r.log.slice(-2500));
   outEl.innerHTML = html;
@@ -1264,6 +1441,303 @@ async function disableAuth() {
   await api('/api/auth/disable', {method: 'POST'});
   closeAuthModal();
   await refreshAuth();
+}
+
+// ---- DARK Enterprise v3 JS Handlers ---------------------------------------
+async function sendToRemediation(jobId, idx) {
+  try {
+    const j = await api('/api/jobs/' + encodeURIComponent(jobId));
+    const fs = (j.result && (j.result.findings || (j.result.report || {}).findings)) || [];
+    const f = fs[idx];
+    if (!f) return alert('Finding not found');
+    const r = await api('/api/remediation', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({project_id: j.project_id || 'default', job_id: jobId, finding: f})
+    });
+    alert('Remediation ticket created: ' + r.ticket.id);
+  } catch (e) { alert('Error: ' + e.message); }
+}
+
+async function runApiAudit() {
+  const url = $('api-url').value.trim();
+  if (!url) return alert('Enter API Base URL');
+  $('api-out').textContent = 'Running API security audit…';
+  try {
+    const {job_id} = await api('/api/jobs/api-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        url, openapi_url: $('api-spec-url').value.trim() || null,
+        auth_header: $('api-auth-hdr').value.trim() || null,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('api-out'));
+  } catch (e) { $('api-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runCloudAudit() {
+  $('cld-out').textContent = 'Running cloud security audit…';
+  try {
+    const {job_id} = await api('/api/jobs/cloud-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        provider: $('cld-prov').value,
+        content: $('cld-txt').value,
+        target_path: $('cld-path').value.trim() || null,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('cld-out'));
+  } catch (e) { $('cld-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runContainerAudit() {
+  $('cnt-out').textContent = 'Auditing container & generating SBOM…';
+  try {
+    const {job_id} = await api('/api/jobs/container-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        content: $('cnt-txt').value,
+        target_path: $('cnt-path').value.trim() || null,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('cnt-out'));
+  } catch (e) { $('cnt-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runSastAudit() {
+  $('sast-out').textContent = 'Running SAST analyzer…';
+  try {
+    const {job_id} = await api('/api/jobs/sast-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        language: $('sast-lang').value,
+        code: $('sast-code').value,
+        target_path: $('sast-path').value.trim() || null,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('sast-out'));
+  } catch (e) { $('sast-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runForensics() {
+  $('for-out').textContent = 'Analyzing logs, timeline & IOCs…';
+  const iocs = $('for-iocs').value.split(/[,\s]+/).filter(Boolean);
+  try {
+    const {job_id} = await api('/api/jobs/forensics', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        log_text: $('for-logs').value,
+        log_type: $('for-type').value,
+        custom_iocs: iocs,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('for-out'));
+  } catch (e) { $('for-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadAssetsAndRisk() {
+  const pid = ACTIVE_PROJECT === '__all__' ? '' : '?project_id=' + encodeURIComponent(ACTIVE_PROJECT);
+  try {
+    const [ar, rk, fd] = await Promise.all([
+      api('/api/assets' + pid),
+      api('/api/intel/risk' + pid),
+      api('/api/intel/feed?limit=25'),
+    ]);
+    let ah = '<b>Discovered Assets (' + ar.count + ') · Relationships (' + (ar.relations || []).length + ')</b>' +
+      '<table><tr><th>Kind</th><th>Name</th><th>Criticality</th><th>Exposed</th></tr>';
+    for (const a of (ar.assets || []).slice(0, 50))
+      ah += '<tr><td>' + esc(a.kind) + '</td><td><code>' + esc(a.name) + '</code></td><td>' + esc(a.criticality) + '</td><td>' + (a.internet_exposed ? '🌐 Yes' : '🔒 Internal') + '</td></tr>';
+    ah += '</table>';
+    $('assets-out').innerHTML = ah;
+
+    let rh = '<b>Risk Prioritization Queue (Total: ' + rk.total + ' · CISA KEV: ' + rk.kev_count + ' · P0 Immediate: ' + (rk.p0_immediate || []).length + ')</b>' +
+      '<table><tr><th>Risk</th><th>Severity</th><th>Confidence</th><th>Exploitability</th><th>Finding</th><th>Target</th></tr>';
+    for (const f of (rk.findings || []).slice(0, 30))
+      rh += '<tr><td><b>' + esc(f.risk_score) + '</b></td><td><span class="badge b-' + esc(f.severity) + '">' + esc(f.severity) + '</span></td>' +
+            '<td>' + esc(f.confidence_label) + '</td><td>' + esc(f.exploitability_label) + '</td>' +
+            '<td>' + esc(f.vuln_type) + (f.kev ? ' <span class="badge b-Critical">KEV</span>' : '') + '</td><td><code>' + esc(f.url) + '</code></td></tr>';
+    rh += '</table>';
+    $('risk-out').innerHTML = rh;
+
+    let ch = '<b>CVE / CVSS v3.1 &amp; v4.0 / EPSS / CISA KEV Intelligence Feed (' + (fd.cves || []).length + ')</b>' +
+      '<table><tr><th>CVE</th><th>Product</th><th>CVSS 3.1 / 4.0</th><th>EPSS</th><th>KEV</th><th>Summary</th></tr>';
+    for (const c of (fd.cves || []))
+      ch += '<tr><td><code>' + esc(c.cve_id) + '</code></td><td>' + esc(c.product) + '</td><td>' + c.cvss_v31 + ' / ' + c.cvss_v40 + '</td><td>' + c.epss + '</td><td>' + (c.kev ? '🔥 KEV' : '-') + '</td><td>' + esc(c.summary) + '</td></tr>';
+    ch += '</table>';
+    $('cve-out').innerHTML = ch;
+  } catch (e) { $('assets-out').textContent = 'Error: ' + e.message; }
+}
+
+async function addAsset() {
+  const name = $('ast-name').value.trim();
+  if (!name) return;
+  await api('/api/assets', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT,
+      kind: $('ast-kind').value, name, criticality: $('ast-crit').value})
+  });
+  $('ast-name').value = '';
+  loadAssetsAndRisk();
+}
+
+async function syncIntelFeed() {
+  const r = await api('/api/intel/sync', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({fetch_cisa_kev: true, fetch_nvd_keyword: 'openssh'})
+  });
+  alert('Intel sync complete: ' + r.synced + ' updated. Total feed: ' + r.total_feed);
+  loadAssetsAndRisk();
+}
+
+async function loadRemediation() {
+  try {
+    const r = await api('/api/remediation');
+    const tks = r.tickets || [];
+    if (!tks.length) { $('remed-out').textContent = 'No remediation tickets yet. Click "🩺 Create Ticket" on any finding.'; return; }
+    let html = '<table><tr><th>ID</th><th>Severity</th><th>Title</th><th>Assignee</th><th>Due</th><th>Status</th><th>Actions</th></tr>';
+    for (const t of tks) {
+      html += '<tr><td><code>' + esc(t.id) + '</code></td><td><span class="badge b-' + esc(t.severity) + '">' + esc(t.severity) + '</span></td>' +
+              '<td>' + esc(t.title) + '<br><span style="color:var(--muted)">' + esc(t.target) + '</span></td>' +
+              '<td>' + esc(t.assignee || 'unassigned') + '</td><td>' + esc(t.due_date || '-') + '</td>' +
+              '<td><b>' + esc(t.status) + '</b></td>' +
+              '<td><button class="run" style="padding:3px 8px;font-size:11px" onclick="verifyRemediation(\'' + esc(t.id) + '\')">✅ Verify &amp; Close</button></td></tr>';
+    }
+    html += '</table>';
+    $('remed-out').innerHTML = html;
+  } catch (e) { $('remed-out').textContent = 'Error: ' + e.message; }
+}
+
+async function verifyRemediation(tid) {
+  await api('/api/remediation/' + encodeURIComponent(tid) + '/retest', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({still_vulnerable: false, detail: 'Verified remediated via DARK Retest'})
+  });
+  loadRemediation();
+}
+
+async function loadCompliance() {
+  try {
+    const pid = ACTIVE_PROJECT === '__all__' ? '' : '?project_id=' + encodeURIComponent(ACTIVE_PROJECT);
+    const r = await api('/api/compliance' + pid);
+    let html = 'Evaluated <b>' + r.findings_evaluated + '</b> finding(s).\n\n';
+    for (const [fw, data] of Object.entries(r.frameworks || {})) {
+      html += '<h3 style="color:var(--cyan);margin:12px 0 4px">' + esc(fw) + ' — Score: ' + data.score_pct + '%</h3>' +
+              '<table><tr><th>Control</th><th>Title</th><th>Status</th><th>Matched Findings</th><th>Required Evidence</th></tr>';
+      for (const c of data.controls) {
+        const cls = c.status === 'Pass' ? 's-done' : (c.status === 'Fail' ? 's-error' : 's-waiting');
+        html += '<tr><td><code>' + esc(c.id) + '</code></td><td>' + esc(c.title) + '</td>' +
+                '<td><span class="status ' + cls + '">' + esc(c.status) + '</span></td>' +
+                '<td>' + c.matched_findings_count + '</td><td>' + esc(c.required_evidence) + '</td></tr>';
+      }
+      html += '</table>';
+    }
+    $('comp-out').innerHTML = html;
+  } catch (e) { $('comp-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadAdminPanel() {
+  try {
+    const [pl, sc, us, vl, wk, sh, au, av] = await Promise.all([
+      api('/api/plugins'), api('/api/admin/scope'), api('/api/admin/users'),
+      api('/api/admin/vault'), api('/api/admin/workers'), api('/api/admin/schedules'),
+      api('/api/admin/audit?limit=25'), api('/api/admin/audit/verify')
+    ]);
+    let ph = '<table><tr><th>Plugin ID</th><th>Name</th><th>Category</th><th>Signature</th><th>Status</th><th>Test</th></tr>';
+    for (const p of (pl.plugins || [])) {
+      const m = p.manifest;
+      ph += '<tr><td><code>' + esc(p.plugin_id) + '</code></td><td>' + esc(m.name) + '</td><td>' + esc(m.category) + '</td>' +
+            '<td>' + (p.signature_valid ? '✅ Verified HMAC' : '❌ Tampered') + '</td>' +
+            '<td>' + (p.enabled ? 'Enabled' : 'Disabled') + '</td>' +
+            '<td><button class="run" style="padding:3px 8px;font-size:11px" onclick="testPlugin(\'' + esc(p.plugin_id) + '\')">Run Self-Test</button></td></tr>';
+    }
+    ph += '</table>';
+    $('plugins-out').innerHTML = ph;
+
+    let shh = 'Scope Enforcement: <b>' + (sc.enforced ? '🔒 STRICT ALLOWLIST ON' : '🔓 Permissive') + '</b> · Emergency Stop: <b>' + (sc.emergency_stop ? '🛑 ACTIVE' : 'OK') + '</b>' +
+      '<table><tr><th>Type</th><th>Pattern</th><th>Note</th><th></th></tr>';
+    for (const r of (sc.rules || []))
+      shh += '<tr><td>' + esc(r.rule_type) + '</td><td><code>' + esc(r.pattern) + '</code></td><td>' + esc(r.note) + '</td><td><button class="run" style="background:var(--red);color:#fff;padding:2px 8px;font-size:11px" onclick="delScopeRule(\'' + esc(r.id) + '\')">delete</button></td></tr>';
+    shh += '</table>';
+    $('scope-out').innerHTML = shh;
+
+    let uh = '<b>Users (' + (us.users || []).length + ')</b><table><tr><th>Username</th><th>Role</th><th>2FA</th></tr>';
+    for (const u of (us.users || []))
+      uh += '<tr><td>' + esc(u.username) + '</td><td>' + esc(u.role) + '</td><td>' + (u.totp_enabled ? '✅ TOTP ON' : 'Off') + '</td></tr>';
+    uh += '</table>\n<b>Encrypted Vault Secrets (' + (vl.secrets || []).length + ')</b><table><tr><th>Name</th><th>Kind</th><th>Created By</th></tr>';
+    for (const s of (vl.secrets || []))
+      uh += '<tr><td><code>' + esc(s.name) + '</code></td><td>' + esc(s.kind) + '</td><td>' + esc(s.created_by) + '</td></tr>';
+    uh += '</table>';
+    $('admin-users-out').innerHTML = uh;
+
+    let oh = '<b>Workers (' + (wk.workers || []).length + ')</b> · Audit Chain Integrity: <b>' + (av.valid ? '✅ VALID (' + av.checked + ' entries)' : '❌ BROKEN') + '</b>' +
+      '<table><tr><th>Worker</th><th>Status</th><th>Active Jobs</th><th>CPU %</th><th>RAM MB</th></tr>';
+    for (const w of (wk.workers || []))
+      oh += '<tr><td>' + esc(w.name) + '</td><td>' + esc(w.status) + '</td><td>' + w.active_jobs + '/' + w.capacity + '</td><td>' + w.cpu_pct + '%</td><td>' + w.ram_mb + '</td></tr>';
+    oh += '</table>\n<b>Recent Audit Trail</b><table><tr><th>Actor</th><th>Action</th><th>Resource</th><th>Detail</th></tr>';
+    for (const a of (au.logs || []))
+      oh += '<tr><td>' + esc(a.actor) + ' (' + esc(a.role) + ')</td><td><code>' + esc(a.action) + '</code></td><td>' + esc(a.resource) + '</td><td>' + esc(a.detail) + '</td></tr>';
+    oh += '</table>';
+    $('admin-ops-out').innerHTML = oh;
+  } catch (e) { $('plugins-out').textContent = 'Error: ' + e.message; }
+}
+
+async function testPlugin(pid) {
+  const r = await api('/api/plugins/' + encodeURIComponent(pid) + '/test', {method: 'POST'});
+  alert('Plugin ' + pid + ' self-test: ' + (r.passed ? 'PASSED ✅' : 'FAILED ❌'));
+}
+
+async function addScopeRule() {
+  const pattern = $('scp-pat').value.trim();
+  if (!pattern) return;
+  await api('/api/admin/scope', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({pattern, rule_type: $('scp-type').value})
+  });
+  $('scp-pat').value = '';
+  loadAdminPanel();
+}
+
+async function delScopeRule(id) {
+  await api('/api/admin/scope/' + encodeURIComponent(id), {method: 'DELETE'});
+  loadAdminPanel();
+}
+
+async function toggleScopeEnforce() {
+  const sc = await api('/api/admin/scope');
+  await api('/api/admin/scope/enforce?enforced=' + (!sc.enforced), {method: 'POST'});
+  loadAdminPanel();
+}
+
+async function triggerEmergencyStop(active) {
+  const r = await api('/api/admin/emergency-stop?active=' + active, {method: 'POST'});
+  alert('Emergency Stop: ' + r.emergency_stop + ' (stopped ' + (r.stopped_jobs || []).length + ' running jobs)');
+  loadAdminPanel();
+}
+
+async function createRbacUser() {
+  const username = $('usr-name').value.trim(), password = $('usr-pw').value, role = $('usr-role').value;
+  if (!username || !password) return;
+  await api('/api/admin/users', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username, password, role})
+  });
+  $('usr-name').value = ''; $('usr-pw').value = '';
+  loadAdminPanel();
+}
+
+async function storeVaultSecret() {
+  const name = $('vlt-name').value.trim(), secret_value = $('vlt-val').value;
+  if (!name || !secret_value) return;
+  await api('/api/admin/vault', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, kind: 'api_token', secret_value})
+  });
+  $('vlt-name').value = ''; $('vlt-val').value = '';
+  loadAdminPanel();
 }
 
 refreshAuth();

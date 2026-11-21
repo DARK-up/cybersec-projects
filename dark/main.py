@@ -38,6 +38,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 import engine
+import enterprise_db as edb
+import enterprise_routes as eroutes
+import asset_intel as dasset
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -158,8 +161,32 @@ def _watchdog() -> None:
                                   f"(fewer targets/URLs) or raise the limit."
                                   + (f"\n\nLast output before the stop:\n{tail}" if tail else ""))
                     changed = True
+        try:
+            with JOBS_LOCK:
+                active_n = sum(1 for jb in JOBS.values() if jb.get("status") in ("running", "waiting"))
+            edb.upsert_worker("local-primary", "DARK Primary Controller", active_jobs=active_n)
+            if not edb.is_emergency_stopped():
+                for sch in edb.pop_due_schedules():
+                    _dispatch_scheduled_job(sch)
+        except Exception:
+            pass
         if changed:
             _jobs_to_disk()
+
+
+def _dispatch_scheduled_job(sch: dict) -> None:
+    kind = sch.get("kind")
+    p = dict(sch.get("payload") or {})
+    pid = sch.get("project_id") or "default"
+    runners = {
+        "web-scan": (engine.run_web_scan, p.get("url", "")),
+        "network-scan": (engine.run_network_scan, ", ".join(p.get("targets", [])[:3])),
+        "dns-recon": (engine.run_dns_recon, p.get("target", "")),
+        "api-audit": (engine.run_api_audit, p.get("url", "")),
+    }
+    if kind in runners:
+        fn, hint = runners[kind]
+        start_job(kind, fn, project_id=pid, target_hint=hint, **p)
 
 
 _jobs_from_disk()
@@ -174,15 +201,27 @@ def _public(job: dict) -> dict:
 def start_job(kind: str, runner, project_id: str = "default",
               target_hint: str = "", **payload) -> str:
     import inspect
+    if edb.is_emergency_stopped():
+        raise HTTPException(403, "Emergency Stop is active — clear it in Administration before launching jobs")
+    if kind in ("web-scan", "network-scan", "dns-recon", "api-audit"):
+        targets_to_check = payload.get("targets") if kind == "network-scan" else [target_hint or payload.get("url") or payload.get("target") or ""]
+        for t in (targets_to_check or []):
+            ok_scope, reason = edb.check_target_in_scope(str(t))
+            if not ok_scope:
+                edb.log_audit("operator", "analyst", "scope:blocked", str(t), reason)
+                raise HTTPException(403, f"Scope Enforcement blocked target: {reason}")
+
     job_id = uuid.uuid4().hex[:12]
     now = time.time()
     logbuf = engine.JobLog()
     stop_ev = threading.Event()
     pid = (project_id or "default").strip() or "default"
+    repro_payload = {k: v for k, v in payload.items() if k != "stop_event"}
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id, "kind": kind, "status": "running",
             "project_id": pid, "target": target_hint,
+            "repro_payload": repro_payload,
             "started_at": now, "finished_at": None,
             "deadline": now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT),
             "result": None, "error": None, "progress": None,
@@ -245,6 +284,12 @@ def start_job(kind: str, runner, project_id: str = "default",
                 else:
                     JOBS[job_id].update(status="done", result=result,
                                         finished_at=time.time())
+                job_snapshot = _public(JOBS[job_id])
+            try:
+                if isinstance(job_snapshot.get("result"), dict):
+                    dasset.ingest_job_assets(job_snapshot)
+            except Exception:
+                pass
         except Exception as e:  # never crash the server
             with JOBS_LOCK:
                 JOBS[job_id].update(status="error",
@@ -372,13 +417,16 @@ class AuthSetupReq(BaseModel):
 app = FastAPI(
     title="DARK API",
     description=("DARK — Detection & Attack Reconnaissance Kit. "
-                 "Unified REST API for NetRecon / WebVulnX / HashBreaker / NetSentry.\n\n"
+                 "Unified REST API for NetRecon / WebVulnX / HashBreaker / NetSentry "
+                 "+ Enterprise Security, Intelligence, Compliance & Governance.\n\n"
                  + LEGAL),
-    version="2.0.0",
+    version="3.0.0",
 )
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+eroutes.bind_hooks(start_job, JOBS, JOBS_LOCK, _jobs_to_disk, LEGAL)
+app.include_router(eroutes.router)
 
 
 @app.middleware("http")
@@ -406,7 +454,7 @@ def logo():
 def health():
     return {
         "name": "DARK",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "status": "online",
         "platform": sys.platform,
         "tools": engine.tools_status(),
@@ -466,6 +514,37 @@ def stop_job(job_id: str):
         time.sleep(0.15)
     with JOBS_LOCK:
         return {"job": _public(JOBS[job_id])}
+
+
+@app.post("/api/jobs/{job_id}/recover")
+def recover_or_reproduce_job(job_id: str):
+    """Re-run or recover an interrupted/completed job with identical parameters (Scan Reproducibility)."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, f"job not found: {job_id}")
+        kind = job.get("kind") or ""
+        pid = job.get("project_id") or "default"
+        tgt = job.get("target") or ""
+        payload = dict(job.get("repro_payload") or {})
+    runner_map = {
+        "web-scan": engine.run_web_scan,
+        "network-scan": engine.run_network_scan,
+        "dns-recon": engine.run_dns_recon,
+        "hash-crack": engine.crack_hashes,
+        "cloud-audit": engine.run_cloud_audit,
+        "container-audit": engine.run_container_audit,
+        "sast-audit": engine.run_sast_audit,
+        "api-audit": engine.run_api_audit,
+        "forensics": engine.run_forensics_audit,
+        "monitor-demo": engine.run_monitor_demo,
+    }
+    fn = runner_map.get(kind)
+    if not fn:
+        raise HTTPException(400, f"Recovery not supported for kind '{kind}'")
+    new_id = start_job(kind, fn, project_id=pid, target_hint=tgt, **payload)
+    edb.log_audit("operator", "analyst", "job:recover", f"{job_id} -> {new_id}")
+    return {"job_id": new_id, "recovered_from": job_id, "kind": kind}
 
 
 @app.delete("/api/jobs/{job_id}")

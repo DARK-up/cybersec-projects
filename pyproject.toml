@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dark-security-platform"
+version = "3.0.0"
+description = "DARK — Detection & Attack Reconnaissance Kit (Enterprise Security, Intelligence, Compliance & Governance Platform)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.9",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "pyyaml>=6.0",
+    "scapy>=2.5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "webvulnx"]
+python_files = ["test_*.py"]

@@ -1,0 +1,31 @@
+name: DARK Enterprise CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r dark/requirements.txt pytest
+      - name: Compile check all Python sources
+        run: |
+          python -m compileall -q dark modules webvulnx netrecon hashbreaker netsentry tests
+      - name: Run WebVulnX Deep XSS & Nessus/Accuracy Suites
+        run: |
+          python webvulnx/test_xss_deep.py
+          python webvulnx/test_nessus_and_accuracy.py
+          python webvulnx/test_platform_wave.py
+      - name: Run DARK Enterprise v3 Suite
+        run: |
+          pytest -v tests/test_enterprise_suite.py

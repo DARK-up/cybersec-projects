@@ -18,7 +18,14 @@
 | 3 | **[HashBreaker](hashbreaker/)** | Hash identification & cracking suite — dictionary + rules + mask attacks, multiprocessing, pure-Python MD4/NTLM | Python (multiprocessing) — zero dependencies |
 | 4 | **[NetSentry](netsentry/)** | Real-time network threat detection — ARP spoofing, port scans, DNS tunneling, cleartext credential leakage | Python (scapy) |
 | 5 | **[Demo Lab](demo-lab/)** | Intentionally vulnerable web app + fake services — practice the tools legally on your own machine | Python (stdlib) |
-| 6 | **[DARK](dark/)** | ⚡ Unified API + web dashboard that ties all 4 tools together — runs on **Windows**, Linux & macOS | Python (FastAPI) |
+| 6 | **[DARK](dark/)** | ⚡ Unified Enterprise Security Platform v3.0 — Web/API/Net/DNS/Cloud/Container/SAST/Forensics, Asset & Risk Intel, Compliance, Remediation, Signed Plugins, RBAC/2FA & Governance | Python (FastAPI + SQLite) |
+
+### DARK Enterprise v3 Capabilities (`modules/` & `dark/`)
+- **Asset Intelligence (`modules/asset_intel.py`):** Asset inventory, domain/IP/service/API/cloud relationship mapping, criticality classification, and new-asset diff tracking.
+- **Vulnerability & Risk Intelligence (`modules/vuln_intel.py`):** NVD/CPE/CVSS v3.1 & v4.0/EPSS/CISA KEV feed + separate **Severity / Confidence / Exploitability** axes & composite Risk Prioritization.
+- **DevSecOps & Specialized Auditors:** **Cloud Security** (AWS/Azure/GCP IAM & storage), **Container & K8s Security + CycloneDX SBOM**, **Code Security SAST** (Python AST, JS/TS, Java, PHP, C/C++), **API Security** (REST/OpenAPI/GraphQL/BOLA/Mass-assignment), and **Digital Forensics** (Linux auth, Windows Event Logs, IOC correlation, PCAP timeline).
+- **Compliance & Remediation:** Automated control evaluation across **OWASP ASVS, CIS Benchmarks, NIST CSF 2.0, ISO 27001, PCI DSS v4.0** + **Remediation Center** (assign, SLA due date, fix evidence, verified retest closure).
+- **Plugin Marketplace & Enterprise Governance:** HMAC-SHA256 signed plugin manifests with self-test cases (`modules/plugin_mgr.py`), **RBAC + RFC 6238 TOTP 2FA**, tamper-evident SHA-256 **Audit Trail**, encrypted **Credential Vault**, **Scope Allowlist**, **Emergency Stop**, Worker health, recurring **Scan Scheduler**, **Job Recovery**, **Backup & Restore**, plus `Dockerfile`, `docker-compose.yml`, and GitHub Actions CI.
 
 ---
 

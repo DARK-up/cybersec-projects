@@ -1,0 +1,11 @@
+services:
+  dark-controller:
+    build: .
+    container_name: dark-enterprise
+    ports:
+      - "8000:8000"
+    environment:
+      - DARK_MAX_PARALLEL=24
+    volumes:
+      - ./dark/data:/app/dark/data
+    restart: unless-stopped

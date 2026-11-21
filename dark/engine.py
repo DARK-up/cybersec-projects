@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
-for _tool in ("netrecon", "webvulnx", "hashbreaker", "netsentry"):
+for _tool in ("netrecon", "webvulnx", "hashbreaker", "netsentry", "modules", "dark"):
     _p = str(ROOT / _tool)
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -226,6 +226,11 @@ def _enrich_finding_dict(f: Dict, default_method: str = "HTTP") -> Dict:
         if payload:
             parts.append(f"using payload `{payload[:120]}`")
         out["how_it_entered"] = " ".join(parts) if parts else (out.get("evidence") or "")
+    try:
+        import vuln_intel as vi
+        out = vi.score_finding_axes(out)
+    except Exception:
+        pass
     return out
 
 
@@ -461,6 +466,17 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                            ws.WorldScanner(client, state, wx.Finding).run)
             except Exception as e:
                 print(f"[!] world-surface module failed: {type(e).__name__}: {e}")
+        if do_templates and not state.should_stop():
+            try:
+                import plugin_mgr as pm
+                for pf in pm.execute_enabled_plugins(client, url):
+                    state.findings.append(wx.Finding(
+                        vuln_type=pf["vuln_type"], severity=pf["severity"],
+                        url=pf["url"], parameter=pf["parameter"],
+                        evidence=pf["evidence"], detail=pf["remediation"],
+                    ))
+            except Exception as e:
+                print(f"[!] signed plugins failed: {type(e).__name__}: {e}")
 
     # ---- coverage + honest diagnosis of an empty result -------------------
     st = client.stats
@@ -762,3 +778,70 @@ def run_monitor_live(seconds: int = 10, iface: Optional[str] = None,
         "alerts": [asdict(a) for a in bus.alerts],
         "log": cap.text,
     }
+
+
+# ---------------------------------------------------------------------------
+# DARK Enterprise v3 Modules (Cloud, Container/SBOM, SAST, API, Forensics)
+# ---------------------------------------------------------------------------
+def run_cloud_audit(provider: str = "aws", content: str = "",
+                    target_path: Optional[str] = None) -> Dict:
+    import cloud_audit as ca
+    with _Capture() as cap:
+        res = ca.audit_cloud_config(provider=provider, content=content, target_path=target_path)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Cloud Audit")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_container_audit(content: str = "", target_path: Optional[str] = None,
+                        manifest_kind: str = "auto") -> Dict:
+    import container_audit as cta
+    with _Capture() as cap:
+        res = cta.audit_container_and_sbom(content=content, target_path=target_path, kind=manifest_kind)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Container/SBOM")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_sast_audit(code: str = "", target_path: Optional[str] = None,
+                   language: str = "auto") -> Dict:
+    import sast_audit as sa
+    with _Capture() as cap:
+        res = sa.scan_sast(code=code, target_path=target_path, language=language)
+    res["findings"] = [_enrich_finding_dict(f, default_method="SAST")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_api_audit(url: str, openapi_url: Optional[str] = None,
+                  spec_json: Optional[str] = None,
+                  auth_header: Optional[str] = None,
+                  check_graphql: bool = True) -> Dict:
+    import api_audit as aa
+    with _Capture() as cap:
+        res = aa.run_api_audit(
+            url=url, openapi_url=openapi_url, spec_json=spec_json,
+            auth_header=auth_header, check_graphql=check_graphql,
+        )
+    res["findings"] = [_enrich_finding_dict(f, default_method="API Audit")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_forensics_audit(log_text: str = "", log_type: str = "auto",
+                        custom_iocs: Optional[List[str]] = None,
+                        pcap_path: Optional[str] = None) -> Dict:
+    import forensics as fx
+    with _Capture() as cap:
+        res = fx.analyze_forensics(
+            log_text=log_text, log_type=log_type,
+            custom_iocs=custom_iocs, pcap_path=pcap_path,
+        )
+    res["findings"] = [_enrich_finding_dict(f, default_method="Digital Forensics")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
