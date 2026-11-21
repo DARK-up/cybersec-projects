@@ -429,15 +429,67 @@ eroutes.bind_hooks(start_job, JOBS, JOBS_LOCK, _jobs_to_disk, LEGAL)
 app.include_router(eroutes.router)
 
 
+def _required_permission(method: str, path: str) -> Optional[str]:
+    m = method.upper()
+    if path.startswith("/api/jobs/") and path.endswith("/stop") and m == "POST":
+        return "scan:stop"
+    if path.startswith("/api/jobs") and m in ("POST", "DELETE"):
+        return "scan:run"
+    if path.startswith("/api/remediation") and m in ("POST", "PATCH", "PUT", "DELETE"):
+        return "remediation:write"
+    if path.startswith("/api/plugins") and m in ("POST", "DELETE"):
+        return "plugin:manage"
+    if path == "/api/intel/sync" and m == "POST":
+        return "intel:sync"
+    if path in ("/api/admin/backup", "/api/admin/restore"):
+        return "backup:manage"
+    if path.startswith("/api/admin/") and path != "/api/admin/users/login":
+        return "admin:manage"
+    return None
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/api/") and not path.startswith("/api/auth/") and path != "/api/health":
-        if dplat.auth_status().get("enabled"):
-            tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
-            if not dplat.session_user(tok):
-                return JSONResponse(status_code=401, content={"error": "workspace locked — login required"})
-    return await call_next(request)
+    if not path.startswith("/api/") or path.startswith("/api/auth/") or path == "/api/health" or path == "/api/admin/users/login":
+        return await call_next(request)
+
+    ip = request.client.host if request.client else "global"
+    ok_rl, rlim = edb.check_rate_limit(ip)
+    if not ok_rl:
+        return JSONResponse(status_code=429, content={"error": f"Rate limit exceeded (max ~{rlim // 2} req/s)"})
+
+    tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    if not tok:
+        auth_h = request.headers.get("Authorization") or ""
+        if auth_h.lower().startswith("bearer "):
+            tok = auth_h.split(" ", 1)[1].strip()
+
+    rbac_sess = edb.get_rbac_session(tok)
+    legacy_user = dplat.session_user(tok)
+    rbac_enforced = bool(edb.get_setting("rbac_enforced", False))
+    lock_enforced = bool(dplat.auth_status().get("enabled"))
+
+    if (lock_enforced or rbac_enforced) and not (rbac_sess or legacy_user):
+        return JSONResponse(status_code=401, content={"error": "authentication required — login via workspace lock or RBAC"})
+
+    actor_name = "operator"
+    actor_role = "admin"
+    if rbac_sess:
+        actor_name = rbac_sess["username"]
+        actor_role = rbac_sess["role"]
+        req_perm = _required_permission(request.method, path)
+        if req_perm and not edb.has_permission(actor_role, req_perm):
+            edb.log_audit(actor_name, actor_role, "rbac:denied", path, f"Missing permission {req_perm}", ip)
+            return JSONResponse(status_code=403, content={"error": f"RBAC denied: role '{actor_role}' lacks '{req_perm}'"})
+    elif legacy_user:
+        actor_name = legacy_user
+
+    ctx_tok = edb.set_current_actor(actor_name, actor_role, ip)
+    try:
+        return await call_next(request)
+    finally:
+        edb.reset_current_actor(ctx_tok)
 
 
 @app.get("/", include_in_schema=False)
@@ -545,6 +597,9 @@ def recover_or_reproduce_job(job_id: str):
     new_id = start_job(kind, fn, project_id=pid, target_hint=tgt, **payload)
     edb.log_audit("operator", "analyst", "job:recover", f"{job_id} -> {new_id}")
     return {"job_id": new_id, "recovered_from": job_id, "kind": kind}
+
+
+eroutes._HOOKS["recover_fn"] = recover_or_reproduce_job
 
 
 @app.delete("/api/jobs/{job_id}")

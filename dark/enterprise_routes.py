@@ -33,12 +33,14 @@ router = APIRouter()
 _HOOKS: Dict[str, Any] = {}
 
 
-def bind_hooks(start_job_fn, jobs_dict, jobs_lock, jobs_to_disk_fn, legal_text: str):
+def bind_hooks(start_job_fn, jobs_dict, jobs_lock, jobs_to_disk_fn, legal_text: str, recover_fn=None):
     _HOOKS["start_job"] = start_job_fn
     _HOOKS["JOBS"] = jobs_dict
     _HOOKS["JOBS_LOCK"] = jobs_lock
     _HOOKS["jobs_to_disk"] = jobs_to_disk_fn
     _HOOKS["LEGAL"] = legal_text
+    if recover_fn is not None:
+        _HOOKS["recover_fn"] = recover_fn
 
 
 def _all_project_findings(project_id: Optional[str] = None) -> List[dict]:
@@ -373,13 +375,58 @@ def admin_create_user(req: UserCreateReq):
 
 @router.post("/api/admin/users/login")
 def admin_user_login(req: UserLoginReq, request: Request):
+    from fastapi.responses import JSONResponse
     ok, user, msg = edb.authenticate_user(req.username, req.password, req.totp_code)
     ip = request.client.host if request.client else ""
     edb.log_audit(req.username, (user or {}).get("role", "unknown"),
                   "user:login_ok" if ok else "user:login_fail", req.username, msg, ip)
-    if not ok:
+    if not ok or not user:
         raise HTTPException(401, msg)
-    return {"ok": True, "user": user}
+    tok = edb.create_rbac_session(user["username"], user["role"])
+    resp = JSONResponse({"ok": True, "user": user, "token": tok})
+    resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
+    return resp
+
+
+@router.get("/api/admin/rbac")
+def admin_rbac_status():
+    return {"rbac_enforced": bool(edb.get_setting("rbac_enforced", False)), "roles": edb.ROLES}
+
+
+@router.post("/api/admin/rbac/enforce")
+def admin_rbac_enforce(enforced: bool = True):
+    edb.set_setting("rbac_enforced", bool(enforced))
+    edb.log_audit("admin", "admin", "rbac:enforce", str(enforced))
+    return {"rbac_enforced": bool(enforced)}
+
+
+@router.post("/api/admin/rate-limit")
+def admin_set_rate_limit(max_requests_per_sec: int = 25, max_concurrent_jobs: int = 16):
+    cfg = edb.set_rate_limit_config(max_requests_per_sec, max_concurrent_jobs)
+    edb.log_audit("admin", "admin", "governance:rate_limit", json.dumps(cfg))
+    return {"rate_limit": cfg}
+
+
+@router.post("/api/admin/recovery/auto")
+def admin_auto_recover():
+    jobs = _HOOKS.get("JOBS") or {}
+    lock = _HOOKS.get("JOBS_LOCK")
+    recover_fn = _HOOKS.get("recover_fn")
+    interrupted_ids: List[str] = []
+    if lock:
+        with lock:
+            for jid, j in jobs.items():
+                if j.get("status") == "interrupted" and j.get("repro_payload"):
+                    interrupted_ids.append(jid)
+    recovered: List[dict] = []
+    if recover_fn:
+        for jid in interrupted_ids[:10]:
+            try:
+                recovered.append(recover_fn(jid))
+            except Exception:
+                pass
+    edb.log_audit("admin", "admin", "recovery:auto", f"recovered={len(recovered)}")
+    return {"interrupted_found": len(interrupted_ids), "recovered": recovered}
 
 
 @router.post("/api/admin/users/{username}/2fa")

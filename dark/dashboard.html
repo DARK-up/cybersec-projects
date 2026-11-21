@@ -524,9 +524,39 @@
     <label>Secret Value <input id="vlt-val" type="password" placeholder="secret value"></label>
     <div style="display:flex;align-items:flex-end"><button class="run" onclick="storeVaultSecret()" style="padding:10px 14px">🔐 STORE</button></div>
   </div>
+  <div class="row">
+    <label>RBAC Login Username <input id="rbac-u" placeholder="username"></label>
+    <label>Password <input id="rbac-p" type="password" placeholder="password"></label>
+    <label>2FA TOTP (if enabled) <input id="rbac-totp" placeholder="123456"></label>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <button class="run" onclick="rbacLogin()" style="padding:10px 14px">🔑 RBAC LOGIN</button>
+      <button class="run" onclick="toggleRbacEnforce()" style="background:var(--panel2);color:var(--yellow);border:1px solid var(--border);padding:10px 14px">TOGGLE STRICT RBAC</button>
+    </div>
+  </div>
   <div class="out" id="admin-users-out">Loading users &amp; vault…</div>
 
-  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">⚙️ Workers, Scheduler &amp; Tamper-Evident Audit Trail</h3>
+  <h3 style="color:var(--cyan);font-size:14px;margin:14px 0 6px">⏱️ Rate Limits, Recurring Scan Scheduler, Recovery &amp; Restore</h3>
+  <div class="row">
+    <label>Max Req/Sec <input id="rl-rps" type="number" value="25" min="1" max="500"></label>
+    <label>Max Concurrent Jobs <input id="rl-jobs" type="number" value="16" min="1" max="64"></label>
+    <div style="display:flex;align-items:flex-end;gap:8px">
+      <button class="run" onclick="saveRateLimit()" style="padding:10px 14px">💾 RATE LIMIT</button>
+      <button class="run" onclick="autoRecoverJobs()" style="background:var(--panel2);color:var(--green);border:1px solid var(--border);padding:10px 14px">♻️ AUTO-RECOVER INTERRUPTED</button>
+    </div>
+  </div>
+  <div class="row">
+    <label>Schedule Name <input id="sch-name" placeholder="Daily Web Baseline"></label>
+    <label>Kind <select id="sch-kind"><option value="web-scan">web-scan</option><option value="dns-recon">dns-recon</option><option value="api-audit">api-audit</option></select></label>
+    <label>Target URL / Domain <input id="sch-target" placeholder="https://example.com"></label>
+    <label>Interval (min) <input id="sch-int" type="number" value="1440" min="5"></label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="createSchedule()" style="padding:10px 14px">+ SCHEDULE</button></div>
+  </div>
+  <div class="row">
+    <label>Restore Backup JSON
+      <textarea id="restore-json" style="min-height:52px" placeholder='Paste backup JSON exported from /api/admin/backup'></textarea>
+    </label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="restoreBackup()" style="background:var(--yellow);color:#111;padding:10px 14px">📥 RESTORE BACKUP</button></div>
+  </div>
   <div class="out" id="admin-ops-out">Loading workers, schedules &amp; audit trail…</div>
 </section>
 
@@ -547,9 +577,9 @@
 </main>
 
 <footer>
-  DARK v2.0 — Detection &amp; Attack Reconnaissance Kit &nbsp;|&nbsp;
+  DARK Enterprise v3.0 — Detection &amp; Attack Reconnaissance Kit &nbsp;|&nbsp;
   API docs: <a href="/docs" target="_blank">/docs</a> &nbsp;|&nbsp;
-  Tools: NetRecon · WebVulnX · HashBreaker · NetSentry &nbsp;|&nbsp;
+  NetRecon · WebVulnX · HashBreaker · NetSentry · Cloud · Container/SBOM · SAST · API · Forensics · Compliance · RBAC &nbsp;|&nbsp;
   ⚖️ Authorized testing only
 </footer>
 
@@ -1547,11 +1577,22 @@ async function loadAssetsAndRisk() {
       api('/api/intel/risk' + pid),
       api('/api/intel/feed?limit=25'),
     ]);
+    const idMap = {};
+    for (const a of (ar.assets || [])) idMap[a.id] = a.name;
+    const nowSec = Date.now() / 1000;
     let ah = '<b>Discovered Assets (' + ar.count + ') · Relationships (' + (ar.relations || []).length + ')</b>' +
-      '<table><tr><th>Kind</th><th>Name</th><th>Criticality</th><th>Exposed</th></tr>';
-    for (const a of (ar.assets || []).slice(0, 50))
-      ah += '<tr><td>' + esc(a.kind) + '</td><td><code>' + esc(a.name) + '</code></td><td>' + esc(a.criticality) + '</td><td>' + (a.internet_exposed ? '🌐 Yes' : '🔒 Internal') + '</td></tr>';
+      '<table><tr><th>Kind</th><th>Name</th><th>Criticality</th><th>Exposed</th><th>Status</th></tr>';
+    for (const a of (ar.assets || []).slice(0, 50)) {
+      const isNew = (nowSec - (a.first_seen || 0)) < 600;
+      ah += '<tr><td>' + esc(a.kind) + '</td><td><code>' + esc(a.name) + '</code></td><td>' + esc(a.criticality) + '</td><td>' + (a.internet_exposed ? '🌐 Yes' : '🔒 Internal') + '</td><td>' + (isNew ? '<span class="badge b-Low">🆕 New</span>' : 'Known') + '</td></tr>';
+    }
     ah += '</table>';
+    if ((ar.relations || []).length) {
+      ah += '\n<b>Asset Relationship Mapping (' + ar.relations.length + ')</b><table><tr><th>Source</th><th>Relation</th><th>Target</th></tr>';
+      for (const rel of ar.relations.slice(0, 50))
+        ah += '<tr><td><code>' + esc(idMap[rel.src_asset_id] || rel.src_asset_id) + '</code></td><td><b>' + esc(rel.relation) + '</b></td><td><code>' + esc(idMap[rel.dst_asset_id] || rel.dst_asset_id) + '</code></td></tr>';
+      ah += '</table>';
+    }
     $('assets-out').innerHTML = ah;
 
     let rh = '<b>Risk Prioritization Queue (Total: ' + rk.total + ' · CISA KEV: ' + rk.kev_count + ' · P0 Immediate: ' + (rk.p0_immediate || []).length + ')</b>' +
@@ -1598,17 +1639,37 @@ async function loadRemediation() {
     const r = await api('/api/remediation');
     const tks = r.tickets || [];
     if (!tks.length) { $('remed-out').textContent = 'No remediation tickets yet. Click "🩺 Create Ticket" on any finding.'; return; }
-    let html = '<table><tr><th>ID</th><th>Severity</th><th>Title</th><th>Assignee</th><th>Due</th><th>Status</th><th>Actions</th></tr>';
+    let html = '<table><tr><th>ID</th><th>Severity</th><th>Title &amp; Target</th><th>Assignee</th><th>Due Date</th><th>Status</th><th>Notes / Fix Evidence</th><th>Actions</th></tr>';
     for (const t of tks) {
-      html += '<tr><td><code>' + esc(t.id) + '</code></td><td><span class="badge b-' + esc(t.severity) + '">' + esc(t.severity) + '</span></td>' +
+      const id = esc(t.id);
+      const stOpts = ['open','in_progress','fixed_pending_retest','verified_closed','accepted_risk']
+        .map(s => '<option' + (t.status === s ? ' selected' : '') + '>' + s + '</option>').join('');
+      html += '<tr><td><code>' + id + '</code></td><td><span class="badge b-' + esc(t.severity) + '">' + esc(t.severity) + '</span></td>' +
               '<td>' + esc(t.title) + '<br><span style="color:var(--muted)">' + esc(t.target) + '</span></td>' +
-              '<td>' + esc(t.assignee || 'unassigned') + '</td><td>' + esc(t.due_date || '-') + '</td>' +
-              '<td><b>' + esc(t.status) + '</b></td>' +
-              '<td><button class="run" style="padding:3px 8px;font-size:11px" onclick="verifyRemediation(\'' + esc(t.id) + '\')">✅ Verify &amp; Close</button></td></tr>';
+              '<td><input id="rem-asg-' + id + '" value="' + esc(t.assignee || '') + '" style="width:110px;padding:4px;font-size:11px" placeholder="owner"></td>' +
+              '<td><input id="rem-due-' + id + '" value="' + esc(t.due_date || '') + '" style="width:105px;padding:4px;font-size:11px" placeholder="2026-10-15"></td>' +
+              '<td><select id="rem-st-' + id + '" style="padding:4px;font-size:11px">' + stOpts + '</select></td>' +
+              '<td><input id="rem-ev-' + id + '" style="width:140px;padding:4px;font-size:11px" placeholder="PR / fix note">' +
+              '<div style="font-size:10px;color:var(--muted)">' + (t.notes || []).length + ' notes · ' + (t.evidence || []).length + ' proofs</div></td>' +
+              '<td style="white-space:nowrap"><button class="run" style="padding:3px 8px;font-size:11px;background:var(--panel2);color:var(--cyan);border:1px solid var(--border)" onclick="saveRemediation(\'' + id + '\')">💾 Save</button> ' +
+              '<button class="run" style="padding:3px 8px;font-size:11px" onclick="verifyRemediation(\'' + id + '\')">✅ Verify</button></td></tr>';
     }
     html += '</table>';
     $('remed-out').innerHTML = html;
   } catch (e) { $('remed-out').textContent = 'Error: ' + e.message; }
+}
+
+async function saveRemediation(tid) {
+  await api('/api/remediation/' + encodeURIComponent(tid), {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      assignee: ($('rem-asg-' + tid) || {}).value || '',
+      due_date: ($('rem-due-' + tid) || {}).value || '',
+      status: ($('rem-st-' + tid) || {}).value || 'open',
+      fix_evidence: ($('rem-ev-' + tid) || {}).value || ''
+    })
+  });
+  loadRemediation();
 }
 
 async function verifyRemediation(tid) {
@@ -1641,11 +1702,15 @@ async function loadCompliance() {
 
 async function loadAdminPanel() {
   try {
-    const [pl, sc, us, vl, wk, sh, au, av] = await Promise.all([
+    const [pl, sc, us, vl, wk, sh, au, av, rb] = await Promise.all([
       api('/api/plugins'), api('/api/admin/scope'), api('/api/admin/users'),
       api('/api/admin/vault'), api('/api/admin/workers'), api('/api/admin/schedules'),
-      api('/api/admin/audit?limit=25'), api('/api/admin/audit/verify')
+      api('/api/admin/audit?limit=25'), api('/api/admin/audit/verify'), api('/api/admin/rbac')
     ]);
+    if (sc.rate_limit) {
+      if ($('rl-rps')) $('rl-rps').value = sc.rate_limit.max_requests_per_sec || 25;
+      if ($('rl-jobs')) $('rl-jobs').value = sc.rate_limit.max_concurrent_jobs || 16;
+    }
     let ph = '<table><tr><th>Plugin ID</th><th>Name</th><th>Category</th><th>Signature</th><th>Status</th><th>Test</th></tr>';
     for (const p of (pl.plugins || [])) {
       const m = p.manifest;
@@ -1664,9 +1729,10 @@ async function loadAdminPanel() {
     shh += '</table>';
     $('scope-out').innerHTML = shh;
 
-    let uh = '<b>Users (' + (us.users || []).length + ')</b><table><tr><th>Username</th><th>Role</th><th>2FA</th></tr>';
+    let uh = '<b>Strict RBAC Enforcement: ' + (rb.rbac_enforced ? '🔒 ON' : '🔓 Permissive') + ' · Users (' + (us.users || []).length + ')</b><table><tr><th>Username</th><th>Role</th><th>2FA</th><th>Action</th></tr>';
     for (const u of (us.users || []))
-      uh += '<tr><td>' + esc(u.username) + '</td><td>' + esc(u.role) + '</td><td>' + (u.totp_enabled ? '✅ TOTP ON' : 'Off') + '</td></tr>';
+      uh += '<tr><td>' + esc(u.username) + '</td><td>' + esc(u.role) + '</td><td>' + (u.totp_enabled ? '✅ TOTP ON' : 'Off') + '</td>' +
+            '<td><button class="run" style="padding:2px 8px;font-size:11px" onclick="setupUser2fa(\'' + esc(u.username) + '\',' + (!u.totp_enabled) + ')">' + (u.totp_enabled ? 'Disable 2FA' : 'Enable 2FA') + '</button></td></tr>';
     uh += '</table>\n<b>Encrypted Vault Secrets (' + (vl.secrets || []).length + ')</b><table><tr><th>Name</th><th>Kind</th><th>Created By</th></tr>';
     for (const s of (vl.secrets || []))
       uh += '<tr><td><code>' + esc(s.name) + '</code></td><td>' + esc(s.kind) + '</td><td>' + esc(s.created_by) + '</td></tr>';
@@ -1677,6 +1743,9 @@ async function loadAdminPanel() {
       '<table><tr><th>Worker</th><th>Status</th><th>Active Jobs</th><th>CPU %</th><th>RAM MB</th></tr>';
     for (const w of (wk.workers || []))
       oh += '<tr><td>' + esc(w.name) + '</td><td>' + esc(w.status) + '</td><td>' + w.active_jobs + '/' + w.capacity + '</td><td>' + w.cpu_pct + '%</td><td>' + w.ram_mb + '</td></tr>';
+    oh += '</table>\n<b>Recurring Scan Schedules (' + (sh.schedules || []).length + ')</b><table><tr><th>Name</th><th>Kind</th><th>Interval</th><th>Next Run</th><th></th></tr>';
+    for (const s of (sh.schedules || []))
+      oh += '<tr><td>' + esc(s.name) + '</td><td><code>' + esc(s.kind) + '</code></td><td>' + s.interval_minutes + ' min</td><td>' + new Date((s.next_run || 0) * 1000).toLocaleString() + '</td><td><button class="run" style="background:var(--red);color:#fff;padding:2px 8px;font-size:11px" onclick="delSchedule(\'' + esc(s.id) + '\')">delete</button></td></tr>';
     oh += '</table>\n<b>Recent Audit Trail</b><table><tr><th>Actor</th><th>Action</th><th>Resource</th><th>Detail</th></tr>';
     for (const a of (au.logs || []))
       oh += '<tr><td>' + esc(a.actor) + ' (' + esc(a.role) + ')</td><td><code>' + esc(a.action) + '</code></td><td>' + esc(a.resource) + '</td><td>' + esc(a.detail) + '</td></tr>';
@@ -1737,6 +1806,68 @@ async function storeVaultSecret() {
     body: JSON.stringify({name, kind: 'api_token', secret_value})
   });
   $('vlt-name').value = ''; $('vlt-val').value = '';
+  loadAdminPanel();
+}
+
+async function setupUser2fa(username, enable) {
+  const r = await api('/api/admin/users/' + encodeURIComponent(username) + '/2fa?enable=' + enable, {method: 'POST'});
+  if (enable && r.secret) alert('2FA Enabled for ' + username + '\nTOTP Secret: ' + r.secret + '\nURI: ' + r.otpauth_uri);
+  loadAdminPanel();
+}
+
+async function rbacLogin() {
+  const r = await api('/api/admin/users/login', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: $('rbac-u').value.trim(), password: $('rbac-p').value, totp_code: $('rbac-totp').value.trim()})
+  });
+  alert('Logged in as ' + r.user.username + ' (role: ' + r.user.role + ')');
+  loadAdminPanel();
+}
+
+async function toggleRbacEnforce() {
+  const cur = await api('/api/admin/rbac');
+  await api('/api/admin/rbac/enforce?enforced=' + (!cur.rbac_enforced), {method: 'POST'});
+  loadAdminPanel();
+}
+
+async function saveRateLimit() {
+  await api('/api/admin/rate-limit?max_requests_per_sec=' + (+$('rl-rps').value) + '&max_concurrent_jobs=' + (+$('rl-jobs').value), {method: 'POST'});
+  alert('Rate limit updated.');
+  loadAdminPanel();
+}
+
+async function autoRecoverJobs() {
+  const r = await api('/api/admin/recovery/auto', {method: 'POST'});
+  alert('Found ' + r.interrupted_found + ' interrupted job(s), recovered ' + (r.recovered || []).length);
+  loadJobs();
+}
+
+async function createSchedule() {
+  const name = $('sch-name').value.trim(), tgt = $('sch-target').value.trim(), kind = $('sch-kind').value;
+  if (!name || !tgt) return;
+  const payload = kind === 'dns-recon' ? {target: tgt} : {url: tgt};
+  await api('/api/admin/schedules', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT,
+      name, kind, payload, interval_minutes: +$('sch-int').value})
+  });
+  $('sch-name').value = ''; $('sch-target').value = '';
+  loadAdminPanel();
+}
+
+async function delSchedule(sid) {
+  await api('/api/admin/schedules/' + encodeURIComponent(sid), {method: 'DELETE'});
+  loadAdminPanel();
+}
+
+async function restoreBackup() {
+  const raw = $('restore-json').value.trim();
+  if (!raw) return;
+  const r = await api('/api/admin/restore', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: raw
+  });
+  alert('Restored: ' + JSON.stringify(r.restored));
   loadAdminPanel();
 }
 

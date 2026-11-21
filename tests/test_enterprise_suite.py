@@ -213,6 +213,49 @@ def test_api_remediation_and_plugins():
         srv.shutdown()
 
 
+def test_docker_inspect_and_distributed_worker():
+    inspect_json = json.dumps([{
+        "Config": {"Image": "myapp:latest", "User": "root", "Env": ["API_KEY=supersecret123"]},
+        "HostConfig": {"Privileged": True, "NetworkMode": "host", "Binds": ["/var/run/docker.sock:/var/run/docker.sock"]},
+    }])
+    res = cta.audit_container_and_sbom(inspect_json)
+    titles = " | ".join(f["vuln_type"] for f in res["findings"])
+    assert "Docker Inspect" in titles and "Docker Socket" in titles and "Privileged" in titles
+
+    import celery_worker as cw
+    wres = cw.execute_task_payload("cloud-audit", {"provider": "aws", "content": '{"Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}'})
+    assert len(wres["findings"]) >= 1
+
+
+def test_rbac_session_middleware_and_rate_limit():
+    from fastapi.testclient import TestClient
+    import main as dark_main
+
+    client = TestClient(dark_main.app)
+    vname = f"viewer_{int(time.time() * 1000)}"
+    aname = f"analyst_{int(time.time() * 1000)}"
+    edb.create_user(vname, "ViewerPass123", role="viewer")
+    edb.create_user(aname, "AnalystPass123", role="analyst")
+
+    # Login as viewer -> blocked from running scan (403) and admin endpoints (403)
+    lv = client.post("/api/admin/users/login", json={"username": vname, "password": "ViewerPass123"}).json()
+    assert lv["ok"] and lv["token"]
+    r_denied = client.post("/api/jobs/cloud-audit", json={"provider": "aws", "content": "{}"},
+                           headers={"X-Dark-Token": lv["token"]})
+    assert r_denied.status_code == 403
+    r_adm_denied = client.post("/api/admin/scope", json={"pattern": "*.x.com"},
+                               headers={"X-Dark-Token": lv["token"]})
+    assert r_adm_denied.status_code == 403
+
+    # Login as analyst -> allowed to run scan (200), real username recorded in audit trail
+    la = client.post("/api/admin/users/login", json={"username": aname, "password": "AnalystPass123"}).json()
+    r_ok = client.post("/api/jobs/cloud-audit", json={"provider": "aws", "content": "{}"},
+                       headers={"X-Dark-Token": la["token"]})
+    assert r_ok.status_code == 200 and r_ok.json().get("job_id")
+    logs = edb.list_audit_logs(10)
+    assert any(l["actor"] == aname and l["action"] == "scan:cloud-audit" for l in logs)
+
+
 def test_performance_and_memory_budget():
     # Ensure running SAST + Container + Cloud + Compliance stays lightweight (< 2s, < 300MB RSS)
     t0 = time.perf_counter()

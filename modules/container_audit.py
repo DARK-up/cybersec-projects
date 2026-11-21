@@ -183,6 +183,42 @@ def _parse_dependencies(src: str, text: str) -> tuple[List[dict], List[dict]]:
     return findings, components
 
 
+def _audit_docker_inspect(src: str, text: str) -> tuple[List[dict], List[dict]]:
+    findings: List[dict] = []
+    components: List[dict] = []
+    try:
+        raw = json.loads(text)
+    except Exception:
+        return findings, components
+    items = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+    for idx, obj in enumerate(items):
+        if not isinstance(obj, dict) or ("HostConfig" not in obj and "Config" not in obj):
+            continue
+        cfg = obj.get("Config") or {}
+        hc = obj.get("HostConfig") or {}
+        img = str(cfg.get("Image") or obj.get("RepoTags", ["unknown"])[0] if isinstance(obj.get("RepoTags"), list) else "unknown")
+        name, _, ver = img.partition(":")
+        components.append({"name": name, "version": ver or "latest", "type": "container-image", "purl": f"pkg:oci/{name}@{ver or 'latest'}"})
+        if (cfg.get("User") or "") in ("", "0", "root"):
+            findings.append(_cfinding("Docker Inspect: Container Runs as Root", "High", f"{src}[{idx}]",
+                                      f"Config.User='{cfg.get('User','')}' on image {img}", "Set non-root User in container image."))
+        if hc.get("Privileged") is True:
+            findings.append(_cfinding("Docker Inspect: Privileged Container", "Critical", f"{src}[{idx}]",
+                                      "HostConfig.Privileged=true", "Remove --privileged flag."))
+        if hc.get("NetworkMode") == "host":
+            findings.append(_cfinding("Docker Inspect: Host Network Mode", "High", f"{src}[{idx}]",
+                                      "HostConfig.NetworkMode='host'", "Use isolated bridge/overlay network."))
+        for b in (hc.get("Binds") or []):
+            if "docker.sock" in str(b):
+                findings.append(_cfinding("Docker Inspect: Docker Socket Mounted Inside Container", "Critical", f"{src}[{idx}]",
+                                          f"Bind mount exposes {b}", "Never mount /var/run/docker.sock inside untrusted containers."))
+        for ev in (cfg.get("Env") or []):
+            if re.search(r'(password|secret|token|api_key)\s*=\s*\S+', str(ev), re.I):
+                findings.append(_cfinding("Docker Inspect: Secret in Container Env", "High", f"{src}[{idx}]",
+                                          "Sensitive variable present in Config.Env", "Use runtime secret mounts instead of Env.", "CWE-798"))
+    return findings, components
+
+
 def audit_container_and_sbom(content: str = "", target_path: Optional[str] = None, kind: str = "auto") -> dict:
     inputs: List[tuple[str, str]] = []
     if content and content.strip():
@@ -210,6 +246,9 @@ def audit_container_and_sbom(content: str = "", target_path: Optional[str] = Non
             findings.extend(fs); components.extend(cs)
         if low.endswith((".yml", ".yaml")) or "kind:" in txt or "services:" in txt:
             fs, cs = _audit_k8s_or_compose(src, txt)
+            findings.extend(fs); components.extend(cs)
+        if '"HostConfig"' in txt or '"Config"' in txt:
+            fs, cs = _audit_docker_inspect(src, txt)
             findings.extend(fs); components.extend(cs)
         fs, cs = _parse_dependencies(src, txt)
         findings.extend(fs); components.extend(cs)

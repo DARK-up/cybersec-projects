@@ -7,6 +7,7 @@ Job Recovery, and Backup/Restore.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import hmac
 import ipaddress
@@ -18,6 +19,7 @@ import struct
 import threading
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -189,6 +191,12 @@ def init_db() -> None:
                     verified INTEGER NOT NULL DEFAULT 1,
                     created_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rbac_sessions (
+                    token TEXT PRIMARY KEY,
+                    username TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                );
                 """
             )
             c.commit()
@@ -197,6 +205,95 @@ def init_db() -> None:
 
 
 init_db()
+
+_CURRENT_ACTOR: contextvars.ContextVar = contextvars.ContextVar("dark_actor", default=None)
+_RATE_BUCKETS: Dict[str, deque] = {}
+_RATE_LOCK = threading.Lock()
+
+
+def set_current_actor(username: str, role: str, ip: str = "") -> Any:
+    return _CURRENT_ACTOR.set({"username": username, "role": role, "ip": ip})
+
+
+def reset_current_actor(token: Any) -> None:
+    if token is not None:
+        try:
+            _CURRENT_ACTOR.reset(token)
+        except Exception:
+            pass
+
+
+def get_current_actor() -> dict:
+    return _CURRENT_ACTOR.get() or {"username": "operator", "role": "admin", "ip": ""}
+
+
+def check_rate_limit(client_ip: str = "global") -> Tuple[bool, int]:
+    cfg = get_rate_limit_config()
+    limit = int(cfg.get("max_requests_per_sec") or 25) * 2
+    now = time.time()
+    key = client_ip or "global"
+    with _RATE_LOCK:
+        dq = _RATE_BUCKETS.setdefault(key, deque())
+        while dq and now - dq[0] > 2.0:
+            dq.popleft()
+        if len(dq) >= limit:
+            return False, limit
+        dq.append(now)
+        return True, limit
+
+
+def create_rbac_session(username: str, role: str, ttl_seconds: int = 7 * 24 * 3600) -> str:
+    tok = secrets.token_urlsafe(32)
+    exp = time.time() + ttl_seconds
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute("DELETE FROM rbac_sessions WHERE expires_at < ?", (time.time(),))
+            c.execute(
+                "INSERT INTO rbac_sessions(token, username, role, expires_at) VALUES(?,?,?,?)",
+                (tok, username, role, exp),
+            )
+            c.commit()
+        finally:
+            c.close()
+    return tok
+
+
+def get_rbac_session(token: Optional[str]) -> Optional[dict]:
+    if not token:
+        return None
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            row = c.execute(
+                "SELECT token, username, role, expires_at FROM rbac_sessions WHERE token=?",
+                (token,),
+            ).fetchone()
+            if not row:
+                return None
+            if row["expires_at"] < time.time():
+                c.execute("DELETE FROM rbac_sessions WHERE token=?", (token,))
+                c.commit()
+                return None
+            return {
+                "username": row["username"],
+                "role": row["role"],
+                "permissions": ROLES.get(row["role"], []),
+            }
+        finally:
+            c.close()
+
+
+def delete_rbac_session(token: Optional[str]) -> None:
+    if not token:
+        return
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute("DELETE FROM rbac_sessions WHERE token=?", (token,))
+            c.commit()
+        finally:
+            c.close()
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +453,12 @@ def check_target_in_scope(target: str) -> Tuple[bool, str]:
 # ---------------------------------------------------------------------------
 def log_audit(actor: str, role: str, action: str, resource: str,
               detail: str = "", ip: str = "") -> dict:
+    ctx = _CURRENT_ACTOR.get()
+    if ctx and actor in ("operator", "admin", ""):
+        actor = ctx.get("username") or actor
+        role = ctx.get("role") or role
+        if not ip:
+            ip = ctx.get("ip") or ""
     ts = time.time()
     with _DB_LOCK:
         c = _conn()

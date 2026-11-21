@@ -226,6 +226,31 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
         except Exception as e:
             errors.append(f"NVD sync offline/skipped: {type(e).__name__}")
 
+    # Live FIRST.org EPSS probability sync for known CVEs in feed
+    try:
+        top_cves = [r["cve_id"] for r in list_vuln_feed(50) if str(r.get("cve_id", "")).startswith("CVE-")]
+        if top_cves:
+            er = requests.get(
+                "https://api.first.org/data/v1/epss",
+                params={"cve": ",".join(top_cves[:30])},
+                timeout=6,
+            )
+            if er.status_code == 200:
+                with edb._DB_LOCK:
+                    c = edb._conn()
+                    try:
+                        for row in (er.json().get("data") or []):
+                            cid = row.get("cve")
+                            epss_val = float(row.get("epss") or 0.0)
+                            if cid:
+                                c.execute("UPDATE vuln_feed SET epss=?, updated_at=? WHERE cve_id=?", (round(epss_val, 4), now, cid))
+                                added_or_updated += 1
+                        c.commit()
+                    finally:
+                        c.close()
+    except Exception as e:
+        errors.append(f"EPSS sync offline/skipped: {type(e).__name__}")
+
     return {"synced": added_or_updated, "total_feed": len(list_vuln_feed(500)), "notes": errors}
 
 

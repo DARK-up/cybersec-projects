@@ -1,11 +1,51 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dark-postgres
+    environment:
+      POSTGRES_USER: dark
+      POSTGRES_PASSWORD: dark_change_me
+      POSTGRES_DB: dark
+    volumes:
+      - dark_pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: dark-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   dark-controller:
     build: .
     container_name: dark-enterprise
+    depends_on:
+      - postgres
+      - redis
     ports:
       - "8000:8000"
     environment:
       - DARK_MAX_PARALLEL=24
+      - DARK_REDIS_URL=redis://redis:6379/0
+      - DARK_POSTGRES_DSN=postgresql://dark:dark_change_me@postgres:5432/dark
     volumes:
       - ./dark/data:/app/dark/data
     restart: unless-stopped
+
+  dark-worker:
+    build: .
+    container_name: dark-worker-1
+    depends_on:
+      - redis
+      - postgres
+    command: ["python3", "-m", "celery", "-A", "celery_worker", "worker", "--loglevel=info", "--concurrency=4"]
+    environment:
+      - DARK_REDIS_URL=redis://redis:6379/0
+      - DARK_POSTGRES_DSN=postgresql://dark:dark_change_me@postgres:5432/dark
+    volumes:
+      - ./dark/data:/app/dark/data
+    restart: unless-stopped
+
+volumes:
+  dark_pgdata:

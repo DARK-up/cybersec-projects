@@ -30,7 +30,8 @@ def _finding(provider: str, title: str, severity: str, resource: str,
     }
 
 
-def audit_cloud_config(provider: str = "aws", content: str = "", target_path: Optional[str] = None) -> dict:
+def audit_cloud_config(provider: str = "aws", content: str = "", target_path: Optional[str] = None,
+                       live_profile: Optional[str] = None) -> dict:
     prov = (provider or "aws").strip().lower()
     if prov not in ("aws", "azure", "gcp", "auto"):
         prov = "auto"
@@ -159,6 +160,29 @@ def audit_cloud_config(provider: str = "aws", content: str = "", target_path: Op
                     "Service account private_key material present in configuration",
                     "Revoke key and migrate workloads to Workload Identity Federation.", "CWE-798"
                 ))
+
+    if live_profile and prov in ("aws", "auto"):
+        try:
+            import boto3  # type: ignore
+            sess = boto3.Session(profile_name=live_profile)
+            s3 = sess.client("s3")
+            for b in (s3.list_buckets().get("Buckets") or [])[:25]:
+                bname = b.get("Name", "")
+                resources_checked += 1
+                try:
+                    pab = s3.get_public_access_block(Bucket=bname).get("PublicAccessBlockConfiguration", {})
+                    if not all(pab.get(k) for k in ("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")):
+                        findings.append(_finding("aws", f"Live S3 Bucket Missing Full Public Access Block ({bname})", "High", f"s3://{bname}",
+                                                 f"PublicAccessBlockConfiguration={pab}", "Enable all 4 S3 Block Public Access flags."))
+                except Exception:
+                    pass
+        except ImportError:
+            findings.append(_finding("aws", "Live AWS Connector Info (boto3 not installed)", "Info", f"profile:{live_profile}",
+                                     "Install boto3 for live read-only AWS API checks; IaC/policy offline audit completed.",
+                                     "pip install boto3 and attach ReadOnlyAccess IAM profile.", "CWE-200"))
+        except Exception as e:
+            findings.append(_finding("aws", "Live AWS Profile Audit Skipped", "Info", f"profile:{live_profile}",
+                                     f"{type(e).__name__}: {e}", "Verify read-only AWS credentials.", "CWE-200"))
 
     return {
         "target": target_path or f"{prov}-config",
