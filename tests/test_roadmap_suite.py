@@ -343,4 +343,13 @@ def test_cooperative_stop_and_partial_report():
     finally:
         srv.shutdown()
 
+    # Verify custom DARK API Studio portal routes
+    docs_r = client.get("/docs")
+    assert docs_r.status_code == 200 and "DARK" in docs_r.text and "API STUDIO" in docs_r.text
+    studio_r = client.get("/api-studio")
+    assert studio_r.status_code == 200 and "/openapi.json" in studio_r.text
+    spec_r = client.get("/openapi.json")
+    assert spec_r.status_code == 200 and "/api/jobs/{job_id}/stop" in spec_r.json().get("paths", {})
+
+
 

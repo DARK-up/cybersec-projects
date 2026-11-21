@@ -430,6 +430,8 @@ app = FastAPI(
                  "+ Enterprise Security, Intelligence, Compliance & Governance.\n\n"
                  + LEGAL),
     version="3.0.0",
+    docs_url=None,
+    redoc_url=None,
 )
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
@@ -542,6 +544,13 @@ async def _auth_gate(request: Request, call_next):
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(APP_DIR / "dashboard.html")
+
+
+@app.get("/docs", include_in_schema=False)
+@app.get("/api-studio", include_in_schema=False)
+@app.get("/redoc", include_in_schema=False)
+def api_studio():
+    return FileResponse(APP_DIR / "api_studio.html")
 
 
 @app.get("/static/logo.png", include_in_schema=False)

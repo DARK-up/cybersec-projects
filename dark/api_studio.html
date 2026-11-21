@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DARK API Studio — Interactive OpenAPI v3 Portal</title>
+<style>
+  :root{
+    --bg:#06090f; --bg2:#0b111c; --panel:rgba(15,23,36,.86); --panel-solid:#0f1724;
+    --panel2:#152033; --border:#1f2e47; --border-glow:rgba(34,211,238,.38);
+    --cyan:#22d3ee; --blue:#3b82f6; --purple:#a855f7; --green:#34d399;
+    --yellow:#fbbf24; --red:#f43f5e; --orange:#fb923c;
+    --text:#e2ecf7; --muted:#7f93ad;
+    --shadow:0 14px 40px rgba(0,0,0,.45);
+  }
+  body.light{
+    --bg:#f1f5f9; --bg2:#e2e8f0; --panel:rgba(255,255,255,.92); --panel-solid:#ffffff;
+    --panel2:#f8fafc; --border:#cbd5e1; --border-glow:rgba(2,132,199,.35);
+    --cyan:#0284c7; --blue:#2563eb; --purple:#7c3aed; --green:#059669;
+    --yellow:#d97706; --red:#e11d48; --orange:#ea580c;
+    --text:#0f172a; --muted:#475569;
+    --shadow:0 10px 30px rgba(15,23,42,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"Inter","Segoe UI",Roboto,system-ui,sans-serif;
+    min-height:100vh; overflow-x:hidden;
+  }
+
+  /* Animated cyber grid & ambient aurora */
+  .bg-grid{
+    position:fixed; inset:0; pointer-events:none; z-index:0;
+    background-image:
+      linear-gradient(to right, rgba(34,211,238,.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(34,211,238,.045) 1px, transparent 1px);
+    background-size:42px 42px;
+    mask-image:radial-gradient(ellipse 85% 75% at 50% 15%, #000 35%, transparent 100%);
+    animation:gridDrift 26s linear infinite;
+  }
+  .bg-aurora{
+    position:fixed; top:-220px; left:50%; transform:translateX(-50%);
+    width:1100px; height:440px; pointer-events:none; z-index:0;
+    background:radial-gradient(closest-side, rgba(34,211,238,.16), rgba(59,130,246,.08), transparent);
+    filter:blur(36px); animation:auroraPulse 9s ease-in-out infinite alternate;
+  }
+  @keyframes gridDrift{ from{background-position:0 0} to{background-position:42px 42px} }
+  @keyframes auroraPulse{ from{opacity:.7; transform:translateX(-50%) scale(1)} to{opacity:1; transform:translateX(-50%) scale(1.08)} }
+  @keyframes pulseRing{ 0%{transform:scale(.95);box-shadow:0 0 0 0 rgba(52,211,153,.7)} 70%{transform:scale(1);box-shadow:0 0 0 8px rgba(52,211,153,0)} 100%{transform:scale(.95);box-shadow:0 0 0 0 rgba(52,211,153,0)} }
+  @keyframes cardEnter{ from{opacity:0; transform:translateY(10px) scale(.99)} to{opacity:1; transform:translateY(0) scale(1)} }
+  @keyframes shimmer{ 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+
+  /* Header */
+  header{
+    position:sticky; top:0; z-index:30;
+    backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    background:linear-gradient(180deg, rgba(11,17,28,.92), rgba(11,17,28,.78));
+    border-bottom:1px solid var(--border);
+    padding:14px 26px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  }
+  body.light header{background:rgba(255,255,255,.88)}
+  .brand{display:flex; align-items:center; gap:14px; text-decoration:none; color:inherit}
+  .brand img{
+    width:46px; height:46px; border-radius:12px;
+    box-shadow:0 0 22px rgba(34,211,238,.38);
+    transition:transform .28s cubic-bezier(.22,1,.36,1);
+  }
+  .brand:hover img{transform:rotate(-4deg) scale(1.06)}
+  .brand h1{margin:0; font-size:19px; letter-spacing:2.5px; font-weight:800}
+  .brand h1 span{color:var(--cyan)}
+  .brand .sub{font-size:11px; color:var(--muted); letter-spacing:.8px; margin-top:2px}
+  .live-pill{
+    display:inline-flex; align-items:center; gap:7px;
+    padding:4px 11px; border-radius:999px; font-size:11px; font-weight:700;
+    background:rgba(52,211,153,.12); color:var(--green);
+    border:1px solid rgba(52,211,153,.35);
+  }
+  .live-dot{width:8px; height:8px; border-radius:50%; background:var(--green); animation:pulseRing 2s infinite}
+  .hdr-actions{margin-left:auto; display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+
+  .btn{
+    display:inline-flex; align-items:center; gap:7px;
+    border:1px solid var(--border); background:var(--panel2); color:var(--text);
+    padding:8px 14px; border-radius:10px; font-size:12px; font-weight:600;
+    cursor:pointer; text-decoration:none;
+    transition:transform .16s ease, border-color .2s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .btn:hover{transform:translateY(-1px); border-color:var(--cyan); box-shadow:0 6px 18px rgba(34,211,238,.15)}
+  .btn:active{transform:scale(.97)}
+  .btn-primary{
+    background:linear-gradient(135deg, var(--cyan), var(--blue));
+    color:#031520; border:0; font-weight:800;
+    box-shadow:0 6px 22px rgba(34,211,238,.28);
+  }
+  .btn-primary:hover{box-shadow:0 8px 26px rgba(34,211,238,.45)}
+
+  /* Layout */
+  .shell{
+    position:relative; z-index:1;
+    max-width:1460px; margin:0 auto; padding:22px 26px 60px;
+    display:grid; grid-template-columns:270px 1fr; gap:22px;
+  }
+  @media(max-width:960px){ .shell{grid-template-columns:1fr} .sidebar{position:static !important} }
+
+  /* Sidebar */
+  .sidebar{
+    position:sticky; top:92px; align-self:start;
+    background:var(--panel); border:1px solid var(--border); border-radius:16px;
+    padding:16px; box-shadow:var(--shadow); backdrop-filter:blur(12px);
+    max-height:calc(100vh - 114px); overflow:auto;
+  }
+  .side-title{font-size:11px; text-transform:uppercase; letter-spacing:1.3px; color:var(--muted); margin:4px 6px 10px; font-weight:700}
+  .tag-btn{
+    width:100%; display:flex; align-items:center; justify-content:space-between;
+    background:transparent; border:1px solid transparent; color:var(--text);
+    padding:9px 11px; border-radius:10px; cursor:pointer; font-size:13px; text-align:left;
+    margin-bottom:4px; transition:all .18s ease;
+  }
+  .tag-btn:hover{background:var(--panel2); transform:translateX(3px)}
+  .tag-btn.active{
+    background:linear-gradient(90deg, rgba(34,211,238,.14), rgba(59,130,246,.05));
+    border-color:var(--border-glow); color:var(--cyan); font-weight:700;
+  }
+  .tag-cnt{
+    font-size:11px; padding:2px 8px; border-radius:999px;
+    background:var(--panel2); color:var(--muted); border:1px solid var(--border);
+  }
+  .tag-btn.active .tag-cnt{background:rgba(34,211,238,.15); color:var(--cyan); border-color:rgba(34,211,238,.4)}
+
+  /* Auth & Tenant bar */
+  .auth-box{
+    margin-top:14px; padding-top:14px; border-top:1px solid var(--border);
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .field{display:flex; flex-direction:column; gap:5px; font-size:11px; color:var(--muted)}
+  .field input, .field select, .field textarea{
+    background:var(--bg2); color:var(--text); border:1px solid var(--border);
+    border-radius:9px; padding:8px 10px; font-family:ui-monospace,Consolas,monospace; font-size:12px;
+    outline:none; transition:border-color .18s ease, box-shadow .18s ease;
+  }
+  .field input:focus, .field textarea:focus{
+    border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,211,238,.14);
+  }
+
+  /* Hero & Stats */
+  .hero{
+    background:linear-gradient(135deg, rgba(15,23,36,.92), rgba(21,32,51,.78));
+    border:1px solid var(--border); border-radius:18px; padding:22px 24px;
+    box-shadow:var(--shadow); margin-bottom:18px; position:relative; overflow:hidden;
+  }
+  body.light .hero{background:linear-gradient(135deg, #ffffff, #f0f9ff)}
+  .hero::after{
+    content:""; position:absolute; top:0; left:0; right:0; height:2px;
+    background:linear-gradient(90deg, transparent, var(--cyan), var(--blue), var(--purple), transparent);
+    background-size:200% 100%; animation:shimmer 5s linear infinite;
+  }
+  .hero-top{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap}
+  .hero h2{margin:0 0 6px; font-size:22px; letter-spacing:.3px}
+  .hero p{margin:0; color:var(--muted); font-size:13px; max-width:740px; line-height:1.55}
+  .stats-grid{
+    display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));
+    gap:10px; margin-top:16px;
+  }
+  .stat{
+    background:var(--panel2); border:1px solid var(--border); border-radius:12px;
+    padding:11px 14px; transition:transform .2s ease, border-color .2s ease;
+  }
+  .stat:hover{transform:translateY(-2px); border-color:var(--border-glow)}
+  .stat .num{font-size:22px; font-weight:800; font-family:ui-monospace,Consolas,monospace}
+  .stat .lbl{font-size:11px; color:var(--muted); margin-top:2px; text-transform:uppercase; letter-spacing:.8px}
+
+  /* Filter toolbar */
+  .toolbar{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px;
+    background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px 14px;
+    backdrop-filter:blur(10px);
+  }
+  .search-wrap{flex:1; min-width:220px; position:relative}
+  .search-wrap input{
+    width:100%; background:var(--bg2); color:var(--text); border:1px solid var(--border);
+    border-radius:10px; padding:9px 12px 9px 34px; font-size:13px; outline:none;
+    transition:border-color .2s ease, box-shadow .2s ease;
+  }
+  .search-wrap input:focus{border-color:var(--cyan); box-shadow:0 0 0 3px rgba(34,211,238,.14)}
+  .search-ico{position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--muted); font-size:13px}
+  .mfilter{display:flex; gap:6px; flex-wrap:wrap}
+  .mchip{
+    padding:6px 11px; border-radius:9px; border:1px solid var(--border);
+    background:var(--panel2); color:var(--muted); font-size:11px; font-weight:800;
+    cursor:pointer; letter-spacing:.6px; transition:all .16s ease;
+  }
+  .mchip:hover{color:var(--text); border-color:var(--cyan)}
+  .mchip.active{background:rgba(34,211,238,.16); color:var(--cyan); border-color:var(--cyan)}
+
+  /* Endpoint cards */
+  .ep-list{display:flex; flex-direction:column; gap:10px}
+  .ep-card{
+    background:var(--panel); border:1px solid var(--border); border-radius:14px;
+    overflow:hidden; box-shadow:0 6px 20px rgba(0,0,0,.22);
+    transition:border-color .2s ease, transform .2s ease, box-shadow .2s ease;
+    animation:cardEnter .28s cubic-bezier(.22,1,.36,1) both;
+  }
+  .ep-card:hover{border-color:var(--border-glow); box-shadow:0 10px 28px rgba(0,0,0,.32)}
+  .ep-card.open{border-color:var(--cyan)}
+  .ep-head{
+    display:flex; align-items:center; gap:12px; padding:13px 16px; cursor:pointer;
+    user-select:none; flex-wrap:wrap;
+  }
+  .m-badge{
+    min-width:68px; text-align:center; padding:5px 10px; border-radius:8px;
+    font-size:11px; font-weight:900; letter-spacing:.8px; font-family:ui-monospace,Consolas,monospace;
+  }
+  .m-GET{background:rgba(34,211,238,.14); color:var(--cyan); border:1px solid rgba(34,211,238,.4)}
+  .m-POST{background:rgba(52,211,153,.14); color:var(--green); border:1px solid rgba(52,211,153,.4)}
+  .m-PUT,.m-PATCH{background:rgba(251,191,36,.14); color:var(--yellow); border:1px solid rgba(251,191,36,.4)}
+  .m-DELETE{background:rgba(244,63,94,.14); color:var(--red); border:1px solid rgba(244,63,94,.4)}
+
+  .ep-path{
+    font-family:ui-monospace,Consolas,monospace; font-size:13.5px; font-weight:700;
+    color:var(--text); word-break:break-all;
+  }
+  .ep-path .pp{color:var(--yellow); background:rgba(251,191,36,.12); padding:1px 5px; border-radius:5px}
+  .ep-sum{color:var(--muted); font-size:12.5px; margin-left:auto; max-width:440px; text-align:right}
+  @media(max-width:780px){ .ep-sum{margin-left:0; text-align:left; width:100%} }
+  .chev{
+    width:22px; height:22px; display:grid; place-items:center; border-radius:6px;
+    background:var(--panel2); color:var(--muted); font-size:11px;
+    transition:transform .24s cubic-bezier(.22,1,.36,1), color .2s ease;
+  }
+  .ep-card.open .chev{transform:rotate(180deg); color:var(--cyan)}
+
+  /* Smooth accordion body */
+  .ep-body-wrap{
+    display:grid; grid-template-rows:0fr;
+    transition:grid-template-rows .26s cubic-bezier(.22,1,.36,1);
+  }
+  .ep-card.open .ep-body-wrap{grid-template-rows:1fr}
+  .ep-body-inner{overflow:hidden}
+  .ep-body{
+    border-top:1px solid var(--border); padding:16px 18px 18px;
+    background:rgba(6,9,15,.42);
+  }
+  body.light .ep-body{background:rgba(248,250,252,.8)}
+  .ep-desc{font-size:12.5px; color:var(--muted); margin:0 0 14px; line-height:1.6}
+
+  .try-grid{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  @media(max-width:860px){ .try-grid{grid-template-columns:1fr} }
+  .box{
+    background:var(--panel2); border:1px solid var(--border); border-radius:12px; padding:13px;
+  }
+  .box h4{
+    margin:0 0 10px; font-size:11px; text-transform:uppercase; letter-spacing:1px;
+    color:var(--cyan); display:flex; align-items:center; justify-content:space-between;
+  }
+  .param-row{display:grid; grid-template-columns:135px 1fr; gap:8px; align-items:center; margin-bottom:8px}
+  .param-lbl{font-family:ui-monospace,Consolas,monospace; font-size:12px; color:var(--text)}
+  .param-req{color:var(--red); font-weight:800; margin-left:3px}
+  .param-in{
+    background:var(--bg2); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:7px 9px; font-family:ui-monospace,Consolas,monospace; font-size:12px; width:100%;
+  }
+
+  .snip-tabs{display:flex; gap:6px; margin-bottom:8px}
+  .snip-tab{
+    padding:4px 10px; font-size:11px; font-weight:700; border-radius:7px;
+    background:var(--bg2); border:1px solid var(--border); color:var(--muted); cursor:pointer;
+  }
+  .snip-tab.active{color:var(--cyan); border-color:var(--cyan); background:rgba(34,211,238,.12)}
+  pre.code{
+    margin:0; background:#05080d; color:#d8e6f8; border:1px solid var(--border);
+    border-radius:10px; padding:11px 12px; font-size:11.5px; overflow:auto; max-height:240px;
+    font-family:ui-monospace,Consolas,monospace; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  }
+  body.light pre.code{background:#0f172a; color:#e2e8f0}
+
+  .exec-bar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px}
+  .resp-box{margin-top:12px; display:none; animation:cardEnter .22s ease}
+  .resp-box.show{display:block}
+  .resp-meta{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; font-size:12px}
+  .st-ok{color:var(--green); background:rgba(52,211,153,.14); border:1px solid rgba(52,211,153,.4); padding:3px 9px; border-radius:999px; font-weight:800}
+  .st-err{color:var(--red); background:rgba(244,63,94,.14); border:1px solid rgba(244,63,94,.4); padding:3px 9px; border-radius:999px; font-weight:800}
+
+  /* JSON syntax colors */
+  .jk{color:#7dd3fc} .js{color:#86efac} .jn{color:#fbbf24} .jb{color:#c084fc} .jl{color:#94a3b8}
+
+  @media (prefers-reduced-motion: reduce){
+    *, *::before, *::after{animation:none !important; transition:none !important}
+  }
+</style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="bg-aurora"></div>
+
+<header>
+  <a class="brand" href="/">
+    <img src="/static/logo.png" alt="DARK">
+    <div>
+      <h1>D<span>A</span>RK <span style="font-size:13px;font-weight:600;letter-spacing:1.2px">API STUDIO</span></h1>
+      <div class="sub">OPENAPI 3.1 INTERACTIVE DEVELOPER PORTAL &amp; LIVE CONSOLE</div>
+    </div>
+  </a>
+  <span class="live-pill"><span class="live-dot"></span> <span id="api-ver">v3.0.0</span> · LIVE</span>
+  <div class="hdr-actions">
+    <a class="btn" href="/">← Dashboard</a>
+    <a class="btn" href="/openapi.json" target="_blank">{ } OpenAPI JSON</a>
+    <button class="btn" onclick="toggleTheme()">🌓 Theme</button>
+    <button class="btn btn-primary" onclick="expandFirst()">⚡ Quick Try</button>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <div class="side-title">API Domains</div>
+    <div id="tag-nav"></div>
+
+    <div class="auth-box">
+      <div class="side-title" style="margin:0">Request Context</div>
+      <label class="field">X-Tenant-ID
+        <input id="ctx-tenant" value="default" placeholder="default">
+      </label>
+      <label class="field">X-API-Key (optional)
+        <input id="ctx-apikey" type="password" placeholder="dark_...">
+      </label>
+      <label class="field">Bearer / X-Dark-Token (optional)
+        <input id="ctx-token" type="password" placeholder="session token">
+      </label>
+    </div>
+  </aside>
+
+  <main>
+    <div class="hero">
+      <div class="hero-top">
+        <div>
+          <h2 id="api-title">DARK Unified Security &amp; Enterprise API</h2>
+          <p id="api-desc">Loading live OpenAPI specification…</p>
+        </div>
+      </div>
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat"><div class="num" id="st-total">—</div><div class="lbl">Endpoints</div></div>
+        <div class="stat"><div class="num" style="color:var(--cyan)" id="st-get">—</div><div class="lbl">GET</div></div>
+        <div class="stat"><div class="num" style="color:var(--green)" id="st-post">—</div><div class="lbl">POST</div></div>
+        <div class="stat"><div class="num" style="color:var(--yellow)" id="st-put">—</div><div class="lbl">PUT / PATCH</div></div>
+        <div class="stat"><div class="num" style="color:var(--red)" id="st-del">—</div><div class="lbl">DELETE</div></div>
+        <div class="stat"><div class="num" style="color:var(--purple)" id="st-sch">—</div><div class="lbl">Schemas</div></div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search-wrap">
+        <span class="search-ico">🔎</span>
+        <input id="q" placeholder="Search path, summary, parameter… (e.g. /stop, report, asset, sarif)" oninput="renderEndpoints()">
+      </div>
+      <div class="mfilter">
+        <button class="mchip active" onclick="setMethod('ALL', this)">ALL</button>
+        <button class="mchip" onclick="setMethod('GET', this)">GET</button>
+        <button class="mchip" onclick="setMethod('POST', this)">POST</button>
+        <button class="mchip" onclick="setMethod('PUT', this)">PUT</button>
+        <button class="mchip" onclick="setMethod('DELETE', this)">DELETE</button>
+      </div>
+    </div>
+
+    <div class="ep-list" id="ep-list">Loading endpoints…</div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let SPEC = null;
+let ALL_EPS = [];
+let ACTIVE_TAG = 'ALL';
+let ACTIVE_METHOD = 'ALL';
+
+function toggleTheme(){
+  document.body.classList.toggle('light');
+  try{ localStorage.setItem('dark_theme', document.body.classList.contains('light') ? 'light' : 'dark'); }catch(e){}
+}
+try{ if(localStorage.getItem('dark_theme') === 'light') document.body.classList.add('light'); }catch(e){}
+
+function esc(s){ return String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function getCookie(n){ const m = document.cookie.match(new RegExp('(?:^|; )'+n+'=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; }
+
+function classifyGroup(path, op){
+  if (op.tags && op.tags.length) return op.tags[0];
+  if (path.includes('/jobs')) return 'Jobs & Scans';
+  if (path.includes('/report') || path.includes('/export') || path.includes('/analytics')) return 'Reports & Analytics';
+  if (path.includes('/assets') || path.includes('/intel')) return 'Assets & Risk Intel';
+  if (path.includes('/threat') || path.includes('/verification')) return 'Threat Intel & Verify';
+  if (path.includes('/remediation') || path.includes('/compliance')) return 'Remediation & Compliance';
+  if (path.includes('/benchmarks') || path.includes('/metrics')) return 'Posture & QA Lab';
+  if (path.includes('/auth') || path.includes('/admin') || path.includes('/plugins')) return 'Auth, RBAC & Admin';
+  return 'Platform & Utilities';
+}
+
+function resolveRef(ref){
+  if (!ref || !SPEC) return null;
+  const parts = ref.replace(/^#\//, '').split('/');
+  let cur = SPEC;
+  for (const p of parts) cur = cur && cur[p];
+  return cur || null;
+}
+
+function sampleFromSchema(sch, depth = 0){
+  if (!sch || depth > 4) return {};
+  if (sch.$ref) return sampleFromSchema(resolveRef(sch.$ref), depth + 1);
+  if (sch.example !== undefined) return sch.example;
+  if (sch.default !== undefined) return sch.default;
+  if (sch.anyOf && sch.anyOf.length) return sampleFromSchema(sch.anyOf[0], depth + 1);
+  if (sch.type === 'object' || sch.properties){
+    const out = {};
+    for (const [k, v] of Object.entries(sch.properties || {})){
+      out[k] = sampleFromSchema(v, depth + 1);
+    }
+    return out;
+  }
+  if (sch.type === 'array') return [sampleFromSchema(sch.items || {type:'string'}, depth + 1)];
+  if (sch.type === 'integer' || sch.type === 'number') return 1;
+  if (sch.type === 'boolean') return true;
+  if (sch.enum && sch.enum.length) return sch.enum[0];
+  return 'string';
+}
+
+function animateCount(el, target){
+  let cur = 0;
+  const step = Math.max(1, Math.ceil(target / 18));
+  const t = setInterval(() => {
+    cur = Math.min(target, cur + step);
+    el.textContent = cur;
+    if (cur >= target) clearInterval(t);
+  }, 24);
+}
+
+function highlightJson(obj){
+  const raw = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  return esc(raw).replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    m => {
+      let cls = 'jn';
+      if (/^"/.test(m)) cls = /:$/.test(m) ? 'jk' : 'js';
+      else if (/true|false/.test(m)) cls = 'jb';
+      else if (/null/.test(m)) cls = 'jl';
+      return '<span class="' + cls + '">' + m + '</span>';
+    }
+  );
+}
+
+function setMethod(m, btn){
+  ACTIVE_METHOD = m;
+  document.querySelectorAll('.mchip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderEndpoints();
+}
+
+function setTag(tag){
+  ACTIVE_TAG = tag;
+  document.querySelectorAll('.tag-btn').forEach(b => b.classList.toggle('active', b.dataset.tag === tag));
+  renderEndpoints();
+}
+
+function buildUrl(ep, idx){
+  let p = ep.path;
+  const qp = [];
+  for (const prm of ep.params){
+    const el = $('prm-' + idx + '-' + prm.name);
+    const val = el ? el.value.trim() : '';
+    if (prm.in === 'path'){
+      p = p.replace('{' + prm.name + '}', encodeURIComponent(val || prm.name));
+    } else if (prm.in === 'query' && val !== ''){
+      qp.push(encodeURIComponent(prm.name) + '=' + encodeURIComponent(val));
+    }
+  }
+  return p + (qp.length ? '?' + qp.join('&') : '');
+}
+
+function snippet(ep, idx, lang){
+  const url = location.origin + buildUrl(ep, idx);
+  const bodyEl = $('body-' + idx);
+  const bodyStr = bodyEl ? bodyEl.value.trim() : '';
+  const tenant = ($('ctx-tenant').value || 'default').trim();
+  if (lang === 'curl'){
+    let cmd = `curl -X ${ep.method} "${url}" \\\n  -H "X-Tenant-ID: ${tenant}"`;
+    if ($('ctx-apikey').value.trim()) cmd += ` \\\n  -H "X-API-Key: ${$('ctx-apikey').value.trim()}"`;
+    if (bodyStr && ep.method !== 'GET'){
+      cmd += ` \\\n  -H "Content-Type: application/json" \\\n  -d '${bodyStr.replace(/'/g, "'\\''")}'`;
+    }
+    return cmd;
+  }
+  if (lang === 'python'){
+    return `import requests\n\nr = requests.request(\n    "${ep.method}", "${url}",\n    headers={"X-Tenant-ID": "${tenant}"}${bodyStr && ep.method !== 'GET' ? `,\n    json=${bodyStr}` : ''}\n)\nprint(r.status_code, r.json())`;
+  }
+  return `const res = await fetch("${buildUrl(ep, idx)}", {\n  method: "${ep.method}",\n  headers: {"X-Tenant-ID": "${tenant}"${bodyStr && ep.method !== 'GET' ? ', "Content-Type": "application/json"' : ''}}${bodyStr && ep.method !== 'GET' ? `,\n  body: ${JSON.stringify(bodyStr)}` : ''}\n});\nconsole.log(await res.json());`;
+}
+
+function showSnip(idx, lang, btn){
+  const ep = ALL_EPS[idx];
+  const wrap = $('snip-wrap-' + idx);
+  wrap.querySelectorAll('.snip-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  $('snip-' + idx).dataset.lang = lang;
+  $('snip-' + idx).textContent = snippet(ep, idx, lang);
+}
+
+function refreshSnip(idx){
+  const pre = $('snip-' + idx);
+  if (!pre) return;
+  pre.textContent = snippet(ALL_EPS[idx], idx, pre.dataset.lang || 'curl');
+}
+
+function copyText(txt, btn){
+  navigator.clipboard.writeText(txt).then(() => {
+    const old = btn.textContent;
+    btn.textContent = '✓ Copied';
+    setTimeout(() => btn.textContent = old, 1200);
+  }).catch(() => {});
+}
+
+async function execEp(idx){
+  const ep = ALL_EPS[idx];
+  const url = buildUrl(ep, idx);
+  const hdrs = {};
+  const tenant = ($('ctx-tenant').value || '').trim();
+  if (tenant) hdrs['X-Tenant-ID'] = tenant;
+  const ak = ($('ctx-apikey').value || '').trim();
+  if (ak) hdrs['X-API-Key'] = ak;
+  const tok = ($('ctx-token').value || '').trim();
+  if (tok) hdrs['X-Dark-Token'] = tok;
+  const csrf = getCookie('dark_csrf') || (()=>{ try{return sessionStorage.getItem('dark_csrf_tok')||''}catch(e){return ''} })();
+  if (csrf) hdrs['X-CSRF-Token'] = csrf;
+
+  const opts = {method: ep.method, headers: hdrs};
+  const bodyEl = $('body-' + idx);
+  if (bodyEl && ep.method !== 'GET' && ep.method !== 'DELETE'){
+    const raw = bodyEl.value.trim();
+    if (raw){
+      hdrs['Content-Type'] = 'application/json';
+      opts.body = raw;
+    }
+  }
+  const rbox = $('resp-' + idx);
+  const rmeta = $('rmeta-' + idx);
+  const rpre = $('rpre-' + idx);
+  rbox.classList.add('show');
+  rmeta.innerHTML = '<span style="color:var(--cyan)">⏳ Executing ' + esc(ep.method) + ' ' + esc(url) + '…</span>';
+  rpre.textContent = '';
+
+  const t0 = performance.now();
+  try{
+    const r = await fetch(url, opts);
+    const ms = Math.round(performance.now() - t0);
+    const ct = r.headers.get('content-type') || '';
+    const text = await r.text();
+    rmeta.innerHTML =
+      `<span class="${r.ok ? 'st-ok' : 'st-err'}">${r.status} ${esc(r.statusText || '')}</span>` +
+      `<span style="color:var(--muted)">⏱ ${ms} ms</span>` +
+      `<span style="color:var(--muted)">${esc(ct.split(';')[0])}</span>` +
+      `<button class="btn" style="padding:3px 9px;font-size:11px;margin-left:auto" onclick="copyText($('rpre-${idx}').textContent, this)">Copy Response</button>`;
+    if (ct.includes('json')){
+      try{ rpre.innerHTML = highlightJson(JSON.parse(text)); return; }catch(e){}
+    }
+    rpre.textContent = text.slice(0, 12000);
+  }catch(e){
+    rmeta.innerHTML = '<span class="st-err">NETWORK ERROR</span>';
+    rpre.textContent = e.message;
+  }
+}
+
+function toggleCard(idx){
+  const card = $('ep-' + idx);
+  if (!card) return;
+  card.classList.toggle('open');
+  if (card.classList.contains('open')) refreshSnip(idx);
+}
+
+function expandFirst(){
+  const first = document.querySelector('.ep-card');
+  if (first && !first.classList.contains('open')) first.querySelector('.ep-head').click();
+}
+
+function renderEndpoints(){
+  const q = ($('q').value || '').trim().toLowerCase();
+  const list = ALL_EPS.filter(ep => {
+    if (ACTIVE_TAG !== 'ALL' && ep.group !== ACTIVE_TAG) return false;
+    if (ACTIVE_METHOD !== 'ALL'){
+      if (ACTIVE_METHOD === 'PUT' && ep.method !== 'PUT' && ep.method !== 'PATCH') return false;
+      else if (ACTIVE_METHOD !== 'PUT' && ep.method !== ACTIVE_METHOD) return false;
+    }
+    if (!q) return true;
+    return ep.path.toLowerCase().includes(q) ||
+           (ep.summary || '').toLowerCase().includes(q) ||
+           (ep.description || '').toLowerCase().includes(q) ||
+           ep.group.toLowerCase().includes(q);
+  });
+
+  if (!list.length){
+    $('ep-list').innerHTML = '<div class="box" style="text-align:center;color:var(--muted)">No matching endpoints found.</div>';
+    return;
+  }
+
+  let html = '';
+  list.forEach((ep, i) => {
+    const idx = ep._idx;
+    const pathFmt = esc(ep.path).replace(/\{([^}]+)\}/g, '<span class="pp">{$1}</span>');
+    let paramsHtml = '';
+    if (ep.params.length){
+      for (const prm of ep.params){
+        const def = prm.schema && prm.schema.default !== undefined ? prm.schema.default : '';
+        paramsHtml += `<div class="param-row">
+          <div class="param-lbl">${esc(prm.name)}${prm.required ? '<span class="param-req">*</span>' : ''}<div style="font-size:10px;color:var(--muted)">${esc(prm.in)}</div></div>
+          <input class="param-in" id="prm-${idx}-${esc(prm.name)}" value="${esc(def)}" placeholder="${esc((prm.schema && prm.schema.type) || 'string')}" oninput="refreshSnip(${idx})">
+        </div>`;
+      }
+    } else {
+      paramsHtml = '<div style="font-size:12px;color:var(--muted)">No path or query parameters.</div>';
+    }
+
+    let bodyHtml = '';
+    if (ep.bodySample !== null){
+      bodyHtml = `<div style="margin-top:10px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:5px">JSON Request Body</div>
+        <textarea class="param-in" id="body-${idx}" rows="6" oninput="refreshSnip(${idx})">${esc(JSON.stringify(ep.bodySample, null, 2))}</textarea>
+      </div>`;
+    }
+
+    html += `<div class="ep-card" id="ep-${idx}" style="animation-delay:${Math.min(i * 18, 240)}ms">
+      <div class="ep-head" onclick="toggleCard(${idx})">
+        <span class="m-badge m-${ep.method}">${ep.method}</span>
+        <span class="ep-path">${pathFmt}</span>
+        <span class="ep-sum">${esc(ep.summary || ep.group)}</span>
+        <span class="chev">▾</span>
+      </div>
+      <div class="ep-body-wrap"><div class="ep-body-inner"><div class="ep-body">
+        ${ep.description ? `<p class="ep-desc">${esc(ep.description)}</p>` : ''}
+        <div class="try-grid">
+          <div class="box">
+            <h4>Parameters &amp; Payload <span style="color:var(--muted);font-weight:500">${esc(ep.group)}</span></h4>
+            ${paramsHtml}
+            ${bodyHtml}
+            <div class="exec-bar">
+              <button class="btn btn-primary" onclick="execEp(${idx})">⚡ Execute Request</button>
+            </div>
+          </div>
+          <div class="box" id="snip-wrap-${idx}">
+            <h4>Code Generator <button class="btn" style="padding:3px 9px;font-size:10px" onclick="copyText($('snip-${idx}').textContent, this)">Copy</button></h4>
+            <div class="snip-tabs">
+              <button class="snip-tab active" onclick="showSnip(${idx}, 'curl', this)">cURL</button>
+              <button class="snip-tab" onclick="showSnip(${idx}, 'python', this)">Python</button>
+              <button class="snip-tab" onclick="showSnip(${idx}, 'js', this)">Fetch JS</button>
+            </div>
+            <pre class="code" id="snip-${idx}" data-lang="curl"></pre>
+          </div>
+        </div>
+        <div class="resp-box box" id="resp-${idx}">
+          <div class="resp-meta" id="rmeta-${idx}"></div>
+          <pre class="code" id="rpre-${idx}"></pre>
+        </div>
+      </div></div></div>
+    </div>`;
+  });
+  $('ep-list').innerHTML = html;
+}
+
+async function init(){
+  try{
+    const r = await fetch('/openapi.json');
+    SPEC = await r.json();
+    const info = SPEC.info || {};
+    $('api-title').textContent = info.title || 'DARK API';
+    $('api-ver').textContent = 'v' + (info.version || '3.0.0');
+    $('api-desc').textContent = (info.description || '').split('\n')[0];
+
+    const counts = {GET:0, POST:0, PUT:0, DELETE:0};
+    const groups = {};
+    ALL_EPS = [];
+    let idx = 0;
+
+    for (const [path, methods] of Object.entries(SPEC.paths || {})){
+      for (const [m, op] of Object.entries(methods)){
+        const method = m.toUpperCase();
+        if (!['GET','POST','PUT','PATCH','DELETE'].includes(method)) continue;
+        if (method === 'PATCH' || method === 'PUT') counts.PUT++;
+        else counts[method] = (counts[method] || 0) + 1;
+
+        const group = classifyGroup(path, op);
+        groups[group] = (groups[group] || 0) + 1;
+
+        let bodySample = null;
+        const reqB = op.requestBody && op.requestBody.content && op.requestBody.content['application/json'];
+        if (reqB && reqB.schema) bodySample = sampleFromSchema(reqB.schema);
+
+        ALL_EPS.push({
+          _idx: idx++,
+          path,
+          method,
+          group,
+          summary: op.summary || op.operationId || '',
+          description: op.description || '',
+          params: op.parameters || [],
+          bodySample,
+        });
+      }
+    }
+
+    animateCount($('st-total'), ALL_EPS.length);
+    animateCount($('st-get'), counts.GET);
+    animateCount($('st-post'), counts.POST);
+    animateCount($('st-put'), counts.PUT);
+    animateCount($('st-del'), counts.DELETE);
+    animateCount($('st-sch'), Object.keys((SPEC.components && SPEC.components.schemas) || {}).length);
+
+    let navHtml = `<button class="tag-btn active" data-tag="ALL" onclick="setTag('ALL')"><span>All Endpoints</span><span class="tag-cnt">${ALL_EPS.length}</span></button>`;
+    for (const [g, c] of Object.entries(groups).sort((a,b)=>b[1]-a[1])){
+      navHtml += `<button class="tag-btn" data-tag="${esc(g)}" onclick="setTag('${esc(g)}')"><span>${esc(g)}</span><span class="tag-cnt">${c}</span></button>`;
+    }
+    $('tag-nav').innerHTML = navHtml;
+    renderEndpoints();
+  }catch(e){
+    $('ep-list').innerHTML = '<div class="box" style="color:var(--red)">Failed to load /openapi.json: ' + esc(e.message) + '</div>';
+  }
+}
+init();
+</script>
+</body>
+</html>
