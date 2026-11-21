@@ -29,6 +29,12 @@ DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "dark_enterprise.db"
 VAULT_KEY_FILE = DATA_DIR / ".vault.key"
 
+import sys as _sys
+if str(APP_DIR) not in _sys.path:
+    _sys.path.insert(0, str(APP_DIR))
+import db_migrations as _dbm
+import security_hardening as _sh
+
 _DB_LOCK = threading.RLock()
 PBKDF2_ROUNDS = 120_000
 
@@ -200,6 +206,7 @@ def init_db() -> None:
                 """
             )
             c.commit()
+            _dbm.apply_sqlite_migrations(c)
         finally:
             c.close()
 
@@ -211,8 +218,8 @@ _RATE_BUCKETS: Dict[str, deque] = {}
 _RATE_LOCK = threading.Lock()
 
 
-def set_current_actor(username: str, role: str, ip: str = "") -> Any:
-    return _CURRENT_ACTOR.set({"username": username, "role": role, "ip": ip})
+def set_current_actor(username: str, role: str, ip: str = "", tenant_id: str = "default") -> Any:
+    return _CURRENT_ACTOR.set({"username": username, "role": role, "ip": ip, "tenant_id": tenant_id or "default"})
 
 
 def reset_current_actor(token: Any) -> None:
@@ -224,7 +231,24 @@ def reset_current_actor(token: Any) -> None:
 
 
 def get_current_actor() -> dict:
-    return _CURRENT_ACTOR.get() or {"username": "operator", "role": "admin", "ip": ""}
+    return _CURRENT_ACTOR.get() or {"username": "operator", "role": "admin", "ip": "", "tenant_id": "default"}
+
+
+def get_current_tenant() -> str:
+    return (get_current_actor().get("tenant_id") or "default").strip() or "default"
+
+
+def log_current_audit(action: str, resource: str = "", detail: str = "") -> None:
+    act = get_current_actor()
+    log_audit(
+        act.get("username", "operator"),
+        act.get("role", "admin"),
+        action,
+        resource,
+        detail,
+        act.get("ip", ""),
+        tenant_id=act.get("tenant_id", "default"),
+    )
 
 
 def check_rate_limit(client_ip: str = "global") -> Tuple[bool, int]:
@@ -242,16 +266,21 @@ def check_rate_limit(client_ip: str = "global") -> Tuple[bool, int]:
         return True, limit
 
 
-def create_rbac_session(username: str, role: str, ttl_seconds: int = 7 * 24 * 3600) -> str:
+def get_db_status() -> dict:
+    return _dbm.get_backend_info()
+
+
+def create_rbac_session(username: str, role: str, ttl_seconds: int = 7 * 24 * 3600, tenant_id: str = "default") -> str:
     tok = secrets.token_urlsafe(32)
     exp = time.time() + ttl_seconds
+    tid = (tenant_id or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
             c.execute("DELETE FROM rbac_sessions WHERE expires_at < ?", (time.time(),))
             c.execute(
-                "INSERT INTO rbac_sessions(token, username, role, expires_at) VALUES(?,?,?,?)",
-                (tok, username, role, exp),
+                "INSERT INTO rbac_sessions(token, username, role, tenant_id, expires_at) VALUES(?,?,?,?,?)",
+                (tok, username, role, tid, exp),
             )
             c.commit()
         finally:
@@ -266,7 +295,7 @@ def get_rbac_session(token: Optional[str]) -> Optional[dict]:
         c = _conn()
         try:
             row = c.execute(
-                "SELECT token, username, role, expires_at FROM rbac_sessions WHERE token=?",
+                "SELECT token, username, role, tenant_id, expires_at FROM rbac_sessions WHERE token=?",
                 (token,),
             ).fetchone()
             if not row:
@@ -278,8 +307,20 @@ def get_rbac_session(token: Optional[str]) -> Optional[dict]:
             return {
                 "username": row["username"],
                 "role": row["role"],
+                "tenant_id": row["tenant_id"] or "default",
                 "permissions": ROLES.get(row["role"], []),
             }
+        finally:
+            c.close()
+
+
+def revoke_user_sessions(username: str) -> int:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            cur = c.execute("DELETE FROM rbac_sessions WHERE username=?", (username,))
+            c.commit()
+            return cur.rowcount
         finally:
             c.close()
 
@@ -452,13 +493,14 @@ def check_target_in_scope(target: str) -> Tuple[bool, str]:
 # Tamper-Evident Audit Trail (SHA-256 Hash Chain)
 # ---------------------------------------------------------------------------
 def log_audit(actor: str, role: str, action: str, resource: str,
-              detail: str = "", ip: str = "") -> dict:
+              detail: str = "", ip: str = "", tenant_id: Optional[str] = None) -> dict:
     ctx = _CURRENT_ACTOR.get()
     if ctx and actor in ("operator", "admin", ""):
         actor = ctx.get("username") or actor
         role = ctx.get("role") or role
         if not ip:
             ip = ctx.get("ip") or ""
+    tid = tenant_id or (ctx.get("tenant_id") if ctx else None) or "default"
     ts = time.time()
     with _DB_LOCK:
         c = _conn()
@@ -468,13 +510,13 @@ def log_audit(actor: str, role: str, action: str, resource: str,
             payload = f"{ts:.6f}|{actor}|{role}|{action}|{resource}|{detail}|{ip}|{prev_hash}"
             entry_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             cur = c.execute(
-                "INSERT INTO audit_logs(ts, actor, role, action, resource, detail, ip, prev_hash, entry_hash) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
-                (ts, actor or "system", role or "system", action, resource, detail[:500], ip, prev_hash, entry_hash),
+                "INSERT INTO audit_logs(ts, actor, role, action, resource, detail, ip, prev_hash, entry_hash, tenant_id) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (ts, actor or "system", role or "system", action, resource, detail[:500], ip, prev_hash, entry_hash, tid),
             )
             c.commit()
             return {
-                "id": cur.lastrowid, "ts": ts, "actor": actor, "role": role,
+                "id": cur.lastrowid, "ts": ts, "actor": actor, "role": role, "tenant_id": tid,
                 "action": action, "resource": resource, "detail": detail[:500],
                 "ip": ip, "prev_hash": prev_hash, "entry_hash": entry_hash,
             }
@@ -482,13 +524,19 @@ def log_audit(actor: str, role: str, action: str, resource: str,
             c.close()
 
 
-def list_audit_logs(limit: int = 100) -> List[dict]:
+def list_audit_logs(limit: int = 100, tenant_id: Optional[str] = None) -> List[dict]:
     with _DB_LOCK:
         c = _conn()
         try:
-            rows = c.execute(
-                "SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)
-            ).fetchall()
+            if tenant_id:
+                rows = c.execute(
+                    "SELECT * FROM audit_logs WHERE tenant_id=? ORDER BY id DESC LIMIT ?",
+                    (tenant_id, max(1, min(limit, 1000))),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)
+                ).fetchall()
             return [dict(r) for r in rows]
         finally:
             c.close()
@@ -547,7 +595,7 @@ def verify_totp(secret_b32: str, code: str, window: int = 1) -> bool:
     return False
 
 
-def create_user(username: str, password: str, role: str = "analyst") -> dict:
+def create_user(username: str, password: str, role: str = "analyst", tenant_id: str = "default") -> dict:
     uname = (username or "").strip().lower()
     if len(uname) < 2:
         raise ValueError("Username must be at least 2 characters")
@@ -555,34 +603,45 @@ def create_user(username: str, password: str, role: str = "analyst") -> dict:
         raise ValueError("Password must be at least 6 characters")
     if role not in ROLES:
         raise ValueError(f"Role must be one of {list(ROLES)}")
-    pw_hash, pw_salt = _hash_pw(password)
+    pw_hash, pw_salt = _sh.hash_password(password)
     uid = uuid.uuid4().hex[:10]
     now = time.time()
+    tid = (tenant_id or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
             c.execute(
-                "INSERT INTO users(id, username, role, pw_hash, pw_salt, created_at) VALUES(?,?,?,?,?,?)",
-                (uid, uname, role, pw_hash, pw_salt, now),
+                "INSERT INTO users(id, username, role, pw_hash, pw_salt, tenant_id, created_at) VALUES(?,?,?,?,?,?,?)",
+                (uid, uname, role, pw_hash, pw_salt, tid, now),
             )
             c.commit()
         finally:
             c.close()
-    return {"id": uid, "username": uname, "role": role, "totp_enabled": False, "active": True, "created_at": now}
+    return {"id": uid, "username": uname, "role": role, "tenant_id": tid,
+            "totp_enabled": False, "active": True, "created_at": now}
 
 
-def list_users() -> List[dict]:
+def list_users(tenant_id: Optional[str] = None) -> List[dict]:
     with _DB_LOCK:
         c = _conn()
         try:
-            rows = c.execute(
-                "SELECT id, username, role, totp_enabled, active, created_at FROM users ORDER BY created_at ASC"
-            ).fetchall()
+            if tenant_id:
+                rows = c.execute(
+                    "SELECT id, username, role, tenant_id, totp_enabled, active, failed_attempts, locked_until, created_at "
+                    "FROM users WHERE tenant_id=? ORDER BY created_at ASC",
+                    (tenant_id,),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, username, role, tenant_id, totp_enabled, active, failed_attempts, locked_until, created_at "
+                    "FROM users ORDER BY created_at ASC"
+                ).fetchall()
             out = []
             for r in rows:
                 d = dict(r)
                 d["totp_enabled"] = bool(d["totp_enabled"])
                 d["active"] = bool(d["active"])
+                d["locked"] = bool((d.get("locked_until") or 0) > time.time())
                 d["permissions"] = ROLES.get(d["role"], [])
                 out.append(d)
             return out
@@ -590,26 +649,223 @@ def list_users() -> List[dict]:
             c.close()
 
 
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_SECONDS = 300
+
+
 def authenticate_user(username: str, password: str, totp_code: str = "") -> Tuple[bool, Optional[dict], str]:
     uname = (username or "").strip().lower()
+    now = time.time()
     with _DB_LOCK:
         c = _conn()
         try:
             row = c.execute("SELECT * FROM users WHERE username=?", (uname,)).fetchone()
+            if not row or not row["active"]:
+                return False, None, "Invalid credentials"
+            locked_until = float(row["locked_until"] or 0)
+            if locked_until > now:
+                rem_s = int(locked_until - now)
+                return False, None, f"Account temporarily locked ({rem_s}s remaining)"
+            ok_pw, needs_rehash = _sh.verify_password(password, row["pw_hash"], row["pw_salt"])
+            if not ok_pw:
+                fails = int(row["failed_attempts"] or 0) + 1
+                new_lock = (now + LOCKOUT_SECONDS) if fails >= LOCKOUT_THRESHOLD else 0.0
+                c.execute(
+                    "UPDATE users SET failed_attempts=?, locked_until=? WHERE id=?",
+                    (fails, new_lock, row["id"]),
+                )
+                c.commit()
+                return False, None, ("Account locked after repeated failed attempts" if new_lock else "Invalid credentials")
+            if row["totp_enabled"]:
+                if not verify_totp(row["totp_secret"], totp_code):
+                    return False, None, "2FA TOTP code required or invalid"
+            if needs_rehash:
+                nh, ns = _sh.hash_password(password)
+                c.execute("UPDATE users SET pw_hash=?, pw_salt=? WHERE id=?", (nh, ns, row["id"]))
+            c.execute("UPDATE users SET failed_attempts=0, locked_until=0 WHERE id=?", (row["id"],))
+            c.commit()
+            return True, {
+                "id": row["id"], "username": row["username"], "role": row["role"],
+                "tenant_id": row["tenant_id"] if "tenant_id" in row.keys() else "default",
+                "permissions": ROLES.get(row["role"], []), "totp_enabled": bool(row["totp_enabled"]),
+            }, "OK"
         finally:
             c.close()
-    if not row or not row["active"]:
-        return False, None, "Invalid credentials"
-    cand, _ = _hash_pw(password, row["pw_salt"])
-    if not hmac.compare_digest(cand, row["pw_hash"]):
-        return False, None, "Invalid credentials"
-    if row["totp_enabled"]:
-        if not verify_totp(row["totp_secret"], totp_code):
-            return False, None, "2FA TOTP code required or invalid"
-    return True, {
-        "id": row["id"], "username": row["username"], "role": row["role"],
-        "permissions": ROLES.get(row["role"], []), "totp_enabled": bool(row["totp_enabled"]),
-    }, "OK"
+
+
+# ---------------------------------------------------------------------------
+# Multi-Tenant Organizations & API Key Management & Job Queue Metadata
+# ---------------------------------------------------------------------------
+def list_tenants() -> List[dict]:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            rows = c.execute("SELECT * FROM tenants ORDER BY created_at ASC").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["active"] = bool(d["active"])
+                out.append(d)
+            return out
+        finally:
+            c.close()
+
+
+def create_tenant(name: str, plan: str = "enterprise", quota_jobs_per_day: int = 500) -> dict:
+    nm = (name or "").strip()[:80]
+    if len(nm) < 2:
+        raise ValueError("Organization name required")
+    tid = uuid.uuid4().hex[:10]
+    now = time.time()
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            existing = c.execute("SELECT * FROM tenants WHERE name=?", (nm,)).fetchone()
+            if existing:
+                d = dict(existing)
+                d["active"] = bool(d["active"])
+                return d
+            c.execute(
+                "INSERT INTO tenants(id, name, plan, active, quota_jobs_per_day, created_at) VALUES(?,?,?,1,?,?)",
+                (tid, nm, plan[:40], max(10, int(quota_jobs_per_day)), now),
+            )
+            c.commit()
+        finally:
+            c.close()
+    return {"id": tid, "name": nm, "plan": plan, "active": True, "quota_jobs_per_day": quota_jobs_per_day, "created_at": now}
+
+
+def create_api_key(name: str, role: str = "analyst", tenant_id: Optional[str] = None, expires_days: int = 90) -> dict:
+    if role not in ROLES:
+        raise ValueError("Invalid role")
+    tid = (tenant_id or get_current_tenant() or "default").strip() or "default"
+    raw_key = "dark_" + secrets.token_urlsafe(24)
+    khash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    kid = uuid.uuid4().hex[:10]
+    now = time.time()
+    exp = now + max(1, int(expires_days)) * 86400
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute(
+                "INSERT INTO api_keys(id, tenant_id, name, key_prefix, key_hash, role, active, expires_at, created_at) "
+                "VALUES(?,?,?,?,?,?,1,?,?)",
+                (kid, tid, (name or "api-key")[:80], raw_key[:10], khash, role, exp, now),
+            )
+            c.commit()
+        finally:
+            c.close()
+    return {"id": kid, "tenant_id": tid, "name": name, "key_prefix": raw_key[:10],
+            "raw_key": raw_key, "api_key": raw_key, "role": role, "expires_at": exp}
+
+
+def list_api_keys(tenant_id: Optional[str] = None) -> List[dict]:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            if tenant_id:
+                rows = c.execute(
+                    "SELECT id, tenant_id, name, key_prefix, role, active, expires_at, last_used, created_at "
+                    "FROM api_keys WHERE tenant_id=? ORDER BY created_at DESC", (tenant_id,)
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT id, tenant_id, name, key_prefix, role, active, expires_at, last_used, created_at "
+                    "FROM api_keys ORDER BY created_at DESC"
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+
+def verify_api_key(raw_key: Optional[str]) -> Optional[dict]:
+    if not raw_key or not (raw_key.startswith("dark_") or raw_key.startswith("dk_")):
+        return None
+    khash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            row = c.execute("SELECT * FROM api_keys WHERE key_hash=?", (khash,)).fetchone()
+            if not row or not row["active"]:
+                return None
+            if row["expires_at"] and row["expires_at"] < now:
+                return None
+            c.execute("UPDATE api_keys SET last_used=? WHERE id=?", (now, row["id"]))
+            c.commit()
+            return {"id": row["id"], "name": row["name"], "tenant_id": row["tenant_id"],
+                    "username": f"apikey:{row['name']}", "role": row["role"]}
+        finally:
+            c.close()
+
+
+authenticate_api_key = verify_api_key
+
+
+def enqueue_job_meta(job_id: str, tenant_id: str = "default", kind: str = "", target: str = "", priority: int = 5) -> None:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute(
+                "INSERT INTO job_queue_meta(job_id, tenant_id, kind, target, status, priority, updated_at) "
+                "VALUES(?,?,?,?,'running',?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET status='running', updated_at=excluded.updated_at",
+                (job_id, tenant_id or "default", kind, target[:200], int(priority), time.time()),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def update_job_meta_status(job_id: str, status: str) -> None:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute("UPDATE job_queue_meta SET status=?, updated_at=? WHERE job_id=?", (status, time.time(), job_id))
+            c.commit()
+        finally:
+            c.close()
+
+
+def revoke_api_key(kid: str) -> bool:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            cur = c.execute("UPDATE api_keys SET active=0 WHERE id=?", (kid,))
+            c.commit()
+            return cur.rowcount > 0
+        finally:
+            c.close()
+
+
+def record_job_meta(job_id: str, tenant_id: str = "default", dedup_key: str = "",
+                    priority: int = 5, retry_count: int = 0, max_retries: int = 1,
+                    worker_id: str = "local-primary") -> None:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            c.execute(
+                "INSERT INTO job_queue_meta(job_id, tenant_id, dedup_key, priority, retry_count, max_retries, worker_id, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(job_id) DO UPDATE SET retry_count=excluded.retry_count, worker_id=excluded.worker_id, updated_at=excluded.updated_at",
+                (job_id, tenant_id or "default", dedup_key, int(priority), int(retry_count), int(max_retries), worker_id, time.time()),
+            )
+            c.commit()
+        finally:
+            c.close()
+
+
+def list_job_meta(tenant_id: Optional[str] = None) -> List[dict]:
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            if tenant_id:
+                rows = c.execute("SELECT * FROM job_queue_meta WHERE tenant_id=? ORDER BY updated_at DESC LIMIT 100", (tenant_id,)).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM job_queue_meta ORDER BY updated_at DESC LIMIT 100").fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
 
 
 def update_user_role(user_id: str, role: str) -> bool:

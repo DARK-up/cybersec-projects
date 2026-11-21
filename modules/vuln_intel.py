@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""DARK Vulnerability Intelligence & Risk Prioritization Engine.
+"""DARK Advanced Vulnerability & Risk Intelligence Engine.
 
 Capabilities:
-  - Local + NVD/CISA KEV/EPSS-syncable CVE & CPE intelligence feed
-  - CVSS v3.1 & v4.0 scoring, EPSS probability, CISA KEV flags
-  - Separate 3-axis Finding scoring:
-      1. severity       (Critical / High / Medium / Low / Info)
-      2. confidence     (0.0 - 1.0 + Confirmed/High/Medium/Tentative)
-      3. exploitability (0.0 - 1.0 + High/Moderate/Low based on safe evidence & KEV/EPSS)
-  - Risk Intelligence Engine: asset criticality + internet exposure + KEV/EPSS + chained flaws
+  - NVD CVE 2.0, CISA KEV, FIRST.org EPSS feed + CPE 2.3 semantic matching
+  - Vuln feed change history (vuln_feed_history)
+  - 5 Independent Axes on every finding:
+      1. severity        (Critical / High / Medium / Low / Info)
+      2. confidence      (0.0 - 1.0 + Confirmed/High/Medium/Tentative)
+      3. exploitability  (0.0 - 1.0 + High/Moderate/Low)
+      4. business_impact (0.0 - 1.0 + Critical/High/Medium/Low)
+      5. exposure        (0.0 - 1.0 + Internet-Facing / Internal)
+  - Configurable & Documented Risk Score (0-100) + Attack Path Correlation
 """
 from __future__ import annotations
 
@@ -19,12 +21,23 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT / "dark") not in sys.path:
     sys.path.insert(0, str(ROOT / "dark"))
 
 import enterprise_db as edb  # noqa: E402
+
+DEFAULT_RISK_WEIGHTS: Dict[str, float] = {
+    "severity_weight": 0.35,
+    "exploitability_weight": 0.25,
+    "exposure_weight": 0.15,
+    "business_impact_weight": 0.15,
+    "confidence_weight": 0.10,
+    "kev_bonus": 15.0,
+    "attack_path_bonus": 10.0,
+}
 
 SEED_CVES: List[dict] = [
     {"cve_id": "CVE-2021-44228", "cpe_prefix": "cpe:2.3:a:apache:log4j", "product": "log4j", "version_lt": "2.17.1",
@@ -88,6 +101,10 @@ def ensure_seed_feed() -> int:
                          item["severity"], item["cvss_v31"], item["cvss_v40"], item["epss"],
                          item["kev"], item["summary"], item["remediation"], now),
                     )
+                    c.execute(
+                        "INSERT INTO vuln_feed_history(cve_id, cvss_v31, epss, kev, recorded_at) VALUES(?,?,?,?,?)",
+                        (item["cve_id"], item["cvss_v31"], item["epss"], item["kev"], now),
+                    )
                 c.commit()
                 return len(SEED_CVES)
             return cnt
@@ -98,13 +115,65 @@ def ensure_seed_feed() -> int:
 ensure_seed_feed()
 
 
+def get_risk_weights() -> dict:
+    saved = edb.get_setting("risk_weights", None)
+def formula_doc() -> str:
+    return (
+        "RiskScore = min(100, 100 * (w_sev * SevNorm + w_expl * Exploitability + "
+        "w_exp * Exposure + w_biz * BusinessImpact + w_conf * Confidence) + kev_bonus + attack_path_bonus)"
+    )
+
+
+def get_risk_weights() -> dict:
+    saved = edb.get_setting("risk_weights", None)
+    base = dict(DEFAULT_RISK_WEIGHTS)
+    if isinstance(saved, dict):
+        for k in base:
+            if k in saved:
+                base[k] = float(saved[k])
+    base["formula_doc"] = formula_doc()
+    return base
+
+
+def set_risk_weights(weights: dict) -> dict:
+    cur = dict(DEFAULT_RISK_WEIGHTS)
+    alias_map = {
+        "severity": "severity_weight",
+        "confidence": "confidence_weight",
+        "exploitability": "exploitability_weight",
+        "business_impact": "business_impact_weight",
+        "exposure": "exposure_weight",
+    }
+    for k in cur:
+        if k in weights:
+            cur[k] = max(0.0, float(weights[k]))
+    for short_k, full_k in alias_map.items():
+        if short_k in weights:
+            cur[full_k] = max(0.0, float(weights[short_k]))
+    edb.set_setting("risk_weights", cur)
+    return get_risk_weights()
+
+
 def _ver_tuple(v: str) -> Tuple[int, ...]:
     nums = [int(x) for x in re.findall(r"\d+", str(v or ""))[:4]]
     return tuple(nums) if nums else (0,)
 
 
-def match_product_cves(product: str, version: str = "") -> List[dict]:
+def parse_cpe23(cpe: str) -> dict:
+    parts = (cpe or "").split(":")
+    return {
+        "vendor": parts[3].lower() if len(parts) > 3 else "",
+        "product": parts[4].lower() if len(parts) > 4 else "",
+        "version": parts[5] if len(parts) > 5 and parts[5] not in ("*", "-") else "",
+    }
+
+
+def match_product_cves(product: str, version: str = "", cpe: str = "") -> List[dict]:
     ensure_seed_feed()
+    if cpe and cpe.startswith("cpe:2.3:"):
+        parsed = parse_cpe23(cpe)
+        product = product or parsed["product"]
+        version = version or parsed["version"]
     prod = (product or "").strip().lower()
     if not prod:
         return []
@@ -149,8 +218,29 @@ def list_vuln_feed(limit: int = 100, kev_only: bool = False) -> List[dict]:
             c.close()
 
 
+def get_vuln_history(cve_id: Optional[str] = None, limit: int = 100) -> List[dict]:
+    with edb._DB_LOCK:
+        c = edb._conn()
+        try:
+            if cve_id:
+                rows = c.execute(
+                    "SELECT * FROM vuln_feed_history WHERE cve_id=? ORDER BY recorded_at DESC LIMIT ?",
+                    (cve_id.upper(), limit),
+                ).fetchall()
+            else:
+                rows = c.execute(
+                    "SELECT * FROM vuln_feed_history ORDER BY recorded_at DESC LIMIT ?", (limit,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            c.close()
+
+
+list_vuln_history = get_vuln_history
+
+
 def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") -> dict:
-    """Sync CISA KEV and optional NVD CVE JSON 2.0 entries into vuln_feed (safe fallback offline)."""
+    """Sync CISA KEV, NVD CVE JSON 2.0, and FIRST.org EPSS while recording history."""
     import requests
     ensure_seed_feed()
     added_or_updated = 0
@@ -180,6 +270,10 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
                                 (cid, f"cpe:2.3:a:*:{prod}", prod, "", "High", 8.5, 8.5, 0.75,
                                  (v.get("shortDescription") or "")[:300],
                                  (v.get("requiredAction") or "")[:300], now),
+                            )
+                            c.execute(
+                                "INSERT INTO vuln_feed_history(cve_id, cvss_v31, epss, kev, recorded_at) VALUES(?,?,?,1,?)",
+                                (cid, 8.5, 0.75, now),
                             )
                             added_or_updated += 1
                         c.commit()
@@ -219,6 +313,10 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
                                 "ON CONFLICT(cve_id) DO UPDATE SET cvss_v31=excluded.cvss_v31, severity=excluded.severity, updated_at=excluded.updated_at",
                                 (cid, "", fetch_nvd_keyword.lower(), "", sev, v31, v31, 0.2, summ, "Apply vendor security advisory patch.", now),
                             )
+                            c.execute(
+                                "INSERT INTO vuln_feed_history(cve_id, cvss_v31, epss, kev, recorded_at) VALUES(?,?,?,0,?)",
+                                (cid, v31, 0.2, now),
+                            )
                             added_or_updated += 1
                         c.commit()
                     finally:
@@ -226,7 +324,6 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
         except Exception as e:
             errors.append(f"NVD sync offline/skipped: {type(e).__name__}")
 
-    # Live FIRST.org EPSS probability sync for known CVEs in feed
     try:
         top_cves = [r["cve_id"] for r in list_vuln_feed(50) if str(r.get("cve_id", "")).startswith("CVE-")]
         if top_cves:
@@ -244,6 +341,8 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
                             epss_val = float(row.get("epss") or 0.0)
                             if cid:
                                 c.execute("UPDATE vuln_feed SET epss=?, updated_at=? WHERE cve_id=?", (round(epss_val, 4), now, cid))
+                                c.execute("INSERT INTO vuln_feed_history(cve_id, cvss_v31, epss, kev, recorded_at) VALUES(?,7.5,?,0,?)",
+                                          (cid, round(epss_val, 4), now))
                                 added_or_updated += 1
                         c.commit()
                     finally:
@@ -255,13 +354,13 @@ def sync_live_feeds(fetch_cisa_kev: bool = True, fetch_nvd_keyword: str = "") ->
 
 
 # ---------------------------------------------------------------------------
-# 3-Axis Scoring (Severity, Confidence, Exploitability) & Risk Intelligence
+# 5-Axis Scoring & Configurable Risk Score + Attack Path Correlation
 # ---------------------------------------------------------------------------
 _SEV_BASE = {"Critical": 9.5, "High": 7.5, "Medium": 5.0, "Low": 2.5, "Info": 0.5}
 
 
 def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criticality: str = "medium") -> dict:
-    """Attach separate Severity, Confidence, Exploitability, CVE/KEV/EPSS, and composite Risk Score."""
+    """Attach 5 independent axes (Severity, Confidence, Exploitability, Business Impact, Exposure) + Risk Score."""
     f = dict(finding)
     sev = str(f.get("severity") or "Info").title()
     if sev not in _SEV_BASE:
@@ -271,7 +370,7 @@ def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criti
     vt = str(f.get("vuln_type") or "").lower()
     param = str(f.get("parameter") or "")
 
-    # 1. Confidence (how certain we are that the flaw really exists)
+    # 1. Confidence
     conf = 0.72
     if "confirmed" in ev.lower() or "matched" in ev.lower() or "verified" in ev.lower():
         conf = 0.95
@@ -279,11 +378,11 @@ def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criti
         conf = 0.88
     elif "header" in vt or "banner" in vt or "cookie" in vt or "tls" in vt:
         conf = 0.92
-    elif "heuristic" in vt or "potential" in vt or "possible" in vt:
-        conf = 0.55
+    elif "heuristic" in vt or "potential" in vt or "possible" in vt or "unverified" in vt:
+        conf = 0.50
     conf_label = "Confirmed" if conf >= 0.9 else ("High" if conf >= 0.75 else "Medium")
 
-    # 2. Exploitability (safe defensive assessment of likelihood/reachability)
+    # 2. Exploitability (safe assessment using KEV/EPSS + reachability)
     cve_match = None
     for cid in re.findall(r"CVE-\d{4}-\d{4,7}", json.dumps(f)):
         with edb._DB_LOCK:
@@ -315,45 +414,94 @@ def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criti
     expl = round(min(0.99, max(0.05, expl)), 2)
     expl_label = "High" if expl >= 0.7 else ("Moderate" if expl >= 0.4 else "Low")
 
-    # 3. Composite Risk Prioritization Score (0 - 100)
-    crit_mult = {"critical": 1.2, "high": 1.1, "medium": 1.0, "low": 0.8}.get(asset_criticality, 1.0)
-    exp_mult = 1.15 if internet_exposed else 0.85
-    kev_bonus = 15.0 if f.get("kev") else 0.0
-    raw_risk = (_SEV_BASE[sev] * 6.5 * crit_mult * exp_mult) + (expl * 18.0) + kev_bonus
-    risk_score = round(min(100.0, max(1.0, raw_risk)), 1)
+    # 3. Business Impact (0.0 - 1.0)
+    biz_base = {"critical": 0.95, "high": 0.80, "medium": 0.55, "low": 0.30}.get(asset_criticality, 0.55)
+    if any(k in vt for k in ("sqli", "rce", "command", "ssti", "iam", "credential", "secret", ".env")):
+        biz_base = min(1.0, biz_base + 0.15)
+    biz_impact = round(biz_base, 2)
+    biz_label = "Critical" if biz_impact >= 0.85 else ("High" if biz_impact >= 0.65 else ("Medium" if biz_impact >= 0.4 else "Low"))
+
+    # 4. Exposure (0.0 - 1.0)
+    exposure = 0.90 if internet_exposed else 0.35
+    if any(k in vt for k in ("sast", "dockerfile", "local")):
+        exposure = 0.40
+    exp_label = "Internet-Facing" if exposure >= 0.7 else "Internal / Pre-Prod"
+
+    # 5. Composite Configurable Risk Score (0 - 100)
+    w = get_risk_weights()
+    sev_norm = _SEV_BASE[sev] / 10.0
+    weighted = 100.0 * (
+        w["severity_weight"] * sev_norm
+        + w["exploitability_weight"] * expl
+        + w["exposure_weight"] * exposure
+        + w["business_impact_weight"] * biz_impact
+        + w["confidence_weight"] * conf
+    )
+    if f.get("kev"):
+        weighted += w["kev_bonus"]
+    risk_score = round(min(100.0, max(1.0, weighted)), 1)
 
     f["severity"] = sev
     f["confidence"] = round(conf, 2)
     f["confidence_label"] = conf_label
     f["exploitability"] = expl
     f["exploitability_label"] = expl_label
+    f["business_impact"] = biz_impact
+    f["business_impact_label"] = biz_label
+    f["exposure"] = round(exposure, 2)
+    f["exposure_label"] = exp_label
+    f["axes"] = {
+        "severity": round(sev_norm, 2),
+        "confidence": round(conf, 2),
+        "exploitability": round(expl, 2),
+        "business_impact": round(biz_impact, 2),
+        "exposure": round(exposure, 2),
+    }
     f["risk_score"] = risk_score
     return f
 
 
 def prioritize_findings(findings: List[dict], project_id: str = "default") -> dict:
-    """Group and rank findings by Risk Score, KEV status, and chained asset exposure."""
+    """Rank findings by Risk Score + correlate multi-step Attack Paths per asset."""
+    w = get_risk_weights()
     scored: List[dict] = []
-    by_target: Dict[str, List[dict]] = {}
+    by_host: Dict[str, List[dict]] = {}
     for f in findings:
-        sf = score_finding_axes(f)
-        tgt = str(sf.get("url") or "unknown").split("?")[0]
-        by_target.setdefault(tgt, []).append(sf)
+        u = str(f.get("url") or "unknown")
+        host = (urlsplit(u).hostname or u.split("?")[0]).lower()
+        sf = score_finding_axes(f, internet_exposed=host not in ("127.0.0.1", "localhost"))
+        by_host.setdefault(host, []).append(sf)
         scored.append(sf)
 
-    # Chained-weakness boost: assets with >=3 distinct findings get +8 risk priority
-    for sf in scored:
-        tgt = str(sf.get("url") or "unknown").split("?")[0]
-        if len(by_target.get(tgt, [])) >= 3:
-            sf["chained_exposure"] = True
-            sf["risk_score"] = round(min(100.0, sf["risk_score"] + 8.0), 1)
+    attack_paths: List[dict] = []
+    for host, group in by_host.items():
+        types_blob = " ".join(str(x.get("vuln_type", "")).lower() for x in group)
+        has_entry = any(k in types_blob for k in ("exposed", "cors", "unauth", "openapi", "missing", "port", "sqli", "xss", "lfi"))
+        has_impact = any(k in types_blob for k in ("sqli", "sql injection", "cmdi", "ssti", "secret", ".env", "iam", "credential", "kev", "rce"))
+        if len(group) >= 2 and has_entry and has_impact:
+            for sf in group:
+                sf["chained_exposure"] = True
+                sf["risk_score"] = round(min(100.0, sf["risk_score"] + w["attack_path_bonus"]), 1)
+            top_risk = max(x["risk_score"] for x in group)
+            attack_paths.append({
+                "asset": host,
+                "target": host,
+                "finding_count": len(group),
+                "chained_findings": [x.get("vuln_type") for x in group[:6]],
+                "combined_risk": top_risk,
+                "severity": "Critical" if any(x["severity"] == "Critical" for x in group) else "High",
+                "summary": f"Chained exposure on {host}: {len(group)} correlated weaknesses connect external surface to high-impact data/execution vectors.",
+            })
         else:
-            sf["chained_exposure"] = False
+            for sf in group:
+                sf["chained_exposure"] = False
 
     scored.sort(key=lambda x: (x.get("kev", False), x.get("risk_score", 0)), reverse=True)
     return {
         "total": len(scored),
         "kev_count": sum(1 for s in scored if s.get("kev")),
+        "attack_paths": attack_paths,
         "p0_immediate": [s for s in scored if s["risk_score"] >= 80][:25],
+        "formula": w,
         "findings": scored,
     }

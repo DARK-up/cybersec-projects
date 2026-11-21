@@ -41,6 +41,9 @@ import engine
 import enterprise_db as edb
 import enterprise_routes as eroutes
 import asset_intel as dasset
+import security_hardening as sh
+import verification as dverif
+import reporting_analytics as drpt
 
 APP_DIR = Path(__file__).resolve().parent
 
@@ -216,17 +219,20 @@ def start_job(kind: str, runner, project_id: str = "default",
     logbuf = engine.JobLog()
     stop_ev = threading.Event()
     pid = (project_id or "default").strip() or "default"
+    actor_now = edb.get_current_actor()
+    tid = actor_now.get("tenant_id", "default")
     repro_payload = {k: v for k, v in payload.items() if k != "stop_event"}
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id, "kind": kind, "status": "running",
-            "project_id": pid, "target": target_hint,
+            "project_id": pid, "tenant_id": tid, "target": target_hint,
             "repro_payload": repro_payload,
             "started_at": now, "finished_at": None,
             "deadline": now + JOB_DEADLINES.get(kind, JOB_DEADLINE_DEFAULT),
             "result": None, "error": None, "progress": None,
             "_log": logbuf, "_stop_event": stop_ev,
         }
+    edb.enqueue_job_meta(job_id, tid, kind, target_hint, priority=5)
     _jobs_to_disk()
 
     try:
@@ -288,13 +294,16 @@ def start_job(kind: str, runner, project_id: str = "default",
             try:
                 if isinstance(job_snapshot.get("result"), dict):
                     dasset.ingest_job_assets(job_snapshot)
+                    dverif.auto_ingest_job_verifications(job_snapshot)
             except Exception:
                 pass
+            edb.update_job_meta_status(job_id, job_snapshot.get("status", "done"))
         except Exception as e:  # never crash the server
             with JOBS_LOCK:
                 JOBS[job_id].update(status="error",
                                     error=f"{type(e).__name__}: {e}",
                                     finished_at=time.time())
+            edb.update_job_meta_status(job_id, "error")
         finally:
             with JOBS_LOCK:
                 JOBS[job_id]["progress"] = None
@@ -437,10 +446,16 @@ def _required_permission(method: str, path: str) -> Optional[str]:
         return "scan:run"
     if path.startswith("/api/remediation") and m in ("POST", "PATCH", "PUT", "DELETE"):
         return "remediation:write"
+    if path.startswith("/api/verification") and m in ("POST", "PATCH", "PUT", "DELETE"):
+        return "remediation:write"
     if path.startswith("/api/plugins") and m in ("POST", "DELETE"):
         return "plugin:manage"
-    if path == "/api/intel/sync" and m == "POST":
+    if path in ("/api/intel/sync", "/api/intel/risk/weights") and m == "POST":
         return "intel:sync"
+    if path.startswith("/api/integrations") and m in ("POST", "DELETE"):
+        return "admin:manage"
+    if path.startswith("/api/benchmarks/run") and m == "POST":
+        return "scan:run"
     if path in ("/api/admin/backup", "/api/admin/restore"):
         return "backup:manage"
     if path.startswith("/api/admin/") and path != "/api/admin/users/login":
@@ -451,43 +466,65 @@ def _required_permission(method: str, path: str) -> Optional[str]:
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     path = request.url.path
-    if not path.startswith("/api/") or path.startswith("/api/auth/") or path == "/api/health" or path == "/api/admin/users/login":
-        return await call_next(request)
+
+    async def _finish(resp):
+        for hk, hv in sh.SECURITY_HEADERS.items():
+            resp.headers.setdefault(hk, hv)
+        if path.startswith("/api/"):
+            resp.headers.setdefault("Cache-Control", "no-store")
+        return resp
+
+    if not path.startswith("/api/") or path.startswith("/api/auth/") or path in ("/api/health", "/api/admin/users/login"):
+        return await _finish(await call_next(request))
 
     ip = request.client.host if request.client else "global"
     ok_rl, rlim = edb.check_rate_limit(ip)
     if not ok_rl:
-        return JSONResponse(status_code=429, content={"error": f"Rate limit exceeded (max ~{rlim // 2} req/s)"})
+        return await _finish(JSONResponse(status_code=429, content={"error": f"Rate limit exceeded (max ~{rlim // 2} req/s)"}))
 
+    api_key_hdr = request.headers.get("X-API-Key") or ""
     tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
     if not tok:
         auth_h = request.headers.get("Authorization") or ""
         if auth_h.lower().startswith("bearer "):
-            tok = auth_h.split(" ", 1)[1].strip()
+            cand = auth_h.split(" ", 1)[1].strip()
+            if cand.startswith("dark_") and not api_key_hdr:
+                api_key_hdr = cand
+            else:
+                tok = cand
 
-    rbac_sess = edb.get_rbac_session(tok)
-    legacy_user = dplat.session_user(tok)
+    api_key_rec = edb.authenticate_api_key(api_key_hdr) if api_key_hdr else None
+    rbac_sess = edb.get_rbac_session(tok) if tok else None
+    legacy_user = dplat.session_user(tok) if tok else None
     rbac_enforced = bool(edb.get_setting("rbac_enforced", False))
     lock_enforced = bool(dplat.auth_status().get("enabled"))
 
-    if (lock_enforced or rbac_enforced) and not (rbac_sess or legacy_user):
-        return JSONResponse(status_code=401, content={"error": "authentication required — login via workspace lock or RBAC"})
+    if (lock_enforced or rbac_enforced) and not (rbac_sess or legacy_user or api_key_rec):
+        return await _finish(JSONResponse(status_code=401, content={"error": "authentication required — login via workspace lock, RBAC, or API Key"}))
 
     actor_name = "operator"
     actor_role = "admin"
+    actor_tenant = request.headers.get("X-Tenant-ID") or "default"
     if rbac_sess:
         actor_name = rbac_sess["username"]
         actor_role = rbac_sess["role"]
-        req_perm = _required_permission(request.method, path)
-        if req_perm and not edb.has_permission(actor_role, req_perm):
-            edb.log_audit(actor_name, actor_role, "rbac:denied", path, f"Missing permission {req_perm}", ip)
-            return JSONResponse(status_code=403, content={"error": f"RBAC denied: role '{actor_role}' lacks '{req_perm}'"})
+        actor_tenant = rbac_sess.get("tenant_id") or actor_tenant
+    elif api_key_rec:
+        actor_name = f"apikey:{api_key_rec['name']}"
+        actor_role = api_key_rec["role"]
+        actor_tenant = api_key_rec.get("tenant_id") or actor_tenant
     elif legacy_user:
         actor_name = legacy_user
 
-    ctx_tok = edb.set_current_actor(actor_name, actor_role, ip)
+    if rbac_sess or api_key_rec:
+        req_perm = _required_permission(request.method, path)
+        if req_perm and not edb.has_permission(actor_role, req_perm):
+            edb.log_audit(actor_name, actor_role, "rbac:denied", path, f"Missing permission {req_perm}", ip, tenant_id=actor_tenant)
+            return await _finish(JSONResponse(status_code=403, content={"error": f"RBAC denied: role '{actor_role}' lacks '{req_perm}'"}))
+
+    ctx_tok = edb.set_current_actor(actor_name, actor_role, ip, tenant_id=actor_tenant)
     try:
-        return await call_next(request)
+        return await _finish(await call_next(request))
     finally:
         edb.reset_current_actor(ctx_tok)
 
@@ -517,8 +554,11 @@ def health():
 # ---- jobs: lifecycle ------------------------------------------------------
 @app.get("/api/jobs")
 def list_jobs(project_id: Optional[str] = None):
+    tid = edb.get_current_tenant()
     with JOBS_LOCK:
         items = sorted(JOBS.values(), key=lambda x: x["started_at"], reverse=True)
+        if tid and tid != "default":
+            items = [j for j in items if (j.get("tenant_id") or "default") == tid]
         if project_id:
             items = [j for j in items if (j.get("project_id") or "default") == project_id]
         return {"jobs": [_public(j) for j in items],
@@ -757,6 +797,9 @@ def project_report(project_id: str, download: int = 0):
                         "detail": "Weak or dictionary passwords cracked during offline audit.",
                         "cvss_hint": 7.5,
                     })
+
+    role_now = edb.get_current_actor().get("role", "admin")
+    combined_findings = [drpt.redact_finding_for_role(f, role_now) for f in combined_findings]
 
     html = dreport.render_html({
         "target": f"Project: {proj.get('name')} ({', '.join(targets[:4]) or 'no targets'})",
@@ -1054,10 +1097,16 @@ def job_monitor_pcap(file: UploadFile = File(...),
                      gateway: Optional[str] = None,
                      syn_threshold: int = 25,
                      project_id: str = "default"):
-    suffix = Path(file.filename or "capture.pcap").suffix or ".pcap"
-    tmp = APP_DIR / "uploads" / f"{uuid.uuid4().hex[:10]}{suffix}"
-    tmp.parent.mkdir(exist_ok=True)
-    tmp.write_bytes(file.file.read())
+    suffix = Path(file.filename or "capture.pcap").suffix.lower() or ".pcap"
+    if suffix not in (".pcap", ".pcapng", ".cap"):
+        raise HTTPException(400, "Only .pcap / .pcapng / .cap files are permitted")
+    up_dir = APP_DIR / "uploads"
+    up_dir.mkdir(exist_ok=True)
+    tmp = sh.safe_resolve_under(up_dir, f"{uuid.uuid4().hex[:10]}{suffix}")
+    raw_bytes = file.file.read(50 * 1024 * 1024 + 1)
+    if len(raw_bytes) > 50 * 1024 * 1024:
+        raise HTTPException(413, "PCAP upload exceeds 50 MB limit")
+    tmp.write_bytes(raw_bytes)
     job_id = start_job("monitor-pcap", engine.run_monitor_pcap,
                        project_id=project_id,
                        target_hint=file.filename or "pcap",

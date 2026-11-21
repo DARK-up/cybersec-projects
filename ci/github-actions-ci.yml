@@ -26,6 +26,6 @@ jobs:
           python webvulnx/test_xss_deep.py
           python webvulnx/test_nessus_and_accuracy.py
           python webvulnx/test_platform_wave.py
-      - name: Run DARK Enterprise v3 Suite
+      - name: Run DARK Enterprise & Roadmap Test Suites
         run: |
-          pytest -v tests/test_enterprise_suite.py
+          pytest -v tests/test_enterprise_suite.py tests/test_roadmap_suite.py
