@@ -496,18 +496,18 @@ async def _auth_gate(request: Request, call_next):
                 tok = cand
                 header_tok = cand
 
-    # Enforce double-submit CSRF token when browser authenticates purely via session cookie
-    if request.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and cookie_tok and not header_tok and not api_key_hdr:
-        csrf_cookie = request.cookies.get("dark_csrf") or ""
-        csrf_hdr = request.headers.get("X-CSRF-Token") or ""
-        if csrf_cookie and (not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr)):
-            return await _finish(JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"}))
-
     api_key_rec = edb.authenticate_api_key(api_key_hdr) if api_key_hdr else None
     rbac_sess = edb.get_rbac_session(tok) if tok else None
     legacy_user = dplat.session_user(tok) if tok else None
     rbac_enforced = bool(edb.get_setting("rbac_enforced", False))
     lock_enforced = bool(dplat.auth_status().get("enabled"))
+
+    # Enforce double-submit CSRF token when browser authenticates via an active session cookie
+    if request.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and cookie_tok and not header_tok and not api_key_hdr and (rbac_sess or legacy_user):
+        csrf_cookie = request.cookies.get("dark_csrf") or ""
+        csrf_hdr = request.headers.get("X-CSRF-Token") or ""
+        if csrf_cookie and (not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr)):
+            return await _finish(JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"}))
 
     if (lock_enforced or rbac_enforced) and not (rbac_sess or legacy_user or api_key_rec):
         return await _finish(JSONResponse(status_code=401, content={"error": "authentication required — login via workspace lock, RBAC, or API Key"}))
@@ -597,6 +597,7 @@ def set_job_note(job_id: str, req: NoteReq):
 @app.post("/api/jobs/{job_id}/stop")
 def stop_job(job_id: str):
     """Cooperatively stop a running job and flush all findings collected so far."""
+    need_save = False
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
@@ -604,16 +605,36 @@ def stop_job(job_id: str):
         ev = job.get("_stop_event")
         if ev is not None:
             ev.set()
-        if job.get("status") in ("running", "waiting"):
+        st_now = job.get("status")
+        if st_now in ("done", "stopped", "error", "timeout"):
+            return {"job": _public(job)}
+        if st_now == "interrupted" or (ev is None and st_now in ("running", "waiting", "stopping")):
+            res = job.get("result")
+            if not isinstance(res, dict):
+                res = {"target": job.get("target") or job.get("kind") or "scan",
+                       "findings": [], "stopped_early": True}
+            else:
+                res["stopped_early"] = True
+            job.update(status="stopped", finished_at=job.get("finished_at") or time.time(),
+                       result=res, progress=None)
+            need_save = True
+            pub = _public(job)
+        elif st_now in ("running", "waiting"):
             job["status"] = "stopping"
-    # Wait up to 4.0s for the worker thread to finish flushing its partial result
-    deadline = time.time() + 4.0
+            pub = None
+        else:
+            pub = None
+    if need_save:
+        _jobs_to_disk()
+        return {"job": pub}
+    # Wait up to 10.0s for the worker thread to finish flushing its partial result
+    deadline = time.time() + 10.0
     while time.time() < deadline:
         with JOBS_LOCK:
             st = JOBS[job_id]["status"]
             if st in ("stopped", "done", "error", "timeout"):
                 return {"job": _public(JOBS[job_id])}
-        time.sleep(0.15)
+        time.sleep(0.12)
     with JOBS_LOCK:
         return {"job": _public(JOBS[job_id])}
 
@@ -881,6 +902,8 @@ def api_auth_status(request: Request):
     st = dplat.auth_status()
     tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
     st["authenticated"] = (not st["enabled"]) or bool(dplat.session_user(tok))
+    if request.cookies.get("dark_csrf"):
+        st["csrf_token"] = request.cookies.get("dark_csrf")
     return st
 
 
@@ -902,6 +925,7 @@ def api_auth_logout(request: Request):
     dplat.drop_session(tok)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("dark_session")
+    resp.delete_cookie("dark_csrf")
     return resp
 
 

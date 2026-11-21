@@ -186,18 +186,18 @@ class WorldScanner:
 
     def run(self) -> None:
         print("[*] World-surface probes (source control, secrets, GraphQL, CMS, backups)")
-        self._probe_famous_paths()
-        self._graphql()
-        self._cms_from_html()
-        self._s3_listing()
-        self._django_debug()
-        self._backups()
-        self._websockets()
-        self._clickjacking()
+        for fn in (self._probe_famous_paths, self._graphql, self._cms_from_html,
+                   self._s3_listing, self._django_debug, self._backups,
+                   self._websockets, self._clickjacking):
+            if self.state.should_stop():
+                return
+            fn()
 
     def _probe_famous_paths(self) -> None:
         seen = set()
         for path, vtype, sev, kind, cvss in PROBES:
+            if self.state.should_stop():
+                return
             url, resp = self._get(path)
             if resp is None or resp.status_code >= 400:
                 continue
@@ -311,9 +311,11 @@ class WorldScanner:
         suffixes = (".bak", ".old", "~", ".swp", ".orig", ".copy")
         tried = 0
         for u in cands:
-            if tried >= 16:
+            if tried >= 16 or self.state.should_stop():
                 break
             for suf in suffixes:
+                if self.state.should_stop():
+                    return
                 tried += 1
                 target = u + suf
                 resp = self.client.get(target)

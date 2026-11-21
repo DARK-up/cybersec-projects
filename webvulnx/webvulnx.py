@@ -372,7 +372,8 @@ class HttpClient:
         return url
 
     def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
-        if getattr(self, "stop_event", None) is not None and self.stop_event.is_set():
+        ev = getattr(self, "stop_event", None)
+        if ev is not None and ev.is_set():
             return None
         cacheable = kw.pop("cache", False)
         key = self._cache_key(method, url, kw) if cacheable else None
@@ -381,7 +382,9 @@ class HttpClient:
                 self.stats["cache_hits"] = self.stats.get("cache_hits", 0) + 1
             return self._cache[key]
 
-        self.gate.wait()
+        self.gate.wait(stop_event=ev)
+        if ev is not None and ev.is_set():
+            return None
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
         # Real browsers send a Referer on same-origin navigations.
@@ -399,6 +402,8 @@ class HttpClient:
             self.stats["by_module"][self.module] = \
                 self.stats["by_module"].get(self.module, 0) + 1
         for attempt in range(2):
+            if ev is not None and ev.is_set():
+                return None
             try:
                 resp = self.sess.request(method, url, **kw)
                 self.last_error = None
@@ -423,8 +428,14 @@ class HttpClient:
                 return resp
             except requests.RequestException as e:
                 last_exc = e
+                if ev is not None and ev.is_set():
+                    return None
                 if attempt == 0:
-                    time.sleep(0.6)
+                    if ev is not None:
+                        if ev.wait(0.6):
+                            return None
+                    else:
+                        time.sleep(0.6)
         with self._lock:
             self.stats["errors"] += 1
         self.last_error = f"{type(last_exc).__name__}: {last_exc}"
@@ -836,6 +847,8 @@ class SqliScanner:
                 "1 AND UPDATEXML(1,CONCAT(0x7e,VERSION()),1)",
             ]
             for payload in payloads:
+                if self.state.should_stop():
+                    return
                 resp = canary if payload == "'" and canary is not None else \
                     self._send(url, method, param, payload, base_params, baseline)
                 if resp is None:
@@ -855,8 +868,10 @@ class SqliScanner:
                     break
 
             # --- 2. Boolean-based blind (second payload pair as confirmation) ---
-            if not tested_error:
+            if not tested_error and not self.state.should_stop():
                 t_resp = self._send(url, method, param, SQL_BOOLEAN_TRUE[0], base_params, baseline)
+                if self.state.should_stop():
+                    return
                 f_resp = self._send(url, method, param, SQL_BOOLEAN_FALSE[0], base_params, baseline)
                 if t_resp is not None and f_resp is not None:
                     sim_t = self._similarity(baseline, t_resp.text)
@@ -866,7 +881,11 @@ class SqliScanner:
                        (sim_f > 0.90 and sim_t < tf_ceiling) or \
                        (sim_tf < min(0.75, tf_ceiling) and abs(sim_t - sim_f) > 0.18):
                         # Confirmation with a second, different payload pair
+                        if self.state.should_stop():
+                            return
                         t2 = self._send(url, method, param, SQL_BOOLEAN_TRUE[1], base_params, baseline)
+                        if self.state.should_stop():
+                            return
                         f2 = self._send(url, method, param, SQL_BOOLEAN_FALSE[1], base_params, baseline)
                         if t2 is not None and f2 is not None:
                             s_t2 = self._similarity(t2.text, t_resp.text)
@@ -887,7 +906,7 @@ class SqliScanner:
                                 ))
 
             # --- 3. Time-based blind (double-confirmed to kill latency FPs) ---
-            if not tested_error and self.time_delay:
+            if not tested_error and self.time_delay and not self.state.should_stop():
                 # One cheap engine first (MySQL SLEEP). Only if the server
                 # actually waited do we bother with other dialects. This
                 # cuts a 5s×8×2 = 80s-per-param worst case down to ~2s.
@@ -896,9 +915,13 @@ class SqliScanner:
                 # MySQL/pg first — they cover most of the internet
                 payloads = payloads[:3] + payloads[3:]
                 for dbms, payload in payloads:
+                    if self.state.should_stop():
+                        return
                     t0 = time.time()
                     resp = self._send(url, method, param, payload, base_params, baseline)
                     elapsed = time.time() - t0
+                    if self.state.should_stop():
+                        return
                     if resp is not None and elapsed >= self.time_delay - 0.5:
                         # Confirmation: must delay AGAIN (rules out network hiccups)
                         t1 = time.time()
@@ -923,9 +946,13 @@ class SqliScanner:
         parsed = urllib.parse.urlsplit(url)
         segs = [s for s in parsed.path.split("/") if s]
         for i, seg in enumerate(segs):
+            if self.state.should_stop():
+                return
             if re.fullmatch(r"\d+", seg):
                 info(f"SQLi path test on {url} (segment '{seg}')")
                 for payload in ("1'", "1 AND 1=1", "1 AND 1=2", "1 UNION SELECT NULL"):
+                    if self.state.should_stop():
+                        return
                     new_segs = segs[:]
                     new_segs[i] = payload.replace(" ", "%20")
                     new_path = "/" + "/".join(new_segs)
@@ -1011,6 +1038,8 @@ class XssScanner:
         parsed = urllib.parse.urlsplit(url)
         clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
         for payload in XSS_PAYLOADS:
+            if self.state.should_stop():
+                return
             params = dict(base_params)
             params[param] = payload
             if method.upper() == "GET":
@@ -1135,21 +1164,34 @@ class DirBuster:
         return False
 
     def run(self, base: str) -> None:
+        if self.state.should_stop():
+            return
         base = base if base.endswith("/") else base + "/"
         self._calibrate_404(base)
+        if self.state.should_stop():
+            return
         info(f"Directory brute-force: {len(self.wordlist)} entries")
         interesting = {200, 201, 204, 301, 302, 307, 401, 403, 500}
         workers = getattr(self.client, "workers", 3)
         if workers <= 1:
             for word in self.wordlist:
+                if self.state.should_stop():
+                    break
                 self._hit(base, word, interesting)
             return
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        batch_size = max(workers * 4, 16)
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(self._hit, base, word, interesting)
-                    for word in self.wordlist]
-            for _ in as_completed(futs):
-                pass
+            for i in range(0, len(self.wordlist), batch_size):
+                if self.state.should_stop():
+                    break
+                futs = [ex.submit(self._hit, base, word, interesting)
+                        for word in self.wordlist[i:i + batch_size]]
+                for _ in as_completed(futs):
+                    if self.state.should_stop():
+                        for f in futs:
+                            f.cancel()
+                        break
 
     def _hit(self, base, word, interesting):
         if self.state.should_stop():
@@ -1552,6 +1594,8 @@ class AdvancedScanner:
         info("LFI / Path Traversal tests")
         tested = set()
         for url, method, param, base in self._all_params():
+            if self.state.should_stop():
+                return
             pname = param.lower()
             if pname not in LFI_PARAM_NAMES and not re.search(
                     r"\.(php|asp|jsp|html|txt|inc|cfg|ini|log)$",
@@ -1562,6 +1606,8 @@ class AdvancedScanner:
                 continue
             tested.add(key)
             for payload, rx in LFI_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 resp = self._send(url, method, param, payload, base)
                 if resp is not None and rx.search(resp.text):
                     self.state.add(Finding(
@@ -1578,7 +1624,11 @@ class AdvancedScanner:
     def scan_ssti(self) -> None:
         info("SSTI (template injection) tests")
         for url, method, param, base in self._all_params():
+            if self.state.should_stop():
+                return
             for payload, expect in SSTI_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 resp = self._send(url, method, param, payload, base)
                 if resp is None:
                     continue
@@ -1604,10 +1654,14 @@ class AdvancedScanner:
     def scan_cmdi(self) -> None:
         info("Command injection tests")
         for url, method, param, base in self._all_params():
+            if self.state.should_stop():
+                return
             if param.lower() not in CMDI_PARAM_NAMES:
                 continue
             hit = False
             for payload, rx in CMDI_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 resp = self._send(url, method, param, payload, base)
                 if resp is not None and rx.search(resp.text):
                     self.state.add(Finding(
@@ -1624,8 +1678,12 @@ class AdvancedScanner:
                 continue
             # Blind (time-based) — catches cmds whose output is not echoed
             for payload, need in CMDI_TIME:
+                if self.state.should_stop():
+                    return
                 t0 = time.time()
                 self._send(url, method, param, payload, base)
+                if self.state.should_stop():
+                    return
                 if time.time() - t0 >= need - 0.4:
                     t1 = time.time()
                     self._send(url, method, param, payload, base)
@@ -1646,6 +1704,8 @@ class AdvancedScanner:
         info("Open redirect tests")
         tested = set()
         for url, method, param, base in self._all_params():
+            if self.state.should_stop():
+                return
             if param.lower() not in OPEN_REDIRECT_PARAMS:
                 continue
             key = (url, param)
@@ -1654,6 +1714,8 @@ class AdvancedScanner:
             tested.add(key)
             # Do NOT follow redirects — we need the raw 3xx + Location header
             for payload in OPEN_REDIRECT_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 resp = self._send(url, method, param, payload, base, follow=False)
                 if resp is None:
                     continue
@@ -1675,6 +1737,8 @@ class AdvancedScanner:
         info("CORS misconfiguration tests")
         evil = "https://dark-cors-check.example"
         for url in list(self.state.crawled_urls)[:25]:
+            if self.state.should_stop():
+                return
             resp = self.client.get(url, headers={"Origin": evil})
             if resp is None:
                 continue
@@ -1695,6 +1759,8 @@ class AdvancedScanner:
     def scan_crlf(self) -> None:
         info("CRLF / header injection tests")
         for url in list(self.state.crawled_urls)[:15]:
+            if self.state.should_stop():
+                return
             p = urllib.parse.urlsplit(url)
             for inj_path in (p.path + CRLF_PAYLOAD,):
                 inj_url = urllib.parse.urlunsplit(
@@ -1717,6 +1783,8 @@ class AdvancedScanner:
     def scan_dir_listing(self) -> None:
         info("Directory listing tests")
         for url in list(self.state.crawled_urls):
+            if self.state.should_stop():
+                return
             resp = self.client.get(url)
             if resp is not None and DIR_LISTING_RX.search(resp.text[:2000]):
                 self.state.add(Finding(
@@ -1732,6 +1800,8 @@ class AdvancedScanner:
         info("Vulnerable JavaScript library tests")
         blobs = set()
         for url in list(self.state.crawled_urls)[:30]:
+            if self.state.should_stop():
+                return
             resp = self.client.get(url)
             if resp is not None:
                 blobs.add(resp.text)
@@ -1756,6 +1826,8 @@ class AdvancedScanner:
         info("Sensitive data exposure tests")
         seen = set()
         for url in list(self.state.crawled_urls)[:40]:
+            if self.state.should_stop():
+                return
             resp = self.client.get(url)
             if resp is None:
                 continue
@@ -1923,7 +1995,11 @@ class AdvancedScanner:
             if any(k in low for k in ("xml", "soap", "import", "upload", "feed", "api")):
                 candidates.add(url)
         for url in [c for c in candidates if c][:10]:
+            if self.state.should_stop():
+                return
             for payload, rx in self.XXE_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 r = self.client.request("POST", url, data=payload.encode(),
                                         headers={"Content-Type": "application/xml"})
                 if r is not None and rx.search(r.text):
@@ -1958,6 +2034,8 @@ class AdvancedScanner:
         info("SSRF tests")
         tested = set()
         for url, method, param, base in self._all_params():
+            if self.state.should_stop():
+                return
             if param.lower() not in self.SSRF_PARAM_NAMES:
                 continue
             key = (url, param)
@@ -1965,6 +2043,8 @@ class AdvancedScanner:
                 continue
             tested.add(key)
             for payload, rx in self.SSRF_PAYLOADS:
+                if self.state.should_stop():
+                    return
                 resp = self._send(url, method, param, payload, base)
                 if resp is not None and rx.search(resp.text):
                     self.state.add(Finding(
@@ -1983,6 +2063,8 @@ class AdvancedScanner:
         info("Host header injection tests")
         evil = "dark-host-check.example"
         for url in list(self.state.crawled_urls)[:10]:
+            if self.state.should_stop():
+                return
             r = self.client.get(url, headers={"Host": evil})
             if r is None:
                 continue
@@ -2005,6 +2087,8 @@ class AdvancedScanner:
         info("JWT analysis tests")
         seen = set()
         for url in list(self.state.crawled_urls)[:15]:
+            if self.state.should_stop():
+                return
             r = self.client.get(url)
             if r is None:
                 continue
@@ -2043,6 +2127,8 @@ class AdvancedScanner:
     def scan_stored_xss(self) -> None:
         info("Stored XSS tests (form submissions)")
         for form in self.state.forms[:10]:
+            if self.state.should_stop():
+                return
             names = [i["name"] for i in form["inputs"] if i["name"]
                      and i["type"] not in ("submit", "button", "image", "file", "reset")]
             if not names:
@@ -2053,8 +2139,12 @@ class AdvancedScanner:
                 self.client.get(self._clean(form.get("url", "")), params=data)
             else:
                 self.client.request("POST", form.get("url", ""), data=data)
+            if self.state.should_stop():
+                return
             # Re-visit the page and check if the payload persisted verbatim
             for revisit in (form.get("url", ""), self.state.base_url):
+                if self.state.should_stop():
+                    return
                 r = self.client.get(self._clean(revisit))
                 if r is not None and self.STORED_MARKER in r.text and \
                         self.STORED_PAYLOAD in r.text:
@@ -2078,6 +2168,8 @@ class AdvancedScanner:
     def scan_default_creds(self) -> None:
         info("Default credential tests (login forms)")
         for form in self.state.forms:
+            if self.state.should_stop():
+                return
             names = [i["name"] for i in form["inputs"] if i["name"]
                      and i["type"] not in ("submit", "button", "image", "file", "reset")]
             user_field = next((n for n in names if re.search(r"user|login|email", n, re.I)), None)
@@ -2088,6 +2180,8 @@ class AdvancedScanner:
                                        data={n: "" for n in names}) \
                    if form["method"] != "get" else None
             for u, p in self.DEFAULT_CREDS:
+                if self.state.should_stop():
+                    return
                 data = {n: "x" for n in names}
                 data[user_field], data[pass_field] = u, p
                 if form["method"] == "get":

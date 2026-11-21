@@ -773,6 +773,14 @@ function exportSvgChart(svgId, filename) {
 let ACTIVE_PROJECT = 'default';
 let ACTIVE_TENANT = 'default';
 let AUTH_STATE = {enabled: false, authenticated: true};
+let CSRF_TOKEN = '';
+try { CSRF_TOKEN = sessionStorage.getItem('dark_csrf_tok') || ''; } catch (e) {}
+
+function _setCsrfToken(tok) {
+  if (!tok) return;
+  CSRF_TOKEN = tok;
+  try { sessionStorage.setItem('dark_csrf_tok', tok); } catch (e) {}
+}
 
 function _getCookie(name) {
   const m = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
@@ -783,7 +791,7 @@ async function api(path, opts) {
   const cfg = Object.assign({}, opts || {});
   const hdrs = Object.assign({}, cfg.headers || {});
   if (ACTIVE_TENANT && !hdrs['X-Tenant-ID']) hdrs['X-Tenant-ID'] = ACTIVE_TENANT;
-  const csrf = _getCookie('dark_csrf');
+  const csrf = _getCookie('dark_csrf') || CSRF_TOKEN;
   if (csrf && !hdrs['X-CSRF-Token']) hdrs['X-CSRF-Token'] = csrf;
   cfg.headers = hdrs;
   const r = await fetch(path, cfg);
@@ -817,7 +825,7 @@ async function pollJob(jobId, outEl) {
         esc(j.status) + '</span> (' + esc(j.kind) + ', ' + elapsed + ', ' + (p.log_lines || 0) + ' log lines) ' +
         (j.status !== 'stopping'
           ? '<button class="run" style="background:var(--yellow);color:#111;padding:4px 12px;font-size:11px;margin-left:10px" ' +
-            'onclick="stopAndReport(\'' + esc(jobId) + '\')">🛑 STOP &amp; REPORT</button>'
+            'onclick="stopAndReport(\'' + esc(jobId) + '\', this)">🛑 STOP &amp; REPORT</button>'
           : '<b>stopping cleanly &amp; building partial report…</b>') +
         '\n▶ ' + esc(p.last_line || 'working…');
       if ((Date.now() - t0) / 1000 > 4 * 3600) {
@@ -829,7 +837,11 @@ async function pollJob(jobId, outEl) {
     }
     if (ACTIVE_WEB_JOB === jobId) {
       ACTIVE_WEB_JOB = null;
-      if ($('web-stop-btn')) $('web-stop-btn').style.display = 'none';
+      if ($('web-stop-btn')) {
+        $('web-stop-btn').disabled = false;
+        $('web-stop-btn').textContent = '🛑 STOP & REPORT';
+        $('web-stop-btn').style.display = 'none';
+      }
     }
     renderJob(j, outEl);
     loadJobs();
@@ -837,19 +849,66 @@ async function pollJob(jobId, outEl) {
   }
 }
 
-async function stopAndReport(jobId) {
+async function stopAndReport(jobId, btnEl) {
+  if (!jobId) return;
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳ Stopping…'; }
+  const topBtn = (ACTIVE_WEB_JOB === jobId) ? $('web-stop-btn') : null;
+  if (topBtn) { topBtn.disabled = true; topBtn.textContent = '⏳ Stopping…'; }
+
+  // Open report tab synchronously inside click gesture so popup blockers allow it
+  let rptWin = null;
+  try {
+    rptWin = window.open('about:blank', '_blank');
+    if (rptWin && rptWin.document) {
+      rptWin.document.write(
+        '<!doctype html><html><head><title>DARK — Preparing Partial Report…</title></head>' +
+        '<body style="background:#0d1117;color:#e6edf3;font-family:system-ui,sans-serif;padding:40px">' +
+        '<h2 style="color:#58a6ff">🛑 Stopping scan &amp; generating report…</h2>' +
+        '<p>Flushing all discovered findings for job <code>' + esc(jobId) + '</code>. This page will load automatically.</p>' +
+        '</body></html>'
+      );
+      rptWin.document.close();
+    }
+  } catch (e) { rptWin = null; }
+
   try {
     const res = await api('/api/jobs/' + encodeURIComponent(jobId) + '/stop', {method: 'POST'});
-    const j = res.job;
+    let j = res.job;
+    // If backend is still draining an in-flight socket, poll until stopped/done (up to 25s)
+    const waitUntil = Date.now() + 25000;
+    while (j && j.status === 'stopping' && Date.now() < waitUntil) {
+      await new Promise(r => setTimeout(r, 500));
+      j = await api('/api/jobs/' + encodeURIComponent(jobId));
+    }
     if (j && (j.status === 'stopped' || j.status === 'done')) {
-      window.open('/api/jobs/' + encodeURIComponent(jobId) + '/report', '_blank');
+      const reportUrl = '/api/jobs/' + encodeURIComponent(jobId) + '/report';
+      if (rptWin && !rptWin.closed) {
+        rptWin.location.href = reportUrl;
+      } else {
+        window.open(reportUrl, '_blank');
+      }
+      if (ACTIVE_WEB_JOB === jobId) {
+        ACTIVE_WEB_JOB = null;
+        if (topBtn) { topBtn.style.display = 'none'; }
+      }
+    } else {
+      if (rptWin && !rptWin.closed) rptWin.close();
+      if (j && j.status === 'error') {
+        throw new Error(j.error || 'Job ended with error');
+      }
+      throw new Error('Scan is still stopping (' + (j ? j.status : 'unknown') + ') — check Jobs tab in a moment for the partial report.');
     }
     loadJobs();
-  } catch (e) { alert('Stop failed: ' + e.message); }
+  } catch (e) {
+    if (rptWin && !rptWin.closed) { try { rptWin.close(); } catch (_) {} }
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '🛑 STOP & REPORT'; }
+    if (topBtn) { topBtn.disabled = false; topBtn.textContent = '🛑 STOP & REPORT'; }
+    alert('Stop failed: ' + e.message);
+  }
 }
 
 function stopActiveWebScan() {
-  if (ACTIVE_WEB_JOB) stopAndReport(ACTIVE_WEB_JOB);
+  if (ACTIVE_WEB_JOB) stopAndReport(ACTIVE_WEB_JOB, $('web-stop-btn'));
 }
 
 async function deleteJob(jobId) {
@@ -1439,8 +1498,10 @@ async function loadJobs() {
               "onclick=\"viewJob('" + j.id + "')\">view</button>" +
               ((j.status === 'running' || j.status === 'waiting')
                 ? ' <button class="run" style="padding:4px 10px;font-size:11px;background:var(--yellow);color:#111" ' +
-                  "onclick=\"stopAndReport('" + j.id + "')\">stop &amp; report</button>"
-                : '') +
+                  "onclick=\"stopAndReport('" + j.id + "', this)\">stop &amp; report</button>"
+                : (j.status === 'stopping'
+                  ? ' <span style="color:var(--yellow);font-size:11px;font-weight:700">⏳ stopping…</span>'
+                  : '')) +
               ((j.status === 'done' || j.status === 'stopped')
                 ? ' <a class="run" style="padding:4px 10px;font-size:11px;text-decoration:none;display:inline-block" href="/api/jobs/' +
                   j.id + '/report" target="_blank">report</a>' +
@@ -1629,6 +1690,7 @@ async function refreshAuth() {
   try {
     const r = await fetch('/api/auth/status');
     AUTH_STATE = await r.json();
+    if (AUTH_STATE.csrf_token) _setCsrfToken(AUTH_STATE.csrf_token);
     $('auth-btn').textContent = AUTH_STATE.enabled
       ? (AUTH_STATE.authenticated ? '🔒 Locked (Unlocked)' : '🔒 Login Required')
       : '🔓 Unlocked';
@@ -1654,11 +1716,18 @@ async function submitAuth() {
   const password = $('auth-pass').value;
   const needLogin = AUTH_STATE.enabled && !AUTH_STATE.authenticated;
   const url = needLogin ? '/api/auth/login' : '/api/auth/setup';
+  const hdrs = {'Content-Type': 'application/json'};
+  const csrf = _getCookie('dark_csrf') || CSRF_TOKEN;
+  if (csrf) hdrs['X-CSRF-Token'] = csrf;
   const r = await fetch(url, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: hdrs,
     body: JSON.stringify({username, password, enabled: true})
   });
   if (!r.ok) { alert('Auth failed: ' + (await r.text())); return; }
+  try {
+    const data = await r.json();
+    if (data && data.csrf_token) _setCsrfToken(data.csrf_token);
+  } catch (e) {}
   $('auth-pass').value = '';
   closeAuthModal();
   await refreshAuth();
@@ -2348,6 +2417,7 @@ async function rbacLogin() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({username: $('rbac-u').value.trim(), password: $('rbac-p').value, totp_code: $('rbac-totp').value.trim()})
   });
+  if (r && r.csrf_token) _setCsrfToken(r.csrf_token);
   alert('Logged in as ' + r.user.username + ' (role: ' + r.user.role + ')');
   loadAdminPanel();
 }

@@ -59,14 +59,18 @@ def is_local_target(url: str) -> bool:
 class RateGate:
     """Per-client min-interval + exponential backoff on 429/WAF."""
 
-    def __init__(self, min_interval: float = 0.0, jitter: float = 0.0):
+    def __init__(self, min_interval: float = 0.0, jitter: float = 0.0, stop_event=None):
         self.min_interval = min_interval
         self.jitter = jitter
+        self.stop_event = stop_event
         self._lock = threading.Lock()
         self._next = 0.0
         self.strikes = 0
 
-    def wait(self) -> None:
+    def wait(self, stop_event=None) -> None:
+        ev = stop_event if stop_event is not None else self.stop_event
+        if ev is not None and ev.is_set():
+            return
         with self._lock:
             now = time.time()
             extra = random.uniform(0.0, self.jitter) if self.jitter else 0.0
@@ -74,7 +78,10 @@ class RateGate:
             self._next = max(now, target) + self.min_interval
         sleep_for = target - now
         if sleep_for > 0:
-            time.sleep(sleep_for)
+            if ev is not None:
+                ev.wait(sleep_for)
+            else:
+                time.sleep(sleep_for)
 
     def punish(self, retry_after: Optional[float] = None) -> None:
         with self._lock:

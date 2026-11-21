@@ -793,6 +793,8 @@ class DeepXssScanner:
                      base: Optional[Dict[str, str]] = None) -> bool:
         """Probe → classify → select → verify. `sender(marker, payload)` sends
         the value and returns a response."""
+        if self.state.should_stop():
+            return False
         key = (url, where)
         if key in self.confirmed:
             return True
@@ -833,6 +835,8 @@ class DeepXssScanner:
                                                        "js_breakout") else 1, p.sev != "High"))
         tried = 0
         for p in candidates[: self.payload_limit]:
+            if self.state.should_stop():
+                return False
             sent = p.build(marker)
             r = sender(sent)
             self.payloads_sent += 1
@@ -858,6 +862,8 @@ class DeepXssScanner:
         if self.brute and key not in self.confirmed:
             skipped = 0
             for raw in community_payloads(self.brute_limit):
+                if self.state.should_stop():
+                    return False
                 sent, tagged = embed_marker(raw, marker)
                 if not tagged:
                     skipped += 1          # cannot be verified -> never reported
@@ -895,6 +901,8 @@ class DeepXssScanner:
     # -- injection point drivers ------------------------------------------
     def run_params(self) -> None:
         for url, params in list(self.state.params.items()):
+            if self.state.should_stop():
+                return
             names = sorted(params)
             if not names:
                 continue
@@ -904,6 +912,8 @@ class DeepXssScanner:
                 (parsed.scheme, parsed.netloc, parsed.path, "", ""))
             base = {p: "1" for p in names}
             for p in names:
+                if self.state.should_stop():
+                    return
                 def sender(value, _p=p, _base=base, _clean=clean):
                     params_ = dict(_base)
                     params_[_p] = value
@@ -912,6 +922,8 @@ class DeepXssScanner:
 
     def run_forms(self) -> None:
         for form in self.state.forms:
+            if self.state.should_stop():
+                return
             names = [i["name"] for i in form.get("inputs", []) if i.get("name")
                      and i.get("type") not in ("submit", "button", "image",
                                                "file", "reset")]
@@ -922,6 +934,8 @@ class DeepXssScanner:
             self._info(f"Deep XSS on form {furl} ({method}) fields={names}")
             base = {n: "test" for n in names}
             for n in names:
+                if self.state.should_stop():
+                    return
                 def sender(value, _n=n, _base=base, _m=method, _u=furl):
                     data = dict(_base)
                     data[_n] = value
@@ -929,6 +943,8 @@ class DeepXssScanner:
                         return self._send("GET", _u, params=data)
                     return self._send("POST", _u, data=data)
                 self.attack_point(furl, n, sender, f"form:{n}@{furl}")
+                if self.state.should_stop():
+                    return
 
                 # same field, but as a JSON body (SPA/API endpoints)
                 def jsender(value, _n=n, _base=base, _u=furl):
@@ -942,6 +958,8 @@ class DeepXssScanner:
     def run_paths(self) -> None:
         urls = list(self.state.crawled_urls)[:20] or [self.state.base_url]
         for url in urls:
+            if self.state.should_stop():
+                return
             parsed = urllib.parse.urlsplit(url)
             base = urllib.parse.urlunsplit(
                 (parsed.scheme, parsed.netloc, "", "", ""))
@@ -952,6 +970,8 @@ class DeepXssScanner:
                 return self._send("GET", _b + path)
             self.attack_point(base + parsed.path, "path segment (appended)",
                               sender_seg, f"path-append@{base}{parsed.path}")
+            if self.state.should_stop():
+                return
 
             if segs:
                 def sender_last(value, _b=base, _s=segs):
@@ -959,6 +979,8 @@ class DeepXssScanner:
                     return self._send("GET", _b + path)
                 self.attack_point(base + parsed.path, "path segment (last)",
                                   sender_last, f"path-last@{base}{parsed.path}")
+                if self.state.should_stop():
+                    return
 
             def sender_root(value, _b=base):
                 return self._send("GET", _b + "/" + value)
@@ -966,19 +988,25 @@ class DeepXssScanner:
                               f"path-root@{base}")
 
     def run_headers(self) -> None:
-        if not self.test_headers:
+        if not self.test_headers or self.state.should_stop():
             return
         urls = [self.state.base_url]
         if not getattr(self.client, "stealth", True):
             urls += list(self.state.crawled_urls)[:3]
         for url in urls:
+            if self.state.should_stop():
+                return
             host = urllib.parse.urlsplit(url).netloc or "localhost"
             self._info(f"Deep XSS via HTTP headers on {url}")
             for hname, tpl in HEADER_VECTORS:
+                if self.state.should_stop():
+                    return
                 def sender(value, _h=hname, _u=url):
                     return self._send("GET", _u, headers={_h: value})
                 self.attack_point(url, f"header {hname}", sender,
                                   f"header:{hname}@{url}")
+            if self.state.should_stop():
+                return
             cname, ctpl = COOKIE_VECTOR
 
             def csend(value, _u=url, _c=cname):
@@ -987,7 +1015,7 @@ class DeepXssScanner:
 
     # -- stored / blind sweep ---------------------------------------------
     def run_stored_sweep(self) -> None:
-        if not self.stored_sweep or not self.markers:
+        if not self.stored_sweep or not self.markers or self.state.should_stop():
             return
         pages = [self.state.base_url] + list(self.state.crawled_urls)
         pages = list(dict.fromkeys(pages))[:40]
@@ -1000,6 +1028,8 @@ class DeepXssScanner:
         persistable = [(m, w) for m, w in self.markers
                        if w.startswith(("query:", "form:", "json:"))]
         for page in pages:
+            if self.state.should_stop():
+                return
             resp = self._send("GET", page)
             if resp is None:
                 continue
@@ -1041,12 +1071,14 @@ class DeepXssScanner:
 
     # -- DOM XSS static analysis ------------------------------------------
     def run_dom_analysis(self) -> None:
-        if not self.dom_analysis:
+        if not self.dom_analysis or self.state.should_stop():
             return
         base = self.state.base_url
         js_urls: List[str] = []
         inline: List[Tuple[str, str]] = []
         for page in [base] + list(self.state.crawled_urls)[:12]:
+            if self.state.should_stop():
+                return
             resp = self._send("GET", page)
             if resp is None:
                 continue
@@ -1064,12 +1096,16 @@ class DeepXssScanner:
         sources_seen: Dict[str, List[str]] = {}
         checked = 0
         for u in js_urls:
+            if self.state.should_stop():
+                return
             resp = self.client.get(u)
             checked += 1
             if resp is None:
                 continue
             self._analyze_js(u, resp.text or "", sources_seen)
         for page, block in inline[:40]:
+            if self.state.should_stop():
+                return
             self._analyze_js(f"{page} (inline script)", block, sources_seen)
         if not sources_seen:
             self._log(f"[*] DOM analysis: no source→sink flow found "
@@ -1120,13 +1156,13 @@ class DeepXssScanner:
         self._info(f"Deep XSS engine: {len(PAYLOAD_LIBRARY)} curated payloads "
                    f"per context (limit {self.payload_limit}/context)"
                    + (f" + {self.brute_limit} community vectors" if self.brute else ""))
-        self.run_params()
-        self.run_forms()
-        self.run_paths()
-        self.run_headers()
-        if self.dom_analysis:
+        for step in (self.run_params, self.run_forms, self.run_paths, self.run_headers):
+            if self.state.should_stop():
+                return
+            step()
+        if self.dom_analysis and not self.state.should_stop():
             self.run_dom_analysis()
-        if self.stored_sweep:
+        if self.stored_sweep and not self.state.should_stop():
             self.run_stored_sweep()
         self._log(f"[+] Deep XSS done in {round(time.time() - t0, 1)}s | "
                   f"{self.probes_sent} probes, {self.payloads_sent} payloads, "

@@ -283,3 +283,64 @@ def test_cyclonedx_pdf_csrf_and_postgres_adapter():
     assert pdf_r.status_code == 200 and pdf_r.headers["content-type"].startswith("application/pdf")
     assert pdf_r.content.startswith(b"%PDF-1.4")
 
+
+def test_cooperative_stop_and_partial_report():
+    import time as _t
+
+    reqs_after_stop = [0]
+    stopped_flag = [False]
+
+    class _SlowApp(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if stopped_flag[0]:
+                reqs_after_stop[0] += 1
+            _t.sleep(0.08)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><a href='/item?id=1&q=hello'>item</a>"
+                b"<form action='/login' method='post'><input name='u'><input name='p'></form>"
+                b"</body></html>"
+            )
+
+        def do_POST(self):
+            self.do_GET()
+
+    srv = HTTPServer(("127.0.0.1", 0), _SlowApp)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        client = TestClient(dark_main.app)
+        start_r = client.post(
+            "/api/jobs/web-scan",
+            json={
+                "url": f"http://127.0.0.1:{port}/item?id=1&q=hello",
+                "crawl": True, "sqli": True, "xss": True, "dirs": True, "advanced": True,
+                "fast": False, "max_urls": 25,
+            },
+        )
+        assert start_r.status_code == 200
+        jid = start_r.json()["job_id"]
+        _t.sleep(0.35)
+        stopped_flag[0] = True
+        t0 = _t.time()
+        stop_r = client.post(f"/api/jobs/{jid}/stop")
+        elapsed = _t.time() - t0
+        assert stop_r.status_code == 200
+        job_obj = stop_r.json()["job"]
+        assert job_obj["status"] in ("stopped", "done"), f"Unexpected status after stop: {job_obj['status']}"
+        assert elapsed < 5.0
+        # Ensure scanner did not keep firing dozens of requests after stop
+        assert reqs_after_stop[0] <= 4
+
+        rep_r = client.get(f"/api/jobs/{jid}/report")
+        assert rep_r.status_code == 200
+        assert "<html" in rep_r.text.lower()
+    finally:
+        srv.shutdown()
+
+

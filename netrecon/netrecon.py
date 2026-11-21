@@ -528,7 +528,7 @@ class NetRecon:
         if best[0] != "Unknown":
             hr.os_hint = best[0]
 
-        if self.vuln_audit and hr.open_ports:
+        if self.vuln_audit and hr.open_ports and not (self.stop_event is not None and self.stop_event.is_set()):
             try:
                 import vuln_plugins  # type: ignore
                 hr.vulnerabilities = await vuln_plugins.evaluate_host(
