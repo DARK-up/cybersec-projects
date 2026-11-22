@@ -1,0 +1,206 @@
+{
+  "generated_at": "2026-11-22T14:50:41Z",
+  "internal_scanner": "modules/container_audit.py (static Dockerfile/K8s/SBOM & internal pinned-package advisory list)",
+  "external_tools_checked": {
+    "bandit": false,
+    "pip-audit": false,
+    "semgrep": false,
+    "trivy": false
+  },
+  "installed_runtime_versions": {
+    "fastapi": "0.165.0",
+    "uvicorn": "0.54.0",
+    "pydantic": "2.14.3",
+    "requests": "2.33.0",
+    "pyyaml": "6.0.3",
+    "cryptography": "not-installed",
+    "scapy": "not-installed",
+    "pytest": "9.0.3",
+    "httpx": "0.28.1",
+    "argon2-cffi": "25.1.0",
+    "reportlab": "not-installed"
+  },
+  "targets": {
+    "Dockerfile": {
+      "target": "Dockerfile",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:95060a8e-c196-4d22-89d3-79ca68ebbf5c",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": [
+          {
+            "name": "python",
+            "version": "3.12-slim",
+            "type": "container-image",
+            "purl": "pkg:oci/python@3.12-slim"
+          }
+        ]
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 1,
+        "duration_s": 0.1
+      }
+    },
+    "dark/requirements.txt": {
+      "target": "dark/requirements.txt",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:87ee7f60-2882-42b2-8fd1-822b1a2d28f9",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": []
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 0,
+        "duration_s": 0.1
+      }
+    },
+    "docker-compose.yml": {
+      "target": "docker-compose.yml",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:1ef507b6-560a-45a0-b289-45fec03f2b2b",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": [
+          {
+            "name": "postgres",
+            "version": "16-alpine",
+            "type": "container-image",
+            "purl": "pkg:oci/postgres@16-alpine"
+          },
+          {
+            "name": "redis",
+            "version": "7-alpine",
+            "type": "container-image",
+            "purl": "pkg:oci/redis@7-alpine"
+          }
+        ]
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 2,
+        "duration_s": 0.1
+      }
+    },
+    "hashbreaker/requirements.txt": {
+      "target": "hashbreaker/requirements.txt",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:fab81adf-cb02-467c-b4e2-a0ad432a0820",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": []
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 0,
+        "duration_s": 0.1
+      }
+    },
+    "netrecon/requirements.txt": {
+      "target": "netrecon/requirements.txt",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:c855e1f8-0e96-41a6-803b-50899f15dec0",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": []
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 0,
+        "duration_s": 0.1
+      }
+    },
+    "netsentry/requirements.txt": {
+      "target": "netsentry/requirements.txt",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:aff57864-ddb0-4795-96c3-cc45ae7a22e7",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": []
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 0,
+        "duration_s": 0.1
+      }
+    },
+    "webvulnx/requirements.txt": {
+      "target": "webvulnx/requirements.txt",
+      "files_scanned": 1,
+      "findings": [],
+      "sbom": {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": "urn:uuid:bdd4be24-3f3b-44e0-9a60-85a7da5cea79",
+        "metadata": {
+          "tools": [
+            {
+              "name": "DARK Container & SBOM Auditor"
+            }
+          ]
+        },
+        "components": []
+      },
+      "stats": {
+        "urls_crawled": 1,
+        "requests_sent": 0,
+        "duration_s": 0.1
+      }
+    }
+  }
+}

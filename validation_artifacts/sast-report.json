@@ -1,0 +1,260 @@
+{
+  "generated_at": "2026-11-22T15:01:38Z",
+  "scanner": "modules/sast_audit.py",
+  "targets": {
+    "dark": {
+      "files_scanned": 9,
+      "total_findings": 0,
+      "runtime_non_test_findings": 0,
+      "findings": []
+    },
+    "modules": {
+      "files_scanned": 29,
+      "total_findings": 0,
+      "runtime_non_test_findings": 0,
+      "findings": []
+    },
+    "webvulnx": {
+      "files_scanned": 17,
+      "total_findings": 2,
+      "runtime_non_test_findings": 0,
+      "findings": [
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "webvulnx/test_platform_wave.py:197",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at webvulnx/test_platform_wave.py:197",
+          "evidence": "salted_h = hashlib.md5(b\"salt99\" + b\"secret\").hexdigest() + \":salt99\"",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "webvulnx/test_platform_wave.py:198",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at webvulnx/test_platform_wave.py:198",
+          "evidence": "ldap_h = \"{SHA}\" + base64.b64encode(hashlib.sha1(b\"letmein\").digest()).decode()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        }
+      ]
+    },
+    "netrecon": {
+      "files_scanned": 4,
+      "total_findings": 0,
+      "runtime_non_test_findings": 0,
+      "findings": []
+    },
+    "netsentry": {
+      "files_scanned": 2,
+      "total_findings": 0,
+      "runtime_non_test_findings": 0,
+      "findings": []
+    },
+    "hashbreaker": {
+      "files_scanned": 2,
+      "total_findings": 16,
+      "runtime_non_test_findings": 16,
+      "findings": [
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:319",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:319",
+          "evidence": "return hashlib.md5(pw).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:325",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:325",
+          "evidence": "return hashlib.sha1(pw).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:347",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:347",
+          "evidence": "return hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:349",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:349",
+          "evidence": "return hashlib.md5(pw + sl).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:351",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:351",
+          "evidence": "return hashlib.md5(sl + pw).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:353",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:353",
+          "evidence": "return hashlib.sha1(pw + sl).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:355",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:355",
+          "evidence": "return hashlib.sha1(sl + pw).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:369",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:369",
+          "evidence": "return hashlib.md5(hashlib.md5(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:371",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:371",
+          "evidence": "return hashlib.md5(hashlib.md5(pw).hexdigest().encode()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:345",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:345",
+          "evidence": "return \"*\" + hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:294",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:294",
+          "evidence": "return hashlib.sha1(pw + salt).digest() == digest",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:347",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:347",
+          "evidence": "return hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:369",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:369",
+          "evidence": "return hashlib.md5(hashlib.md5(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:288",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:288",
+          "evidence": "expected = \"{SHA}\" + base64.b64encode(hashlib.sha1(pw).digest()).decode(\"ascii\")",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.sha1)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:345",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:345",
+          "evidence": "return \"*\" + hashlib.sha1(hashlib.sha1(pw).digest()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        },
+        {
+          "vuln_type": "[SAST:Python] Weak Hash Function (hashlib.md5)",
+          "severity": "Medium",
+          "url": "hashbreaker/hashbreaker.py:371",
+          "parameter": "python",
+          "how_it_entered": "Static source analysis at hashbreaker/hashbreaker.py:371",
+          "evidence": "return hashlib.md5(hashlib.md5(pw).hexdigest().encode()).hexdigest()",
+          "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+          "remediation": "Use SHA-256+ for integrity or Argon2/PBKDF2/bcrypt for passwords.",
+          "cwe": "CWE-328",
+          "owasp": "A03:2021 Injection"
+        }
+      ]
+    }
+  }
+}

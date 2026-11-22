@@ -1,0 +1,111 @@
+{
+  "generated_at": "2026-11-22T14:50:49Z",
+  "environment": {
+    "os": "Linux-6.1.189+-x86_64-with-glibc2.41",
+    "python": "3.13.18",
+    "cpu_count": 2
+  },
+  "benchmark_summary": {
+    "id": "BM-13DE9F05",
+    "target": "http://127.0.0.1:32969",
+    "tp": 9,
+    "fp": 0,
+    "fn": 1,
+    "precision": 1.0,
+    "recall": 0.9,
+    "f1_score": 0.9474,
+    "duration_s": 2.29,
+    "ram_mb": 42.2,
+    "cpu_pct": 24.9,
+    "details": {
+      "total_lab_findings": 36,
+      "matched_classes": [
+        "sqli",
+        "xss",
+        "lfi",
+        "cmdi",
+        "ssti",
+        "open_redirect",
+        "cors",
+        "sensitive_exposure",
+        "security_headers"
+      ],
+      "missed_classes": [
+        "crlf"
+      ],
+      "coverage_pct": 90.0
+    },
+    "created_at": 1795359045.8295078
+  },
+  "lab_findings_by_severity": {
+    "Low": 7,
+    "Info": 3,
+    "Critical": 9,
+    "High": 8,
+    "Medium": 9
+  },
+  "clean_negative_probe": {
+    "hardened_endpoint_classes": [
+      "/",
+      "/q?s=ok",
+      "/404-fallback"
+    ],
+    "http_requests_received": 404,
+    "non_info_findings": 0,
+    "total_findings": 1
+  },
+  "sample_detected_findings_tp": [
+    {
+      "vuln_type": "SQL Injection (Error-Based)",
+      "severity": "Critical",
+      "url": "http://127.0.0.1:32969/page?id=1",
+      "parameter": "id",
+      "confidence": 0.95
+    },
+    {
+      "vuln_type": "SQL Injection (Error-Based)",
+      "severity": "Critical",
+      "url": "http://127.0.0.1:32969/login",
+      "parameter": "user",
+      "confidence": 0.95
+    },
+    {
+      "vuln_type": "Reflected XSS (executable \u2014 script)",
+      "severity": "High",
+      "url": "http://127.0.0.1:32969/search",
+      "parameter": "q",
+      "confidence": 0.75
+    },
+    {
+      "vuln_type": "Reflected XSS (executable \u2014 script)",
+      "severity": "High",
+      "url": "http://127.0.0.1:32969/search",
+      "parameter": "q",
+      "confidence": 0.75
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:32969/admin",
+      "parameter": "",
+      "confidence": 0.75
+    },
+    {
+      "vuln_type": "Sensitive Path Exposed",
+      "severity": "Medium",
+      "url": "http://127.0.0.1:32969/login",
+      "parameter": "",
+      "confidence": 0.75
+    }
+  ],
+  "sample_rejected_false_positives_tn": [
+    {
+      "case": "XSS inside <textarea> rawtext context",
+      "result": null
+    },
+    {
+      "case": "XSS marker in application/json API response",
+      "result": null
+    }
+  ]
+}
