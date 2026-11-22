@@ -846,5 +846,138 @@ def main() -> None:
         ok(f"JSON export: {args.json}")
 
 
+# ============================================================================
+# DARK v4.0 Password Security Assessment & Audit Extensions
+# ============================================================================
+_WEAK_ALGOS = {
+    "md4", "md5", "ntlm", "lm", "sha1", "mysql3", "mysql5", "mysql5_raw",
+    "double md5", "double sha1", "md5(md5)", "sha1(sha1)",
+}
+_MEMHARD_ALGOS = {"argon2", "argon2id", "argon2i", "scrypt", "bcrypt"}
+
+
+def assess_hash_algorithm(hash_or_algo: str) -> Dict[str, Any]:
+    """Evaluate cryptographic resistance of a hash string or algorithm name."""
+    raw = (hash_or_algo or "").strip()
+    low = raw.lower()
+    hi = identify_hash(raw) if len(raw) >= 16 or raw.startswith("$") else None
+    algo_name = (hi.name if hi and hi.name != "Unknown" else raw) or "Unknown"
+    algo_low = algo_name.lower()
+
+    if any(m in algo_low for m in _MEMHARD_ALGOS) or low.startswith(("$argon2", "$2a$", "$2b$", "$2y$")):
+        grade, status, rec = "Strong", "Recommended", "Memory-hard / slow KDF; ensure cost factors follow OWASP minimums."
+    elif any(w in algo_low for w in _WEAK_ALGOS):
+        grade, status, rec = "Weak", "Deprecated", "Fast/unsalted or broken digest; migrate immediately to Argon2id or bcrypt."
+    elif "pbkdf2" in algo_low or "sha256crypt" in algo_low or "sha512crypt" in algo_low:
+        grade, status, rec = "Acceptable", "Salted KDF", "Verify iteration count meets OWASP (>= 600,000 for PBKDF2-SHA256) or migrate to Argon2id."
+    else:
+        grade, status, rec = "Medium", "Fast Unsalted Digest", "Unsalted fast hashes allow GPU cracking; wrap with Argon2id."
+
+    return {
+        "input": raw[:64],
+        "detected_algorithm": algo_name,
+        "strength_grade": grade,
+        "status": status,
+        "recommendation": rec,
+    }
+
+
+def analyze_wordlist(words: Iterable[str]) -> Dict[str, Any]:
+    """Compute structural analytics on a wordlist or password sample."""
+    total = 0
+    lengths: List[int] = []
+    classes = {"lower_only": 0, "digits_only": 0, "mixed_alnum": 0, "has_symbol": 0}
+    prefixes: Dict[str, int] = {}
+    for w in words:
+        s = w.rstrip("\r\n")
+        if not s:
+            continue
+        total += 1
+        lengths.append(len(s))
+        has_l = any(c.islower() for c in s)
+        has_u = any(c.isupper() for c in s)
+        has_d = any(c.isdigit() for c in s)
+        has_sym = any(not c.isalnum() for c in s)
+        if has_sym:
+            classes["has_symbol"] += 1
+        elif s.isdigit():
+            classes["digits_only"] += 1
+        elif s.islower():
+            classes["lower_only"] += 1
+        elif has_l or has_u or has_d:
+            classes["mixed_alnum"] += 1
+        pref = s[:3].lower()
+        prefixes[pref] = prefixes.get(pref, 0) + 1
+    avg_len = round(sum(lengths) / total, 2) if total else 0.0
+    top_prefixes = sorted(prefixes.items(), key=lambda x: -x[1])[:10]
+    return {
+        "total_entries": total,
+        "min_length": min(lengths) if lengths else 0,
+        "max_length": max(lengths) if lengths else 0,
+        "avg_length": avg_len,
+        "character_classes": classes,
+        "top_prefixes": [{"prefix": k, "count": v} for k, v in top_prefixes],
+    }
+
+
+def check_password_policy(password: str, min_length: int = 12) -> Dict[str, Any]:
+    """Assess a plaintext/recovered password against enterprise password policy."""
+    pw = password or ""
+    issues: List[str] = []
+    if len(pw) < min_length:
+        issues.append(f"length<{min_length} ({len(pw)})")
+    if not any(c.isupper() for c in pw):
+        issues.append("missing_uppercase")
+    if not any(c.islower() for c in pw):
+        issues.append("missing_lowercase")
+    if not any(c.isdigit() for c in pw):
+        issues.append("missing_digit")
+    if not any(not c.isalnum() for c in pw):
+        issues.append("missing_symbol")
+    if re.search(r"(.)\1{2,}", pw):
+        issues.append("repeated_characters")
+    if re.search(r"(?:1234|password|admin|qwerty|letmein|welcome)", pw, re.I):
+        issues.append("common_weak_pattern")
+    return {
+        "length": len(pw),
+        "compliant": len(issues) == 0,
+        "violations": issues,
+    }
+
+
+def build_password_audit_report(
+    targets: List[Target],
+    cracked: List[Dict[str, Any]],
+    min_length: int = 12,
+) -> Dict[str, Any]:
+    """Generate an enterprise password & hash posture audit report."""
+    algo_assessments = [assess_hash_algorithm(t.algo or t.hash_str) for t in targets]
+    weak_algo_count = sum(1 for a in algo_assessments if a["strength_grade"] == "Weak")
+    policy_violations = []
+    for c in cracked:
+        pol = check_password_policy(c.get("plain", ""), min_length=min_length)
+        if not pol["compliant"]:
+            policy_violations.append({
+                "user": c.get("user") or "(anon)",
+                "algo": c.get("algo"),
+                "violations": pol["violations"],
+            })
+    cracked_rate = round((len(cracked) / len(targets)) * 100.0, 1) if targets else 0.0
+    return {
+        "tool": "HashBreaker Enterprise Password Audit",
+        "total_hashes": len(targets),
+        "cracked_count": len(cracked),
+        "crack_rate_pct": cracked_rate,
+        "weak_algorithm_count": weak_algo_count,
+        "policy_violation_count": len(policy_violations),
+        "algorithm_assessments": algo_assessments[:50],
+        "policy_violations": policy_violations[:50],
+        "recommendation": (
+            "Migrate weak hashes to Argon2id and force immediate password rotation for all recovered accounts."
+            if (weak_algo_count or cracked) else "Hash algorithms and tested sample meet baseline controls."
+        ),
+    }
+
+
 if __name__ == "__main__":
     main()

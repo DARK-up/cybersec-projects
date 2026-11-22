@@ -45,6 +45,8 @@ import xss_deep as xd
 import worldscan as ws
 import report as dreport
 import stealth as stl
+import payload_mgr as pm
+import ssrf_scanner as ssrf_mod
 import threading
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -198,6 +200,11 @@ class Finding:
     evidence: str = ""
     detail: str = ""
     cvss_hint: float = 0.0
+    confidence: float = 0.75
+    verification_status: str = "Probable"
+    cwe: str = ""
+    remediation: str = ""
+    signals: List[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         p = f" [{self.parameter}]" if self.parameter else ""
@@ -815,16 +822,20 @@ class SqliScanner:
         base_params = base_params or {p: "1" for p in params}
         parsed = urllib.parse.urlsplit(url)
         clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-        # Baseline (measure stability twice so dynamic external pages don't trigger FPs)
+        # Baseline (measure stability & RTT twice so dynamic external pages don't trigger FPs)
+        t_b0 = time.monotonic()
         if method.upper() == "GET":
             base_resp = self.client.get(clean, params=base_params)
+            base_rtt = time.monotonic() - t_b0
             base_resp2 = self.client.get(clean, params=base_params) if base_resp is not None else None
         else:
             base_resp = self.client.request("POST", clean, data=base_params)
+            base_rtt = time.monotonic() - t_b0
             base_resp2 = self.client.request("POST", clean, data=base_params) if base_resp is not None else None
         if base_resp is None:
             return
         baseline = base_resp.text
+        baseline_dbms = self._match_error(baseline)
         base_noise = self._similarity(baseline, base_resp2.text) if base_resp2 is not None else 1.0
         # If two identical requests differ heavily, require a sharper true/false split
         tf_ceiling = 0.80 if base_noise >= 0.96 else min(0.65, base_noise - 0.15)
@@ -836,9 +847,6 @@ class SqliScanner:
             tested_error = False
 
             # --- 1. Error-based ---
-            # Cheap canary first: a single quote. If the page is byte-identical
-            # we still try 3 high-value oracles (extractvalue/convert) because
-            # some apps swallow the quote but leak on functions — then we stop.
             canary = self._send(url, method, param, "'", base_params, baseline)
             quote_changed = bool(canary is not None and canary.text != baseline)
             payloads = SQL_PAYLOADS_ERROR if quote_changed else [
@@ -854,15 +862,20 @@ class SqliScanner:
                 if resp is None:
                     continue
                 dbms = self._match_error(resp.text)
-                if dbms:
+                if dbms and dbms != baseline_dbms:
                     self.state.add(Finding(
                         vuln_type="SQL Injection (Error-Based)",
                         severity="Critical", url=url, parameter=param,
                         payload=payload,
-                        evidence=f"DBMS signature: {dbms}",
+                        evidence=f"DBMS signature: {dbms} (absent from baseline)",
                         detail="Server returned a database error message indicating "
                                "the input is concatenated into a SQL query unsafely.",
                         cvss_hint=9.8,
+                        confidence=0.95,
+                        verification_status="Confirmed",
+                        cwe="CWE-89",
+                        remediation="Use parameterized queries / prepared statements and disable verbose database error output.",
+                        signals=["dbms-error-signature", "baseline-negative"],
                     ))
                     tested_error = True
                     break
@@ -880,7 +893,6 @@ class SqliScanner:
                     if (sim_t > 0.90 and sim_f < tf_ceiling) or \
                        (sim_f > 0.90 and sim_t < tf_ceiling) or \
                        (sim_tf < min(0.75, tf_ceiling) and abs(sim_t - sim_f) > 0.18):
-                        # Confirmation with a second, different payload pair
                         if self.state.should_stop():
                             return
                         t2 = self._send(url, method, param, SQL_BOOLEAN_TRUE[1], base_params, baseline)
@@ -903,40 +915,51 @@ class SqliScanner:
                                            "boolean conditions across two payload pairs — "
                                            "classic blind SQLi behavior.",
                                     cvss_hint=8.6,
+                                    confidence=0.89,
+                                    verification_status="Confirmed",
+                                    cwe="CWE-89",
+                                    remediation="Use parameterized queries / prepared statements for all SQL inputs.",
+                                    signals=["boolean-pair-1", "boolean-pair-2", "baseline-stability"],
                                 ))
 
-            # --- 3. Time-based blind (double-confirmed to kill latency FPs) ---
+            # --- 3. Time-based blind (baseline RTT subtraction + control check) ---
             if not tested_error and self.time_delay and not self.state.should_stop():
-                # One cheap engine first (MySQL SLEEP). Only if the server
-                # actually waited do we bother with other dialects. This
-                # cuts a 5s×8×2 = 80s-per-param worst case down to ~2s.
                 d = max(2, min(int(self.time_delay), 4))
                 payloads = [(name, tpl.format(d=d)) for name, tpl in SQL_TIME_PAYLOADS]
-                # MySQL/pg first — they cover most of the internet
                 payloads = payloads[:3] + payloads[3:]
                 for dbms, payload in payloads:
                     if self.state.should_stop():
                         return
-                    t0 = time.time()
+                    t0 = time.monotonic()
                     resp = self._send(url, method, param, payload, base_params, baseline)
-                    elapsed = time.time() - t0
+                    elapsed = time.monotonic() - t0
                     if self.state.should_stop():
                         return
-                    if resp is not None and elapsed >= self.time_delay - 0.5:
-                        # Confirmation: must delay AGAIN (rules out network hiccups)
-                        t1 = time.time()
+                    if resp is not None and (elapsed - base_rtt) >= (self.time_delay - 0.5):
+                        # Neutral control check to rule out temporary server congestion
+                        t_ctl = time.monotonic()
+                        self._send(url, method, param, str(base_params.get(param, "1")), base_params, baseline)
+                        ctl_elapsed = time.monotonic() - t_ctl
+                        if (ctl_elapsed - base_rtt) >= (self.time_delay - 0.8):
+                            continue
+                        # Confirmation: must delay AGAIN
+                        t1 = time.monotonic()
                         self._send(url, method, param, payload, base_params, baseline)
-                        elapsed2 = time.time() - t1
-                        if elapsed2 >= self.time_delay - 0.5:
+                        elapsed2 = time.monotonic() - t1
+                        if (elapsed2 - base_rtt) >= (self.time_delay - 0.5):
                             self.state.add(Finding(
                                 vuln_type="SQL Injection (Time-Based Blind)",
                                 severity="High", url=url, parameter=param,
                                 payload=payload,
-                                evidence=f"response delayed {elapsed:.1f}s then {elapsed2:.1f}s "
-                                         f"(expected {int(self.time_delay)}s) — engine hint: {dbms}",
-                                detail="The server response was delayed twice only when a "
-                                       "time-based SQL payload was injected (double-confirmed).",
+                                evidence=f"delayed {elapsed:.1f}s then {elapsed2:.1f}s above base_rtt={base_rtt:.2f}s (ctl={ctl_elapsed:.2f}s) — engine hint: {dbms}",
+                                detail="The server response was delayed twice above baseline RTT only when a "
+                                       "time-based SQL payload was injected (double-confirmed with control check).",
                                 cvss_hint=8.6,
+                                confidence=0.88,
+                                verification_status="Confirmed",
+                                cwe="CWE-89",
+                                remediation="Use parameterized queries / prepared statements and strict input validation.",
+                                signals=["time-delay-1", "neutral-control", "time-delay-2"],
                             ))
                             break
 
@@ -1048,25 +1071,41 @@ class XssScanner:
                 resp = self.client.request("POST", clean, data=params)
             if resp is None:
                 continue
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            if ct and not any(x in ct for x in ("html", "xhtml", "svg", "xml")):
+                continue
+            csp_info = xd.audit_csp(dict(resp.headers))
             raw, exec_ = self._is_reflected(payload, resp.text)
             if exec_:
+                sev = "Medium" if csp_info.get("blocks_inline") else "High"
+                vtype = "Reflected XSS (Executable, CSP-Mitigated)" if csp_info.get("blocks_inline") else "Reflected XSS (Executable)"
                 self.state.add(Finding(
-                    vuln_type="Reflected XSS (Executable)",
-                    severity="High", url=url, parameter=param, payload=payload,
-                    evidence="payload reflected and rendered as active HTML/JS",
+                    vuln_type=vtype,
+                    severity=sev, url=url, parameter=param, payload=payload,
+                    evidence=f"payload reflected and rendered as active HTML/JS | {csp_info.get('detail')}",
                     detail="The application reflects user input into the page without "
                            "adequate encoding — script execution is possible.",
-                    cvss_hint=7.4,
+                    cvss_hint=5.4 if csp_info.get("blocks_inline") else 7.4,
+                    confidence=0.90 if not csp_info.get("blocks_inline") else 0.72,
+                    verification_status="Confirmed" if not csp_info.get("blocks_inline") else "Probable",
+                    cwe="CWE-79",
+                    remediation="Apply context-aware output encoding (HTML entity, attribute, JS literal) and enforce a strict Content-Security-Policy without 'unsafe-inline'.",
+                    signals=["unescaped-reflection", "html-content-type", "csp-checked"],
                 ))
                 return
             if raw:
                 self.state.add(Finding(
                     vuln_type="Reflected XSS (Reflected, encoding dependent)",
                     severity="Medium", url=url, parameter=param, payload=payload,
-                    evidence="payload reflected verbatim into the response body",
+                    evidence=f"payload reflected verbatim into the response body | {csp_info.get('detail')}",
                     detail="Input is reflected without sanitization; exploitability depends "
                            "on where it lands in the HTML context.",
                     cvss_hint=5.4,
+                    confidence=0.65,
+                    verification_status="Probable",
+                    cwe="CWE-79",
+                    remediation="Apply context-aware output encoding before rendering user input in HTML.",
+                    signals=["verbatim-reflection"],
                 ))
                 return
 
@@ -1605,18 +1644,31 @@ class AdvancedScanner:
             if key in tested:
                 continue
             tested.add(key)
-            for payload, rx in LFI_PAYLOADS:
+            base_resp = self._send(url, method, param, "nonexistent_dark_probe_991.txt", base)
+            base_txt = base_resp.text if base_resp is not None else ""
+            entries = pm.get_payloads("lfi", target_url=url, safe_only=True)
+            probes = [(str(e["payload"]), re.compile(str(e["expect"]), re.I), str(e.get("id", "lfi"))) for e in entries if e.get("expect")]
+            if not probes:
+                probes = [(p, rx, "builtin") for p, rx in LFI_PAYLOADS]
+            for payload, rx, pid in probes:
                 if self.state.should_stop():
                     return
+                if base_txt and rx.search(base_txt):
+                    continue
                 resp = self._send(url, method, param, payload, base)
                 if resp is not None and rx.search(resp.text):
                     self.state.add(Finding(
                         vuln_type="Local File Inclusion / Path Traversal",
                         severity="Critical", url=url, parameter=param,
-                        payload=payload, evidence="server returned file system content",
-                        detail="User input is used to read files — an attacker can "
-                               "exfiltrate /etc/passwd, source code, and secrets.",
+                        payload=payload,
+                        evidence=f"file-inclusion oracle '{pid}' matched (absent from baseline)",
+                        detail="User input is used to resolve filesystem paths without canonicalization or allowlisting.",
                         cvss_hint=8.6,
+                        confidence=0.93,
+                        verification_status="Confirmed",
+                        cwe="CWE-22",
+                        remediation="Resolve paths via canonical realpath() under a fixed base directory and enforce an explicit filename allowlist.",
+                        signals=[f"lfi:{pid}", "baseline-negative"],
                     ))
                     break
 
@@ -1626,29 +1678,50 @@ class AdvancedScanner:
         for url, method, param, base in self._all_params():
             if self.state.should_stop():
                 return
-            for payload, expect in SSTI_PAYLOADS:
+            base_resp = self._send(url, method, param, "dark_ssti_baseline", base)
+            base_txt = base_resp.text if base_resp is not None else ""
+            entries = pm.get_payloads("ssti", target_url=url, safe_only=True)
+            for entry in entries:
                 if self.state.should_stop():
                     return
+                payload = str(entry.get("payload") or "")
+                expect = str(entry.get("expect") or "")
+                c_payload = str(entry.get("confirm_payload") or "")
+                c_expect = str(entry.get("confirm_expect") or "")
+                eng = str(entry.get("engine") or "template")
+                if not payload or not expect:
+                    continue
+                rx = re.compile(r"(?<!\d)" + re.escape(expect) + r"(?!\d)") if expect != "7777777" else re.compile(r"7777777")
+                if base_txt and rx.search(base_txt):
+                    continue
                 resp = self._send(url, method, param, payload, base)
                 if resp is None:
                     continue
-                rx = re.compile(r"(?<!\d)" + re.escape(expect) + r"(?!\d)")
-                if expect == "7777777":
-                    ok_rx = re.compile(r"7777777")
-                else:
-                    ok_rx = rx
-                if ok_rx.search(resp.text) and payload[:2] + "1337*2" not in resp.text \
-                   and payload not in resp.text:
-                    self.state.add(Finding(
-                        vuln_type="Server-Side Template Injection (SSTI)",
-                        severity="Critical", url=url, parameter=param,
-                        payload=payload,
-                        evidence=f"expression evaluated: {payload} -> {expect}",
-                        detail="Template expression was evaluated server-side — "
-                               "often leads to remote code execution.",
-                        cvss_hint=9.0,
-                    ))
-                    break
+                if rx.search(resp.text) and payload not in resp.text:
+                    # Confirm with a second independent arithmetic expression for the same engine
+                    confirmed = True
+                    if c_payload and c_expect:
+                        c_rx = re.compile(r"(?<!\d)" + re.escape(c_expect) + r"(?!\d)")
+                        if base_txt and c_rx.search(base_txt):
+                            confirmed = False
+                        else:
+                            c_resp = self._send(url, method, param, c_payload, base)
+                            confirmed = bool(c_resp is not None and c_rx.search(c_resp.text) and c_payload not in c_resp.text)
+                    if confirmed:
+                        self.state.add(Finding(
+                            vuln_type="Server-Side Template Injection (SSTI)",
+                            severity="Critical", url=url, parameter=param,
+                            payload=payload,
+                            evidence=f"multi-probe arithmetic evaluated ({eng}): {payload} -> {expect}" + (f"; {c_payload} -> {c_expect}" if c_payload else ""),
+                            detail="Template expression was evaluated server-side across independent arithmetic probes — often leads to remote code execution.",
+                            cvss_hint=9.0,
+                            confidence=0.96,
+                            verification_status="Confirmed",
+                            cwe="CWE-94",
+                            remediation="Never concatenate untrusted input into template strings; pass user values strictly as template context data and use sandboxed auto-escaping templates.",
+                            signals=[f"ssti:{eng}", "double-arithmetic-confirmed", "baseline-negative"],
+                        ))
+                        break
 
     # -- Command injection ---------------------------------------------------
     def scan_cmdi(self) -> None:
@@ -1658,19 +1731,35 @@ class AdvancedScanner:
                 return
             if param.lower() not in CMDI_PARAM_NAMES:
                 continue
+            base_resp = self._send(url, method, param, "127.0.0.1", base)
+            base_txt = base_resp.text if base_resp is not None else ""
+            entries = pm.get_payloads("cmdi", target_url=url, safe_only=True)
+            probes = [(str(e["payload"]), re.compile(str(e["expect"]), re.I), str(e.get("id", "cmdi"))) for e in entries if e.get("expect")]
+            if not probes:
+                probes = [(p, rx, "builtin") for p, rx in CMDI_PAYLOADS]
             hit = False
-            for payload, rx in CMDI_PAYLOADS:
+            for payload, rx, pid in probes:
                 if self.state.should_stop():
                     return
+                if base_txt and rx.search(base_txt):
+                    continue
                 resp = self._send(url, method, param, payload, base)
-                if resp is not None and rx.search(resp.text):
+                if resp is not None and rx.search(resp.text) \
+                   and payload not in resp.text \
+                   and html.escape(payload) not in resp.text \
+                   and urllib.parse.quote(payload) not in resp.text:
                     self.state.add(Finding(
                         vuln_type="OS Command Injection",
                         severity="Critical", url=url, parameter=param,
-                        payload=payload, evidence="command output reflected in response",
-                        detail="Shell metacharacters in input are executed — full "
-                               "server compromise is possible.",
+                        payload=payload,
+                        evidence=f"command execution oracle '{pid}' matched (absent from baseline)",
+                        detail="Shell metacharacters in input are executed — full server compromise is possible.",
                         cvss_hint=9.8,
+                        confidence=0.94,
+                        verification_status="Confirmed",
+                        cwe="CWE-78",
+                        remediation="Avoid invoking a shell; use parameterized subprocess APIs with shell=False and strict input allowlisting.",
+                        signals=[f"cmdi:{pid}", "baseline-negative"],
                     ))
                     hit = True
                     break
@@ -1680,22 +1769,26 @@ class AdvancedScanner:
             for payload, need in CMDI_TIME:
                 if self.state.should_stop():
                     return
-                t0 = time.time()
+                t0 = time.monotonic()
                 self._send(url, method, param, payload, base)
                 if self.state.should_stop():
                     return
-                if time.time() - t0 >= need - 0.4:
-                    t1 = time.time()
+                if time.monotonic() - t0 >= need - 0.4:
+                    t1 = time.monotonic()
                     self._send(url, method, param, payload, base)
-                    if time.time() - t1 >= need - 0.4:
+                    if time.monotonic() - t1 >= need - 0.4:
                         self.state.add(Finding(
                             vuln_type="OS Command Injection",
                             severity="Critical", url=url, parameter=param,
                             payload=payload,
                             evidence=f"response delayed twice (≥{need}s) on sleep/ping",
-                            detail="Blind command injection: the server waits only "
-                                   "when a shell sleep is injected.",
+                            detail="Blind command injection: the server waits only when a shell sleep is injected.",
                             cvss_hint=9.8,
+                            confidence=0.87,
+                            verification_status="Confirmed",
+                            cwe="CWE-78",
+                            remediation="Use parameterized subprocess APIs with shell=False and strict input allowlisting.",
+                            signals=["cmdi-time-1", "cmdi-time-2"],
                         ))
                         break
 
@@ -1992,32 +2085,43 @@ class AdvancedScanner:
             candidates.add(form.get("url", ""))
         for url in list(self.state.crawled_urls)[:15]:
             low = url.lower()
-            if any(k in low for k in ("xml", "soap", "import", "upload", "feed", "api")):
+            if any(k in low for k in ("xml", "xxe", "soap", "import", "upload", "feed", "api")):
                 candidates.add(url)
         for url in [c for c in candidates if c][:10]:
             if self.state.should_stop():
                 return
-            for payload, rx in self.XXE_PAYLOADS:
+            base_r = self.client.request("POST", url, data=b"<r>dark_xxe_baseline</r>",
+                                         headers={"Content-Type": "application/xml"})
+            base_txt = base_r.text if base_r is not None else ""
+            entries = pm.get_payloads("xxe", target_url=url, safe_only=True)
+            probes = [(str(e["payload"]), re.compile(str(e["expect"]), re.I), str(e.get("id", "xxe"))) for e in entries if e.get("expect")]
+            if not probes:
+                probes = [(p, rx, "builtin") for p, rx in self.XXE_PAYLOADS]
+            for payload, rx, pid in probes:
                 if self.state.should_stop():
                     return
+                if base_txt and rx.search(base_txt):
+                    continue
                 r = self.client.request("POST", url, data=payload.encode(),
                                         headers={"Content-Type": "application/xml"})
                 if r is not None and rx.search(r.text):
                     self.state.add(Finding(
                         vuln_type="XML External Entity (XXE)",
                         severity="Critical", url=url,
-                        payload="DOCTYPE ENTITY file disclosure",
-                        evidence="server resolved an external XML entity",
-                        detail="XML parser processes external entities — local file "
-                               "disclosure and SSRF.",
+                        payload=f"DTD entity oracle ({pid})",
+                        evidence=f"XML parser expanded DTD entity ({pid}) absent from baseline",
+                        detail="XML parser processes DTD / external entities — local file disclosure and SSRF.",
                         cvss_hint=9.0,
+                        confidence=0.94,
+                        verification_status="Confirmed",
+                        cwe="CWE-611",
+                        remediation="Disable DOCTYPE declarations and external entity resolution in your XML parser (e.g. defusedxml).",
+                        signals=[f"xxe:{pid}", "baseline-negative"],
                     ))
                     return
 
     # -- SSRF ---------------------------------------------------------------
-    SSRF_PARAM_NAMES = {"url", "uri", "fetch", "proxy", "link", "src", "dest",
-                        "path", "site", "feed", "callback", "domain", "host",
-                        "image", "img", "load", "redirect"}
+    SSRF_PARAM_NAMES = ssrf_mod.SSRF_PARAM_NAMES
     SSRF_PAYLOADS = [
         ("http://127.0.0.1:1", re.compile(r"connection refused|failed to connect|"
                                           r"actively refused|ECONNREFUSED|timed out", re.I)),
@@ -2032,31 +2136,13 @@ class AdvancedScanner:
 
     def scan_ssrf(self) -> None:
         info("SSRF tests")
-        tested = set()
-        for url, method, param, base in self._all_params():
-            if self.state.should_stop():
-                return
-            if param.lower() not in self.SSRF_PARAM_NAMES:
-                continue
-            key = (url, param)
-            if key in tested:
-                continue
-            tested.add(key)
-            for payload, rx in self.SSRF_PAYLOADS:
-                if self.state.should_stop():
-                    return
-                resp = self._send(url, method, param, payload, base)
-                if resp is not None and rx.search(resp.text):
-                    self.state.add(Finding(
-                        vuln_type="Server-Side Request Forgery (SSRF)",
-                        severity="High", url=url, parameter=param,
-                        payload=payload,
-                        evidence="server made a request to an attacker-controlled target",
-                        detail="The server fetches attacker-supplied URLs — internal "
-                               "network scanning and cloud metadata theft are possible.",
-                        cvss_hint=8.5,
-                    ))
-                    break
+        ssrf_mod.scan_ssrf_targets(
+            self.client,
+            self.state,
+            self._all_params(),
+            Finding,
+            log_fn=info,
+        )
 
     # -- Host header injection ----------------------------------------------
     def scan_host_header(self) -> None:

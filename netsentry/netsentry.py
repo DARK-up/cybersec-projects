@@ -87,6 +87,7 @@ class Alert:
     dst: str = ""
     detail: str = ""
     evidence: str = ""
+    confidence: float = 0.85
 
     def render(self) -> str:
         tag = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow",
@@ -257,10 +258,21 @@ SUSPICIOUS_TLDS = {
 DGA_RX = re.compile(r"^(?=.*[0-9])(?=.*[a-z])[a-z0-9]{12,}$")
 
 
+def _shannon_entropy(text: str) -> float:
+    if not text:
+        return 0.0
+    import math
+    counts = collections.Counter(text)
+    ln = float(len(text))
+    return -sum((c / ln) * math.log2(c / ln) for c in counts.values())
+
+
 class DnsDetector:
-    def __init__(self, bus: AlertBus):
+    def __init__(self, bus: AlertBus, burst_threshold: int = 35):
         self.bus = bus
+        self.burst_threshold = burst_threshold
         self.queries: List[Tuple[float, str, str]] = []
+        self.per_src_ts: Dict[str, collections.deque] = collections.defaultdict(collections.deque)
         self.seen: Set[str] = set()
 
     def feed(self, pkt, ts: Optional[float] = None) -> None:
@@ -280,17 +292,33 @@ class DnsDetector:
         labels = qname.split(".")
         tld = labels[-1].lower() if labels else ""
         host = labels[0] if labels else ""
+        entropy = _shannon_entropy(host)
 
-        # DNS tunneling heuristic: very long first label (>= 40) or many labels
-        if len(host) >= 40 or (len(labels) >= 6 and len(host) >= 20):
+        # DNS burst / beaconing check
+        dq = self.per_src_ts[src]
+        dq.append(ts)
+        while dq and ts - dq[0] > 5.0:
+            dq.popleft()
+        if len(dq) >= self.burst_threshold and f"burst:{src}" not in self.seen:
+            self.seen.add(f"burst:{src}")
+            self.bus.emit(Alert(
+                ts=ts, category="DNS-BURST", severity="MEDIUM", src=src, dst=qname,
+                detail=f"{len(dq)} DNS queries in 5.0s",
+                evidence="Rapid DNS burst typical of automated scanning, C2 beaconing, or tunneling.",
+                confidence=0.80,
+            ))
+
+        # DNS tunneling heuristic: very long label OR high Shannon entropy (>= 3.6 with length >= 22)
+        if len(host) >= 40 or (len(labels) >= 6 and len(host) >= 20) or (len(host) >= 22 and entropy >= 3.6):
             key = "tunnel:" + qname
             if key not in self.seen:
                 self.seen.add(key)
                 self.bus.emit(Alert(
                     ts=ts, category="DNS-TUNNEL", severity="HIGH", src=src, dst=qname,
-                    detail=f"unusually long/complex query name ({len(qname)} chars)",
-                    evidence="Long random subdomains are used by DNS tunneling "
+                    detail=f"unusually long/high-entropy query ({len(qname)} chars, H={entropy:.2f})",
+                    evidence="High-entropy subdomains are used by DNS tunneling "
                              "exfiltration tools (iodine, dnscat2).",
+                    confidence=0.88 if entropy >= 3.6 else 0.80,
                 ))
 
         # DGA heuristic: long alnum label with digits
@@ -403,16 +431,85 @@ class Stats:
 
 
 # ============================================================================
+# Detector 5 — Behavioral Baseline & IOC Matcher
+# ============================================================================
+class BaselineProfiler:
+    """Tracks per-source packet rates and flags sharp behavioral spikes."""
+    def __init__(self, bus: AlertBus, spike_pps: int = 80):
+        self.bus = bus
+        self.spike_pps = spike_pps
+        self.win: Dict[str, collections.deque] = collections.defaultdict(collections.deque)
+        self.seen: Set[str] = set()
+
+    def feed(self, pkt, ts: Optional[float] = None) -> None:
+        if not SCAPY_OK or IP not in pkt:
+            return
+        ts = ts if ts is not None else float(pkt.time if hasattr(pkt, "time") else time.time())
+        src = pkt[IP].src
+        dq = self.win[src]
+        dq.append(ts)
+        while dq and ts - dq[0] > 1.0:
+            dq.popleft()
+        if len(dq) >= self.spike_pps and src not in self.seen:
+            self.seen.add(src)
+            self.bus.emit(Alert(
+                ts=ts, category="BEHAVIOR-SPIKE", severity="MEDIUM", src=src, dst="*",
+                detail=f"packet rate spike ({len(dq)} pkt/s > baseline {self.spike_pps})",
+                evidence="Sudden volumetric anomaly exceeding baseline packet-per-second threshold.",
+                confidence=0.78,
+            ))
+
+
+class IocMatcher:
+    """Matches network packet IPs and DNS queries against bad IOC indicators."""
+    def __init__(self, bus: AlertBus, indicators: Optional[Set[str]] = None):
+        self.bus = bus
+        self.indicators: Set[str] = {i.strip().lower() for i in (indicators or set()) if i.strip()}
+        self.seen: Set[str] = set()
+
+    def feed(self, pkt, ts: Optional[float] = None) -> None:
+        if not SCAPY_OK or not self.indicators:
+            return
+        ts = ts if ts is not None else float(pkt.time if hasattr(pkt, "time") else time.time())
+        src = pkt[IP].src if IP in pkt else "?"
+        dst = pkt[IP].dst if IP in pkt else ""
+        if dst and dst.lower() in self.indicators and f"ip:{src}:{dst}" not in self.seen:
+            self.seen.add(f"ip:{src}:{dst}")
+            self.bus.emit(Alert(
+                ts=ts, category="IOC-MATCH", severity="HIGH", src=src, dst=dst,
+                detail=f"traffic to known malicious IOC IP {dst}",
+                evidence=f"Matched threat intelligence indicator '{dst}'.",
+                confidence=0.92,
+            ))
+        if DNS in pkt and pkt[DNS].qr == 0 and pkt[DNS].qd:
+            try:
+                qname = pkt[DNS].qd.qname.decode("utf-8", "replace").rstrip(".").lower()
+            except Exception:
+                qname = ""
+            if qname and qname in self.indicators and f"dns:{src}:{qname}" not in self.seen:
+                self.seen.add(f"dns:{src}:{qname}")
+                self.bus.emit(Alert(
+                    ts=ts, category="IOC-MATCH", severity="HIGH", src=src, dst=qname,
+                    detail=f"DNS query for known malicious IOC domain {qname}",
+                    evidence=f"Matched threat intelligence indicator '{qname}'.",
+                    confidence=0.92,
+                ))
+
+
+# ============================================================================
 # Engine
 # ============================================================================
 class NetSentry:
-    def __init__(self, bus: AlertBus, gateway: Optional[str], syn_threshold: int):
+    def __init__(self, bus: AlertBus, gateway: Optional[str], syn_threshold: int,
+                 ioc_indicators: Optional[Set[str]] = None):
         self.bus = bus
         self.stats = Stats()
         self.arp = ArpDetector(bus, gateway)
         self.pscan = PortScanDetector(bus, threshold=syn_threshold)
         self.dns = DnsDetector(bus)
         self.creds = CredDetector(bus)
+        self.baseline = BaselineProfiler(bus)
+        self.ioc_matcher = IocMatcher(bus, indicators=ioc_indicators)
 
     def handle(self, pkt, ts: Optional[float] = None) -> None:
         self.stats.feed(pkt, ts)
@@ -421,12 +518,48 @@ class NetSentry:
         self.pscan.feed_xmas_null(pkt, ts)
         self.dns.feed(pkt, ts)
         self.creds.feed(pkt, ts)
+        self.baseline.feed(pkt, ts)
+        self.ioc_matcher.feed(pkt, ts)
+
+    def correlate_timeline(self) -> Dict[str, object]:
+        """Build chronological attack timeline & correlate multi-stage source incidents."""
+        ordered = sorted(self.bus.alerts, key=lambda a: a.ts)
+        timeline = [
+            {
+                "ts": a.ts,
+                "category": a.category,
+                "severity": a.severity,
+                "src": a.src,
+                "dst": a.dst,
+                "confidence": a.confidence,
+                "detail": a.detail,
+            }
+            for a in ordered
+        ]
+        by_src: Dict[str, List[Alert]] = collections.defaultdict(list)
+        for a in ordered:
+            by_src[a.src].append(a)
+        incidents: List[dict] = []
+        for src, items in by_src.items():
+            cats = sorted({a.category for a in items})
+            if len(cats) >= 2:
+                incidents.append({
+                    "src": src,
+                    "stages": cats,
+                    "alert_count": len(items),
+                    "first_seen": items[0].ts,
+                    "last_seen": items[-1].ts,
+                    "severity": "CRITICAL" if len(cats) >= 3 else "HIGH",
+                    "summary": f"Multi-stage activity from {src}: {' -> '.join(cats)}",
+                })
+        return {"timeline": timeline, "correlated_incidents": incidents}
 
     def summary(self) -> Dict:
         by_cat: collections.Counter = collections.Counter(a.category for a in self.bus.alerts)
         by_sev: collections.Counter = collections.Counter(a.severity for a in self.bus.alerts)
+        corr = self.correlate_timeline()
         return {
-            "tool": "NetSentry v2.0",
+            "tool": "NetSentry v2.1",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "packets": self.stats.total,
             "bytes": self.stats.bytes,
@@ -434,6 +567,8 @@ class NetSentry:
             "alerts_total": len(self.bus.alerts),
             "alerts_by_severity": dict(by_sev),
             "alerts_by_category": dict(by_cat),
+            "correlated_incidents": corr["correlated_incidents"],
+            "timeline": corr["timeline"],
         }
 
 

@@ -258,11 +258,16 @@ def run_network_scan(targets: List[str], ports: str = "top100", timing: str = "n
     with _Capture() as cap:
         asyncio.run(scanner.run())
     rep = scanner.to_dict()
+    try:
+        rep["topology"] = nr.build_network_topology(rep)
+    except Exception:
+        pass
     findings = [_enrich_finding_dict(f, default_method="TCP/Service Probe")
                 for f in (rep.get("findings") or [])]
     return {
         "target": ", ".join(hosts[:6]),
         "report": rep,
+        "topology": rep.get("topology", {}),
         "findings": findings,
         "stopped_early": bool(stop_event is not None and stop_event.is_set()),
         "log": cap.text,
@@ -459,6 +464,21 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         if do_default_creds and not state.should_stop():
             run_module("default-creds",
                        wx.AdvancedScanner(client, state).scan_default_creds)
+        if (do_advanced or do_audit) and not state.should_stop():
+            try:
+                import js_security as jsec
+                for jf in jsec.analyze_js_and_auth_surface(probe.url or url, probe.text or "", dict(probe.headers)):
+                    state.add(wx.Finding(
+                        vuln_type=jf["vuln_type"], severity=jf["severity"],
+                        url=jf["url"], parameter=jf["parameter"],
+                        payload=jf.get("payload", ""), evidence=jf["evidence"],
+                        detail=jf["detail"], cvss_hint=jf.get("cvss_hint", 0.0),
+                        confidence=jf.get("confidence", 0.78),
+                        cwe=jf.get("cwe", "CWE-79"),
+                        remediation=jf.get("remediation", ""),
+                    ))
+            except Exception as e:
+                print(f"[!] js-security module failed: {type(e).__name__}: {e}")
         if (do_advanced or do_audit or do_dirs) and not state.should_stop():
             try:
                 import worldscan as ws
@@ -520,6 +540,15 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
 
     enriched_findings = [_enrich_finding_dict(asdict(f), default_method="HTTP")
                          for f in state.findings]
+    tls_sum = getattr(state, "tls_summary", {}) or {}
+    tls_intel = {}
+    if tls_sum:
+        try:
+            import tls_audit as ta
+            tls_findings = [f for f in enriched_findings if "TLS" in (f.get("vuln_type") or "") or "HSTS" in (f.get("vuln_type") or "")]
+            tls_intel = ta.build_tls_intelligence(tls_sum, tls_findings)
+        except Exception:
+            pass
     return {
         "target": url,
         "debug": debug,
@@ -547,7 +576,8 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         "coverage": state.coverage(),
         "diagnostics": state.diagnostics,
         "tech_stack": getattr(state, "tech_stack", []) or [],
-        "tls_summary": getattr(state, "tls_summary", {}) or {},
+        "tls_summary": tls_sum,
+        "tls_intelligence": tls_intel,
         "findings": enriched_findings,
         "xss_deep": getattr(state, "xss_deep", {}) or {},
         "log": cap.text,
@@ -693,9 +723,15 @@ def crack_hashes(hashes: List[str], words: Optional[List[str]] = None,
             "on a smaller list, run a mask attack (?l?l?l?l?d?d), supply the "
             "salt if the format is salted, or move to hashcat on a GPU.")
 
+    password_audit = {}
+    try:
+        password_audit = hb.build_password_audit_report(targets, cracker.cracked)
+    except Exception:
+        pass
     return {
         "results": results,
         "summary": summary,
+        "password_audit": password_audit,
         "targets": [asdict(t) for t in targets],
         "cracked": cracker.cracked,
         "attempts": cracker.attempts,
@@ -842,6 +878,105 @@ def run_forensics_audit(log_text: str = "", log_type: str = "auto",
             custom_iocs=custom_iocs, pcap_path=pcap_path,
         )
     res["findings"] = [_enrich_finding_dict(f, default_method="Digital Forensics")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+# ---------------------------------------------------------------------------
+# DARK v4.0 Expanded Domain Runners & Centralized Intelligence Engine
+# ---------------------------------------------------------------------------
+def run_secrets_scan(content: str = "", target_path: Optional[str] = None) -> Dict:
+    import secrets_scanner as ss
+    with _Capture() as cap:
+        res = ss.scan_secrets(content=content, target_path=target_path)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Secrets Detection")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_threat_hunt(events: Optional[List[Dict]] = None, raw_logs: str = "",
+                    custom_iocs: Optional[List[str]] = None) -> Dict:
+    import threat_hunting as th
+    with _Capture() as cap:
+        res = th.run_threat_hunt(telemetry_text=raw_logs, events=events, custom_iocs=custom_iocs)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Threat Hunting")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_malware_triage(file_path: Optional[str] = None, content_b64: str = "",
+                       filename: str = "sample.bin") -> Dict:
+    import base64
+    import malware_analysis as ma_mod
+    raw_bytes = base64.b64decode(content_b64) if content_b64 else None
+    with _Capture() as cap:
+        res = ma_mod.analyze_sample(data=raw_bytes, file_path=file_path, sample_name=filename)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Malware Static Triage")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_phishing_analyze(raw_eml: str) -> Dict:
+    import phishing_analyzer as pa
+    with _Capture() as cap:
+        res = pa.analyze_email(raw_eml=raw_eml)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Phishing & Email Analysis")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_ad_audit(snapshot: Optional[Dict] = None, raw_json: str = "") -> Dict:
+    import ad_audit as ada
+    with _Capture() as cap:
+        res = ada.audit_ad_snapshot(snapshot=snapshot, raw_json=raw_json)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Active Directory Audit")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_wireless_audit(aps: Optional[List[Dict]] = None, raw_json: str = "") -> Dict:
+    import wireless_audit as wa
+    with _Capture() as cap:
+        res = wa.audit_wireless_inventory(aps=aps, raw_json=raw_json)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Wireless Security Assessment")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_intel_hub(jobs: List[Dict]) -> Dict:
+    import intel_hub as ih
+    return ih.ingest_jobs_into_hub(jobs)
+
+
+def run_identity_audit(snapshot: Optional[Dict] = None, raw_json: str = "",
+                       stale_days_threshold: int = 90) -> Dict:
+    import identity_security as idsec
+    with _Capture() as cap:
+        res = idsec.audit_identity_posture(
+            snapshot=snapshot, raw_json=raw_json,
+            stale_days_threshold=stale_days_threshold,
+        )
+    res["findings"] = [_enrich_finding_dict(f, default_method="Identity Security")
+                       for f in (res.get("findings") or [])]
+    res["log"] = cap.text
+    return res
+
+
+def run_malware_sandbox(trace: Optional[Dict] = None, content_b64: str = "",
+                        filename: str = "sample.bin") -> Dict:
+    import base64
+    import malware_sandbox as msb
+    raw = base64.b64decode(content_b64) if content_b64 else None
+    with _Capture() as cap:
+        res = msb.analyze_sandbox_telemetry(trace=trace, sample_data=raw, sample_name=filename)
+    res["findings"] = [_enrich_finding_dict(f, default_method="Malware Dynamic Sandbox")
                        for f in (res.get("findings") or [])]
     res["log"] = cap.text
     return res

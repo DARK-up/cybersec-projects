@@ -33,7 +33,7 @@ VALID_VERIFICATION_STATUSES = ("Confirmed", "Likely", "Unverified", "False Posit
 
 def _fkey(f: dict) -> str:
     raw = f"{f.get('vuln_type','')}|{f.get('url','')}|{f.get('parameter','')}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def classify_initial_verification(finding: dict) -> tuple[str, float]:

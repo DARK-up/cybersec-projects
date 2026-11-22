@@ -175,9 +175,14 @@ def scan_sast(code: str = "", target_path: Optional[str] = None, language: str =
             files.append((str(p), p.read_text(encoding="utf-8", errors="ignore")))
         elif p.is_dir():
             for fp in sorted(p.rglob("*")):
-                if fp.is_file() and fp.suffix.lower() in (".py", ".js", ".ts", ".java", ".php", ".c", ".cpp", ".txt", ".json"):
-                    if fp.stat().st_size <= 1_500_000 and ".git" not in fp.parts and "node_modules" not in fp.parts:
-                        files.append((str(fp), fp.read_text(encoding="utf-8", errors="ignore")))
+                if not fp.is_file() or fp.stat().st_size > 1_500_000:
+                    continue
+                if any(part in (".git", "node_modules", "__pycache__", ".pytest_cache") for part in fp.parts):
+                    continue
+                if fp.name.lower() in ("requirements.txt", "package.json") or fp.suffix.lower() in (
+                    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".php", ".c", ".cpp", ".cc", ".h", ".hpp"
+                ):
+                    files.append((str(fp), fp.read_text(encoding="utf-8", errors="ignore")))
 
     findings: List[dict] = []
     langs_seen = set()

@@ -1,4 +1,4 @@
-name: DARK Enterprise CI
+name: DARK v4.0 Enterprise CI & Security Gates
 
 on:
   push:
@@ -7,25 +7,39 @@ on:
     branches: [ main ]
 
 jobs:
-  test-and-validate:
+  test-and-security-gates:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dependencies
+      - name: Install dependencies & security linters
         run: |
           python -m pip install --upgrade pip
-          pip install -r dark/requirements.txt pytest
-      - name: Compile check all Python sources
+          pip install -r dark/requirements.txt pytest bandit pip-audit semgrep
+      - name: Syntax & bytecode check
         run: |
-          python -m compileall -q dark modules webvulnx netrecon hashbreaker netsentry tests
-      - name: Run WebVulnX Deep XSS & Nessus/Accuracy Suites
+          python -m compileall -q dark modules webvulnx netrecon hashbreaker netsentry demo-lab tests
+      - name: Unit, Integration, Security & Regression Test Suites
+        run: |
+          pytest -v tests/unit tests/integration tests/security tests/regression tests/test_enterprise_suite.py tests/test_roadmap_suite.py
+      - name: WebVulnX Deep XSS, Platform & Accuracy Suites
         run: |
           python webvulnx/test_xss_deep.py
-          python webvulnx/test_nessus_and_accuracy.py
-          python webvulnx/test_platform_wave.py
-      - name: Run DARK Enterprise & Roadmap Test Suites
+          pytest -v webvulnx/test_nessus_and_accuracy.py webvulnx/test_platform_wave.py
+      - name: Static Security Analysis (Bandit)
         run: |
-          pytest -v tests/test_enterprise_suite.py tests/test_roadmap_suite.py
+          bandit -r dark modules netrecon netsentry -ll -q
+      - name: Semgrep SAST Check
+        run: |
+          semgrep --config auto dark modules --error || true
+      - name: Dependency Vulnerability Audit (pip-audit)
+        run: |
+          pip-audit -r dark/requirements.txt || true
+      - name: Trivy Filesystem & Container Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL

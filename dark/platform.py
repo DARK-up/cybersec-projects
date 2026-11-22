@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import secrets
+import sys
 import threading
 import time
 import uuid
@@ -21,6 +22,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+import security_hardening as _sh  # noqa: E402
+
 DATA_DIR = APP_DIR / "data"
 PROJECTS_FILE = DATA_DIR / "projects.json"
 AUTH_FILE = DATA_DIR / "auth.json"
@@ -29,7 +34,11 @@ NOTES_FILE = DATA_DIR / "notes.json"
 
 _LOCK = threading.Lock()
 PBKDF2_ROUNDS = 120_000
-SESSION_TTL = 7 * 24 * 3600
+SESSION_IDLE_TTL = int(os.environ.get("DARK_SESSION_IDLE_TTL", str(30 * 60)))
+SESSION_ABSOLUTE_TTL = int(os.environ.get("DARK_SESSION_ABSOLUTE_TTL", str(8 * 3600)))
+SESSION_TTL = SESSION_ABSOLUTE_TTL
+LOCKOUT_THRESHOLD = 5
+LOCKOUT_SECONDS = 300
 DEFAULT_PROJECT = {
     "id": "default",
     "name": "Default",
@@ -161,14 +170,15 @@ def auth_status() -> dict:
 
 
 def set_password(username: str, password: str, enabled: bool = True) -> dict:
-    if not password or len(password) < 4:
-        raise ValueError("password must be at least 4 characters")
-    salt = secrets.token_bytes(16)
+    _sh.validate_password_policy(password)
+    pw_hash, pw_salt = _sh.hash_password(password)
     cfg = {
         "enabled": bool(enabled),
         "username": (username or "dark").strip()[:40] or "dark",
-        "salt": salt.hex(),
-        "pw_hash": _hash_password(password, salt),
+        "salt": pw_salt,
+        "pw_hash": pw_hash,
+        "failed_attempts": 0,
+        "locked_until": 0.0,
         "updated_at": time.time(),
     }
     _atomic_write(AUTH_FILE, cfg)
@@ -188,32 +198,66 @@ def verify_password(username: str, password: str) -> bool:
     if env_pass:
         return hmac.compare_digest(username or "", env_user) and \
                hmac.compare_digest(password or "", env_pass)
-    cfg = _load(AUTH_FILE, {})
-    if not cfg.get("enabled") or not cfg.get("pw_hash"):
-        return False
-    if not hmac.compare_digest(username or "", cfg.get("username") or "dark"):
-        return False
-    try:
-        salt = bytes.fromhex(cfg["salt"])
-    except Exception:
-        return False
-    return hmac.compare_digest(_hash_password(password, salt), cfg["pw_hash"])
+    with _LOCK:
+        cfg = _load(AUTH_FILE, {})
+        if not cfg.get("enabled") or not cfg.get("pw_hash"):
+            return False
+        now = time.time()
+        if float(cfg.get("locked_until") or 0) > now:
+            return False
+        if not hmac.compare_digest(username or "", cfg.get("username") or "dark"):
+            fails = int(cfg.get("failed_attempts") or 0) + 1
+            cfg["failed_attempts"] = fails
+            if fails >= LOCKOUT_THRESHOLD:
+                cfg["locked_until"] = now + LOCKOUT_SECONDS
+            _atomic_write(AUTH_FILE, cfg)
+            return False
+        ok, needs_rehash = _sh.verify_password(password or "", str(cfg["pw_hash"]), str(cfg.get("salt") or ""))
+        if not ok:
+            fails = int(cfg.get("failed_attempts") or 0) + 1
+            cfg["failed_attempts"] = fails
+            if fails >= LOCKOUT_THRESHOLD:
+                cfg["locked_until"] = now + LOCKOUT_SECONDS
+            _atomic_write(AUTH_FILE, cfg)
+            return False
+        changed = bool(cfg.get("failed_attempts") or cfg.get("locked_until"))
+        cfg["failed_attempts"] = 0
+        cfg["locked_until"] = 0.0
+        if needs_rehash:
+            nh, ns = _sh.hash_password(password)
+            cfg["pw_hash"] = nh
+            cfg["salt"] = ns
+            cfg["updated_at"] = now
+            changed = True
+        if changed:
+            _atomic_write(AUTH_FILE, cfg)
+        return True
 
 
 def _sessions() -> dict:
     return _load(SESSIONS_FILE, {})
 
 
-def create_session(username: str) -> str:
+def create_session(username: str, old_token: Optional[str] = None) -> str:
     token = secrets.token_urlsafe(32)
     with _LOCK:
         s = _sessions()
         now = time.time()
-        # drop expired
-        s = {k: v for k, v in s.items()
-             if isinstance(v, dict) and v.get("expires", 0) > now}
-        s[token] = {"username": username, "created": now,
-                    "expires": now + SESSION_TTL}
+        if old_token:
+            s.pop(old_token, None)
+        # drop expired (absolute or idle)
+        s = {
+            k: v for k, v in s.items()
+            if isinstance(v, dict)
+            and v.get("expires", 0) > now
+            and (now - v.get("last_activity", v.get("created", now))) <= SESSION_IDLE_TTL
+        }
+        s[token] = {
+            "username": username,
+            "created": now,
+            "last_activity": now,
+            "expires": now + SESSION_ABSOLUTE_TTL,
+        }
         _atomic_write(SESSIONS_FILE, s)
     return token
 
@@ -221,11 +265,22 @@ def create_session(username: str) -> str:
 def session_user(token: Optional[str]) -> Optional[str]:
     if not token:
         return None
-    s = _sessions()
-    rec = s.get(token)
-    if not rec or rec.get("expires", 0) < time.time():
-        return None
-    return rec.get("username")
+    with _LOCK:
+        s = _sessions()
+        rec = s.get(token)
+        if not rec or not isinstance(rec, dict):
+            return None
+        now = time.time()
+        last_act = float(rec.get("last_activity", rec.get("created", 0)) or 0)
+        if float(rec.get("expires", 0) or 0) <= now or (now - last_act) > SESSION_IDLE_TTL:
+            s.pop(token, None)
+            _atomic_write(SESSIONS_FILE, s)
+            return None
+        # Slide idle timer
+        if now - last_act >= 5.0:
+            rec["last_activity"] = now
+            _atomic_write(SESSIONS_FILE, s)
+        return rec.get("username")
 
 
 def drop_session(token: Optional[str]) -> None:

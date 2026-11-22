@@ -1177,6 +1177,39 @@ class DeepXssScanner:
                 "confirmed_points": sorted(f"{u} [{p}]" for u, p in self.confirmed)}
 
 
+def audit_csp(headers: Optional[Dict[str, str]]) -> Dict[str, Any]:
+    """Evaluate Content-Security-Policy header strength against inline XSS."""
+    hdrs = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    csp = hdrs.get("content-security-policy", "").strip()
+    if not csp:
+        return {"present": False, "blocks_inline": False, "detail": "No CSP header"}
+    directives: Dict[str, str] = {}
+    for part in csp.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        toks = part.split(None, 1)
+        directives[toks[0].lower()] = toks[1] if len(toks) > 1 else ""
+    script_pol = directives.get("script-src") or directives.get("default-src") or ""
+    low = script_pol.lower()
+    allows_unsafe_inline = ("'unsafe-inline'" in low) and ("'nonce-" not in low) and ("'sha256-" not in low)
+    allows_unsafe_eval = "'unsafe-eval'" in low
+    allows_wildcard = (" * " in f" {low} ") or ("http:" in low) or ("https:" in low)
+    blocks_inline = bool(script_pol) and (not allows_unsafe_inline) and ("'none'" in low or "'self'" in low or "'nonce-" in low or "'sha256-" in low)
+    return {
+        "present": True,
+        "script_src": script_pol,
+        "blocks_inline": blocks_inline,
+        "allows_unsafe_inline": allows_unsafe_inline,
+        "allows_unsafe_eval": allows_unsafe_eval,
+        "allows_wildcard": allows_wildcard,
+        "detail": (
+            f"Strict CSP ({script_pol}) blocks inline script execution"
+            if blocks_inline else f"Weak CSP ({script_pol or 'no script-src'})"
+        ),
+    }
+
+
 def classify_json_context_label(ctx: str) -> str:
     return CTX_JSON
 

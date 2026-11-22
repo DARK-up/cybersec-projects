@@ -1,0 +1,43 @@
+- id: cmdi-safe-echo-semicolon
+  category: cmdi
+  engine: posix_sh
+  payload: ";echo DARK_CMDI_\"\"9182"
+  expect: "DARK_CMDI_9182"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-78
+  tags: [echo-canary, non-destructive, anti-reflection]
+  description: Non-destructive quote-split echo canary (cannot match raw input reflection)
+
+- id: cmdi-safe-echo-pipe
+  category: cmdi
+  engine: posix_sh
+  payload: "|echo DARK_CMDI_\"\"9182"
+  expect: "DARK_CMDI_9182"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-78
+  tags: [echo-canary, pipe, anti-reflection]
+  description: Non-destructive quote-split echo canary with pipe separator
+
+- id: cmdi-safe-echo-subshell
+  category: cmdi
+  engine: posix_sh
+  payload: "$(echo DARK_CMDI_\"\"9182)"
+  expect: "DARK_CMDI_9182"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-78
+  tags: [echo-canary, subshell, anti-reflection]
+  description: Non-destructive quote-split subshell echo canary
+
+- id: cmdi-lab-id
+  category: cmdi
+  engine: posix_sh
+  payload: ";id"
+  expect: "uid=\\d+\\("
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-78
+  tags: [demo-lab, id]
+  description: Standard id output probe scoped to local demo-lab

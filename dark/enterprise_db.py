@@ -27,7 +27,10 @@ from urllib.parse import urlsplit
 APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "dark_enterprise.db"
-VAULT_KEY_FILE = DATA_DIR / ".vault.key"
+VAULT_KEY_FILE = Path(
+    os.environ.get("DARK_VAULT_KEY_PATH")
+    or str(Path.home() / ".dark_keys" / "vault_keyring.json")
+)
 
 import sys as _sys
 if str(APP_DIR) not in _sys.path:
@@ -37,21 +40,29 @@ import security_hardening as _sh
 
 _DB_LOCK = threading.RLock()
 PBKDF2_ROUNDS = 120_000
+SESSION_IDLE_TTL = int(os.environ.get("DARK_SESSION_IDLE_TTL", str(30 * 60)))
+SESSION_ABSOLUTE_TTL = int(os.environ.get("DARK_SESSION_ABSOLUTE_TTL", str(8 * 3600)))
 
 ROLES: Dict[str, List[str]] = {
     "admin": [
-        "scan:run", "scan:stop", "remediation:write", "plugin:manage",
-        "intel:sync", "compliance:read", "admin:manage", "backup:manage", "vault:use",
+        "scan:run", "scan:stop", "report:read", "remediation:write",
+        "plugin:manage", "intel:read", "intel:sync", "compliance:read",
+        "audit:read", "asset:write", "threat:write",
+        "vault:read", "vault:write", "vault:delete", "vault:use",
+        "user:manage", "apikey:manage", "tenant:manage",
+        "backup:manage", "admin:manage",
     ],
     "analyst": [
-        "scan:run", "scan:stop", "remediation:write", "plugin:manage",
-        "intel:sync", "compliance:read", "vault:use",
+        "scan:run", "scan:stop", "report:read", "remediation:write",
+        "intel:read", "intel:sync", "compliance:read",
+        "asset:write", "threat:write", "vault:read", "vault:use",
     ],
     "auditor": [
-        "compliance:read", "remediation:write", "intel:sync",
+        "report:read", "compliance:read", "audit:read",
+        "remediation:write", "intel:read",
     ],
     "viewer": [
-        "compliance:read",
+        "report:read", "compliance:read", "intel:read",
     ],
 }
 
@@ -223,6 +234,7 @@ init_db()
 
 _CURRENT_ACTOR: contextvars.ContextVar = contextvars.ContextVar("dark_actor", default=None)
 _RATE_BUCKETS: Dict[str, deque] = {}
+_LOGIN_BUCKETS: Dict[str, deque] = {}
 _RATE_LOCK = threading.Lock()
 
 
@@ -274,21 +286,53 @@ def check_rate_limit(client_ip: str = "global") -> Tuple[bool, int]:
         return True, limit
 
 
+def check_login_rate_limit(client_ip: str = "global", max_attempts: int = 12, window_s: float = 60.0) -> Tuple[bool, int]:
+    """Strict rate limiter for authentication endpoints (prevents online brute-force)."""
+    now = time.time()
+    key = client_ip or "global"
+    limit = int(os.environ.get("DARK_LOGIN_MAX_ATTEMPTS", str(max_attempts)))
+    with _RATE_LOCK:
+        dq = _LOGIN_BUCKETS.setdefault(key, deque())
+        while dq and now - dq[0] > window_s:
+            dq.popleft()
+        if len(dq) >= limit:
+            return False, limit
+        dq.append(now)
+        return True, limit
+
+
+def reset_login_rate_limit(client_ip: str = "global") -> None:
+    key = client_ip or "global"
+    with _RATE_LOCK:
+        _LOGIN_BUCKETS.pop(key, None)
+
+
 def get_db_status() -> dict:
     return _dbm.get_backend_info()
 
 
-def create_rbac_session(username: str, role: str, ttl_seconds: int = 7 * 24 * 3600, tenant_id: str = "default") -> str:
+def create_rbac_session(
+    username: str,
+    role: str,
+    ttl_seconds: Optional[int] = None,
+    tenant_id: str = "default",
+    old_token: Optional[str] = None,
+) -> str:
     tok = secrets.token_urlsafe(32)
-    exp = time.time() + ttl_seconds
+    now = time.time()
+    abs_ttl = int(ttl_seconds if ttl_seconds is not None else SESSION_ABSOLUTE_TTL)
+    exp = now + abs_ttl
     tid = (tenant_id or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
-            c.execute("DELETE FROM rbac_sessions WHERE expires_at < ?", (time.time(),))
+            if old_token:
+                c.execute("DELETE FROM rbac_sessions WHERE token=?", (old_token,))
+            c.execute("DELETE FROM rbac_sessions WHERE expires_at < ?", (now,))
             c.execute(
-                "INSERT INTO rbac_sessions(token, username, role, tenant_id, expires_at) VALUES(?,?,?,?,?)",
-                (tok, username, role, tid, exp),
+                "INSERT INTO rbac_sessions(token, username, role, tenant_id, expires_at, created_at, last_activity) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (tok, username, role, tid, exp, now, now),
             )
             c.commit()
         finally:
@@ -299,24 +343,32 @@ def create_rbac_session(username: str, role: str, ttl_seconds: int = 7 * 24 * 36
 def get_rbac_session(token: Optional[str]) -> Optional[dict]:
     if not token:
         return None
+    now = time.time()
     with _DB_LOCK:
         c = _conn()
         try:
             row = c.execute(
-                "SELECT token, username, role, tenant_id, expires_at FROM rbac_sessions WHERE token=?",
+                "SELECT token, username, role, tenant_id, expires_at, created_at, last_activity "
+                "FROM rbac_sessions WHERE token=?",
                 (token,),
             ).fetchone()
             if not row:
                 return None
-            if row["expires_at"] < time.time():
+            last_act = float(row["last_activity"] or row["created_at"] or now)
+            if float(row["expires_at"]) < now or (now - last_act) > SESSION_IDLE_TTL:
                 c.execute("DELETE FROM rbac_sessions WHERE token=?", (token,))
                 c.commit()
                 return None
+            if (now - last_act) >= 5.0 or not row["last_activity"]:
+                c.execute("UPDATE rbac_sessions SET last_activity=? WHERE token=?", (now, token))
+                c.commit()
             return {
                 "username": row["username"],
                 "role": row["role"],
                 "tenant_id": row["tenant_id"] or "default",
                 "permissions": ROLES.get(row["role"], []),
+                "expires_at": row["expires_at"],
+                "last_activity": now,
             }
         finally:
             c.close()
@@ -607,8 +659,7 @@ def create_user(username: str, password: str, role: str = "analyst", tenant_id: 
     uname = (username or "").strip().lower()
     if len(uname) < 2:
         raise ValueError("Username must be at least 2 characters")
-    if len(password or "") < 6:
-        raise ValueError("Password must be at least 6 characters")
+    _sh.validate_password_policy(password)
     if role not in ROLES:
         raise ValueError(f"Role must be one of {list(ROLES)}")
     pw_hash, pw_salt = _sh.hash_password(password)
@@ -876,13 +927,18 @@ def list_job_meta(tenant_id: Optional[str] = None) -> List[dict]:
             c.close()
 
 
-def update_user_role(user_id: str, role: str) -> bool:
+def update_user_role(user_id: str, role: str, actor_username: Optional[str] = None) -> bool:
     if role not in ROLES:
         raise ValueError("Invalid role")
     with _DB_LOCK:
         c = _conn()
         try:
-            cur = c.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+            row = c.execute("SELECT id, username FROM users WHERE id=? OR username=?", (user_id, user_id)).fetchone()
+            if not row:
+                return False
+            if actor_username and row["username"].lower() == actor_username.strip().lower():
+                raise PermissionError("Cannot modify your own role (privilege escalation guard)")
+            cur = c.execute("UPDATE users SET role=? WHERE id=?", (role, row["id"]))
             c.commit()
             return cur.rowcount > 0
         finally:
@@ -911,23 +967,80 @@ def has_permission(role: str, perm: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Credential Vault (Authenticated Encryption: PBKDF2 + CTR-HMAC-SHA256)
+# Credential Vault (AES-256-GCM AEAD + External Key Separation + Rotation)
 # ---------------------------------------------------------------------------
-def _get_vault_master_key() -> bytes:
-    env_k = os.environ.get("DARK_VAULT_KEY", "")
+_LEGACY_VAULT_KEY_FILE = DATA_DIR / ".vault.key"
+
+
+def _load_vault_keyring() -> dict:
+    """Load versioned master keys from env or external key file (separate from DB_PATH)."""
+    env_k = os.environ.get("DARK_VAULT_KEY", "").strip()
     if env_k:
-        return hashlib.sha256(env_k.encode("utf-8")).digest()
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+        keys = {1: hashlib.sha256(env_k.encode("utf-8")).digest()}
+        ver = 1
+        # Optional rotated keys DARK_VAULT_KEY_V2, DARK_VAULT_KEY_V3, ...
+        for v in range(2, 20):
+            vk = os.environ.get(f"DARK_VAULT_KEY_V{v}", "").strip()
+            if vk:
+                keys[v] = hashlib.sha256(vk.encode("utf-8")).digest()
+                ver = v
+        return {"current_version": ver, "keys": keys}
+
+    VAULT_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     if not VAULT_KEY_FILE.is_file():
-        VAULT_KEY_FILE.write_bytes(secrets.token_bytes(32))
+        # Migrate legacy key if present so existing vault secrets remain readable as v1
+        if _LEGACY_VAULT_KEY_FILE.is_file():
+            raw_v1 = _LEGACY_VAULT_KEY_FILE.read_bytes()[:32]
+        else:
+            raw_v1 = secrets.token_bytes(32)
+        ring_disk = {
+            "current_version": 1,
+            "keys": {"1": base64.b64encode(raw_v1).decode("ascii")},
+        }
+        VAULT_KEY_FILE.write_text(json.dumps(ring_disk), encoding="utf-8")
         try:
             os.chmod(VAULT_KEY_FILE, 0o600)
         except Exception:
             pass
-    return VAULT_KEY_FILE.read_bytes()[:32]
+    try:
+        data = json.loads(VAULT_KEY_FILE.read_text(encoding="utf-8"))
+        keys = {int(k): base64.b64decode(v)[:32] for k, v in (data.get("keys") or {}).items()}
+        cur_v = int(data.get("current_version") or max(keys.keys()))
+        return {"current_version": cur_v, "keys": keys}
+    except Exception:
+        raw = VAULT_KEY_FILE.read_bytes()[:32]
+        return {"current_version": 1, "keys": {1: raw}}
 
 
-def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
+def _get_vault_key_versioned(version: Optional[int] = None) -> Tuple[int, bytes]:
+    ring = _load_vault_keyring()
+    ver = version if (version is not None and version in ring["keys"]) else ring["current_version"]
+    return ver, ring["keys"][ver]
+
+
+def _get_vault_master_key() -> bytes:
+    """Return primary master key bytes (backward-compatible helper)."""
+    _, key = _get_vault_key_versioned(1)
+    return key
+
+
+def _derive_aes_key(master: bytes, key_version: int) -> bytes:
+    return hashlib.sha256(f"dark-vault-aes256gcm|v{key_version}|".encode("utf-8") + master).digest()
+
+
+def _encrypt_secret(plaintext: str, aad_context: str = "vault") -> Tuple[str, str, str]:
+    key_ver, master = _get_vault_key_versioned()
+    aes_key = _derive_aes_key(master, key_ver)
+    aad = f"{aad_context}:v{key_ver}".encode("utf-8")
+    nonce, ct, tag = _sh.aes_gcm_encrypt(aes_key, plaintext.encode("utf-8"), aad=aad)
+    return (
+        base64.b64encode(nonce).decode("ascii"),
+        base64.b64encode(ct).decode("ascii"),
+        base64.b64encode(tag).decode("ascii"),
+    )
+
+
+def _legacy_keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     out = bytearray()
     ctr = 0
     while len(out) < length:
@@ -936,95 +1049,177 @@ def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
     return bytes(out[:length])
 
 
-def _encrypt_secret(plaintext: str) -> Tuple[str, str, str]:
-    master = _get_vault_master_key()
-    enc_key = hashlib.sha256(b"enc|" + master).digest()
-    mac_key = hashlib.sha256(b"mac|" + master).digest()
-    nonce = secrets.token_bytes(16)
-    pt = plaintext.encode("utf-8")
-    ks = _keystream(enc_key, nonce, len(pt))
-    ct = bytes(a ^ b for a, b in zip(pt, ks))
-    mac = hmac.new(mac_key, nonce + ct, hashlib.sha256).digest()
-    return (
-        base64.b64encode(nonce).decode(),
-        base64.b64encode(ct).decode(),
-        base64.b64encode(mac).decode(),
-    )
-
-
-def _decrypt_secret(nonce_b64: str, cipher_b64: str, mac_b64: str) -> str:
-    master = _get_vault_master_key()
-    enc_key = hashlib.sha256(b"enc|" + master).digest()
-    mac_key = hashlib.sha256(b"mac|" + master).digest()
+def _decrypt_secret(
+    nonce_b64: str,
+    cipher_b64: str,
+    mac_b64: str,
+    key_version: int = 1,
+    alg: str = "AES-256-GCM",
+    aad_context: str = "vault",
+) -> str:
+    _, master = _get_vault_key_versioned(key_version)
     nonce = base64.b64decode(nonce_b64)
     ct = base64.b64decode(cipher_b64)
-    mac = base64.b64decode(mac_b64)
+    tag_or_mac = base64.b64decode(mac_b64)
+
+    if alg == "AES-256-GCM" and len(nonce) == 12 and len(tag_or_mac) == 16:
+        aes_key = _derive_aes_key(master, key_version)
+        aad = f"{aad_context}:v{key_version}".encode("utf-8")
+        pt = _sh.aes_gcm_decrypt(aes_key, nonce, ct, tag_or_mac, aad=aad)
+        return pt.decode("utf-8")
+
+    # Legacy CTR-HMAC fallback for older rows created before v4.0
+    enc_key = hashlib.sha256(b"enc|" + master).digest()
+    mac_key = hashlib.sha256(b"mac|" + master).digest()
     expected = hmac.new(mac_key, nonce + ct, hashlib.sha256).digest()
-    if not hmac.compare_digest(mac, expected):
+    if not hmac.compare_digest(tag_or_mac, expected):
         raise ValueError("Vault integrity check failed")
-    ks = _keystream(enc_key, nonce, len(ct))
+    ks = _legacy_keystream(enc_key, nonce, len(ct))
     pt = bytes(a ^ b for a, b in zip(ct, ks))
     return pt.decode("utf-8")
 
 
-def store_vault_secret(name: str, kind: str, secret_value: str, created_by: str = "admin") -> dict:
+def store_vault_secret(
+    name: str,
+    kind: str,
+    secret_value: str,
+    created_by: str = "admin",
+    tenant_id: Optional[str] = None,
+) -> dict:
     if not name or not secret_value:
         raise ValueError("Name and secret_value required")
-    nb, cb, mb = _encrypt_secret(secret_value)
+    tid = (tenant_id or get_current_tenant() or "default").strip() or "default"
+    key_ver, _ = _get_vault_key_versioned()
+    nb, cb, mb = _encrypt_secret(secret_value, aad_context=f"vault:{tid}")
     sid = uuid.uuid4().hex[:10]
     now = time.time()
     with _DB_LOCK:
         c = _conn()
         try:
             c.execute(
-                "INSERT INTO vault_secrets(id, name, kind, nonce_b64, cipher_b64, mac_b64, created_by, created_at) "
-                "VALUES(?,?,?,?,?,?,?,?) "
+                "INSERT INTO vault_secrets(id, name, kind, nonce_b64, cipher_b64, mac_b64, created_by, created_at, tenant_id, key_version, alg, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,'AES-256-GCM',?) "
                 "ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, nonce_b64=excluded.nonce_b64, "
-                "cipher_b64=excluded.cipher_b64, mac_b64=excluded.mac_b64, created_by=excluded.created_by",
-                (sid, name.strip(), (kind or "generic").strip(), nb, cb, mb, created_by, now),
+                "cipher_b64=excluded.cipher_b64, mac_b64=excluded.mac_b64, created_by=excluded.created_by, "
+                "tenant_id=excluded.tenant_id, key_version=excluded.key_version, alg='AES-256-GCM', updated_at=excluded.updated_at",
+                (sid, name.strip(), (kind or "generic").strip(), nb, cb, mb, created_by, now, tid, key_ver, now),
             )
+            row_id = c.execute("SELECT id FROM vault_secrets WHERE name=?", (name.strip(),)).fetchone()
+            if row_id:
+                sid = row_id["id"]
             c.commit()
         finally:
             c.close()
-    return {"id": sid, "name": name.strip(), "kind": kind or "generic", "created_by": created_by, "created_at": now}
+    return {
+        "id": sid, "name": name.strip(), "kind": kind or "generic",
+        "tenant_id": tid, "key_version": key_ver, "alg": "AES-256-GCM",
+        "created_by": created_by, "created_at": now,
+    }
 
 
-def list_vault_secrets() -> List[dict]:
+def list_vault_secrets(tenant_id: Optional[str] = None) -> List[dict]:
+    tid = (tenant_id or get_current_tenant() or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
             rows = c.execute(
-                "SELECT id, name, kind, created_by, created_at FROM vault_secrets ORDER BY created_at DESC"
+                "SELECT id, name, kind, tenant_id, key_version, alg, created_by, created_at, updated_at "
+                "FROM vault_secrets WHERE tenant_id=? ORDER BY created_at DESC",
+                (tid,),
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
             c.close()
 
 
-def reveal_vault_secret(name_or_id: str) -> Optional[str]:
+def reveal_vault_secret(name_or_id: str, tenant_id: Optional[str] = None) -> Optional[str]:
+    tid = (tenant_id or get_current_tenant() or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
             row = c.execute(
-                "SELECT nonce_b64, cipher_b64, mac_b64 FROM vault_secrets WHERE id=? OR name=?",
-                (name_or_id, name_or_id),
+                "SELECT nonce_b64, cipher_b64, mac_b64, tenant_id, key_version, alg "
+                "FROM vault_secrets WHERE (id=? OR name=?) AND tenant_id=?",
+                (name_or_id, name_or_id, tid),
             ).fetchone()
         finally:
             c.close()
     if not row:
         return None
-    return _decrypt_secret(row["nonce_b64"], row["cipher_b64"], row["mac_b64"])
+    kv = int(row["key_version"] or 1) if "key_version" in row.keys() else 1
+    alg = str(row["alg"] or "CTR-HMAC-SHA256") if "alg" in row.keys() else "CTR-HMAC-SHA256"
+    try:
+        return _decrypt_secret(
+            row["nonce_b64"], row["cipher_b64"], row["mac_b64"],
+            key_version=kv, alg=alg, aad_context=f"vault:{tid}",
+        )
+    except Exception:
+        # Backward compatibility if row was written without tenant AAD
+        return _decrypt_secret(
+            row["nonce_b64"], row["cipher_b64"], row["mac_b64"],
+            key_version=kv, alg=alg, aad_context="vault",
+        )
 
 
-def delete_vault_secret(sid: str) -> bool:
+def delete_vault_secret(sid: str, tenant_id: Optional[str] = None) -> bool:
+    tid = (tenant_id or get_current_tenant() or "default").strip() or "default"
     with _DB_LOCK:
         c = _conn()
         try:
-            cur = c.execute("DELETE FROM vault_secrets WHERE id=? OR name=?", (sid, sid))
+            cur = c.execute("DELETE FROM vault_secrets WHERE (id=? OR name=?) AND tenant_id=?", (sid, sid, tid))
             c.commit()
             return cur.rowcount > 0
         finally:
             c.close()
+
+
+def rotate_vault_keys(tenant_id: Optional[str] = None) -> dict:
+    """Rotate vault master key to a fresh version and re-encrypt all secrets with AES-256-GCM."""
+    if os.environ.get("DARK_VAULT_KEY", "").strip():
+        raise ValueError("Cannot auto-rotate env-managed DARK_VAULT_KEY; set DARK_VAULT_KEY_V<n> and re-encrypt")
+    ring = _load_vault_keyring()
+    old_ver = int(ring["current_version"])
+    new_ver = old_ver + 1
+    new_raw = secrets.token_bytes(32)
+    ring_disk = {
+        "current_version": new_ver,
+        "keys": {str(k): base64.b64encode(v).decode("ascii") for k, v in ring["keys"].items()},
+    }
+    ring_disk["keys"][str(new_ver)] = base64.b64encode(new_raw).decode("ascii")
+    VAULT_KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    VAULT_KEY_FILE.write_text(json.dumps(ring_disk), encoding="utf-8")
+    try:
+        os.chmod(VAULT_KEY_FILE, 0o600)
+    except Exception:
+        pass
+
+    reencrypted = 0
+    now = time.time()
+    with _DB_LOCK:
+        c = _conn()
+        try:
+            if tenant_id:
+                rows = c.execute("SELECT * FROM vault_secrets WHERE tenant_id=?", (tenant_id,)).fetchall()
+            else:
+                rows = c.execute("SELECT * FROM vault_secrets").fetchall()
+            for r in rows:
+                rtid = r["tenant_id"] if "tenant_id" in r.keys() else "default"
+                kv = int(r["key_version"] or 1) if "key_version" in r.keys() else 1
+                alg = str(r["alg"] or "CTR-HMAC-SHA256") if "alg" in r.keys() else "CTR-HMAC-SHA256"
+                try:
+                    pt = _decrypt_secret(r["nonce_b64"], r["cipher_b64"], r["mac_b64"], key_version=kv, alg=alg, aad_context=f"vault:{rtid}")
+                except Exception:
+                    pt = _decrypt_secret(r["nonce_b64"], r["cipher_b64"], r["mac_b64"], key_version=kv, alg=alg, aad_context="vault")
+                nb, cb, mb = _encrypt_secret(pt, aad_context=f"vault:{rtid}")
+                c.execute(
+                    "UPDATE vault_secrets SET nonce_b64=?, cipher_b64=?, mac_b64=?, key_version=?, alg='AES-256-GCM', updated_at=? WHERE id=?",
+                    (nb, cb, mb, new_ver, now, r["id"]),
+                )
+                reencrypted += 1
+            c.commit()
+        finally:
+            c.close()
+    return {"previous_version": old_ver, "current_version": new_ver, "reencrypted": reencrypted}
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,7 @@ import reporting_analytics as rpt  # noqa: E402
 import compliance as comp  # noqa: E402
 import remediation as rem  # noqa: E402
 import plugin_mgr as pm  # noqa: E402
+import mitre_attack as ma  # noqa: E402
 
 router = APIRouter()
 
@@ -50,6 +51,31 @@ def bind_hooks(start_job_fn, jobs_dict, jobs_lock, jobs_to_disk_fn, legal_text: 
     _HOOKS["LEGAL"] = legal_text
     if recover_fn is not None:
         _HOOKS["recover_fn"] = recover_fn
+
+
+def _cookie_secure(request: Request) -> bool:
+    import os
+    if os.environ.get("DARK_FORCE_SECURE_COOKIES") == "1":
+        return True
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+    return proto == "https"
+
+
+def _scoped_tenant(requested_tid: Optional[str] = None) -> str:
+    """Derive tenant strictly from authenticated session; reject cross-tenant overrides."""
+    cur_tid = edb.get_current_tenant()
+    if cur_tid and cur_tid != "default":
+        if requested_tid and requested_tid != cur_tid:
+            raise HTTPException(403, f"Cross-tenant access denied for tenant '{requested_tid}'")
+        return cur_tid
+    return (requested_tid or cur_tid or "default").strip() or "default"
+
+
+def _check_job_tenant(job: dict) -> None:
+    cur_tid = edb.get_current_tenant()
+    jtid = (job.get("tenant_id") or "default").strip() or "default"
+    if cur_tid and cur_tid != "default" and jtid != cur_tid:
+        raise HTTPException(403, "Cross-tenant job access denied")
 
 
 def _all_jobs(project_id: Optional[str] = None, tenant_id: Optional[str] = None) -> List[dict]:
@@ -122,6 +148,89 @@ class ForensicsReq(BaseModel):
     custom_iocs: List[str] = []
     pcap_path: Optional[str] = None
     project_id: str = "default"
+
+
+class SecretsScanReq(BaseModel):
+    content: str = ""
+    target_path: Optional[str] = None
+    project_id: str = "default"
+
+
+class ThreatHuntReq(BaseModel):
+    events: Optional[List[Dict[str, Any]]] = None
+    raw_logs: str = ""
+    custom_iocs: List[str] = []
+    project_id: str = "default"
+
+
+class MalwareTriageReq(BaseModel):
+    file_path: Optional[str] = None
+    content_b64: str = ""
+    filename: str = "sample.bin"
+    project_id: str = "default"
+
+
+class PhishingAnalyzeReq(BaseModel):
+    raw_eml: str
+    project_id: str = "default"
+
+
+class AdAuditReq(BaseModel):
+    snapshot: Optional[Dict[str, Any]] = None
+    raw_json: str = ""
+    project_id: str = "default"
+
+
+class WirelessAuditReq(BaseModel):
+    aps: Optional[List[Dict[str, Any]]] = None
+    raw_json: str = ""
+    project_id: str = "default"
+
+
+class HashAssessReq(BaseModel):
+    hashes: List[str] = []
+    passwords: List[str] = []
+    min_length: int = 12
+
+
+class IdentityAuditReq(BaseModel):
+    snapshot: Optional[Dict[str, Any]] = None
+    raw_json: str = ""
+    stale_days_threshold: int = 90
+    project_id: str = "default"
+
+
+class MalwareSandboxReq(BaseModel):
+    trace: Optional[Dict[str, Any]] = None
+    content_b64: str = ""
+    filename: str = "sample.bin"
+    project_id: str = "default"
+
+
+class DetectionRuleReq(BaseModel):
+    id: Optional[str] = None
+    name: str
+    severity: str = "Medium"
+    status: str = "experimental"
+    mitre_tactic: str = "Execution"
+    mitre_technique: str = "T1059"
+    keywords: List[str] = []
+    regex: str = ""
+
+
+class SigmaImportReq(BaseModel):
+    sigma_yaml: str
+
+
+class DetectionTestReq(BaseModel):
+    rule_id: str
+    positive_samples: List[str] = []
+    negative_samples: List[str] = []
+
+
+class DetectionFpReq(BaseModel):
+    rule_id: str
+    is_fp: bool = True
 
 
 class AssetCreateReq(BaseModel):
@@ -334,6 +443,109 @@ def job_forensics(req: ForensicsReq):
     return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
 
 
+@router.post("/api/jobs/secrets-scan")
+def job_secrets_scan(req: SecretsScanReq):
+    jid = _HOOKS["start_job"](
+        "secrets-scan", engine.run_secrets_scan,
+        project_id=req.project_id, target_hint=req.target_path or "inline-secrets",
+        content=req.content, target_path=req.target_path,
+    )
+    edb.log_current_audit("scan:secrets-scan", req.target_path or "inline")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/threat-hunt")
+def job_threat_hunt(req: ThreatHuntReq):
+    jid = _HOOKS["start_job"](
+        "threat-hunt", engine.run_threat_hunt,
+        project_id=req.project_id, target_hint="threat-hunt-telemetry",
+        events=req.events, raw_logs=req.raw_logs, custom_iocs=req.custom_iocs,
+    )
+    edb.log_current_audit("scan:threat-hunt", "telemetry")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/malware-triage")
+def job_malware_triage(req: MalwareTriageReq):
+    jid = _HOOKS["start_job"](
+        "malware-triage", engine.run_malware_triage,
+        project_id=req.project_id, target_hint=req.file_path or req.filename,
+        file_path=req.file_path, content_b64=req.content_b64, filename=req.filename,
+    )
+    edb.log_current_audit("scan:malware-triage", req.filename)
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/phishing-analyze")
+def job_phishing_analyze(req: PhishingAnalyzeReq):
+    jid = _HOOKS["start_job"](
+        "phishing-analyze", engine.run_phishing_analyze,
+        project_id=req.project_id, target_hint="email-phishing-triage",
+        raw_eml=req.raw_eml,
+    )
+    edb.log_current_audit("scan:phishing-analyze", "email")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/ad-audit")
+def job_ad_audit(req: AdAuditReq):
+    jid = _HOOKS["start_job"](
+        "ad-audit", engine.run_ad_audit,
+        project_id=req.project_id, target_hint=(req.snapshot or {}).get("domain") or "active-directory",
+        snapshot=req.snapshot, raw_json=req.raw_json,
+    )
+    edb.log_current_audit("scan:ad-audit", "ad-snapshot")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/wireless-audit")
+def job_wireless_audit(req: WirelessAuditReq):
+    jid = _HOOKS["start_job"](
+        "wireless-audit", engine.run_wireless_audit,
+        project_id=req.project_id, target_hint="wireless-ap-inventory",
+        aps=req.aps, raw_json=req.raw_json,
+    )
+    edb.log_current_audit("scan:wireless-audit", "wifi-inventory")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/identity-audit")
+def job_identity_audit(req: IdentityAuditReq):
+    jid = _HOOKS["start_job"](
+        "identity-audit", engine.run_identity_audit,
+        project_id=req.project_id, target_hint=(req.snapshot or {}).get("domain") or "identity-security",
+        snapshot=req.snapshot, raw_json=req.raw_json,
+        stale_days_threshold=req.stale_days_threshold,
+    )
+    edb.log_current_audit("scan:identity-audit", "identity")
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/jobs/malware-sandbox")
+def job_malware_sandbox(req: MalwareSandboxReq):
+    jid = _HOOKS["start_job"](
+        "malware-sandbox", engine.run_malware_sandbox,
+        project_id=req.project_id, target_hint=req.filename,
+        trace=req.trace, content_b64=req.content_b64, filename=req.filename,
+    )
+    edb.log_current_audit("scan:malware-sandbox", req.filename)
+    return {"job_id": jid, "legal": _HOOKS.get("LEGAL", "")}
+
+
+@router.post("/api/hash/assess")
+def api_hash_assess(req: HashAssessReq):
+    import hashbreaker as hb
+    algos = [hb.assess_hash_algorithm(h) for h in (req.hashes or [])[:100]]
+    policy_checks = [hb.check_password_policy(p, min_length=req.min_length) for p in (req.passwords or [])[:100]]
+    wordlist_stats = hb.analyze_wordlist(req.passwords) if req.passwords else {}
+    edb.log_current_audit("hash:assess", f"hashes={len(algos)} passwords={len(policy_checks)}")
+    return {
+        "algorithms": algos,
+        "policy_checks": policy_checks,
+        "wordlist_analytics": wordlist_stats,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Advanced Attack Surface Management (Assets, Graph, Relations, History, Export)
 # ---------------------------------------------------------------------------
@@ -431,6 +643,123 @@ def post_intel_sync(req: IntelSyncReq):
 def get_risk_prioritization(project_id: Optional[str] = None):
     fs = _all_project_findings(project_id=project_id)
     return vi.prioritize_findings(fs, project_id=project_id or "default")
+
+
+@router.get("/api/intel/attack-matrix")
+def get_attack_matrix(project_id: Optional[str] = None):
+    fs = _all_project_findings(project_id=project_id)
+    return ma.summarize_attack_matrix(fs)
+
+
+@router.get("/api/intel/hub")
+def get_central_intel_hub(project_id: Optional[str] = None):
+    """Centralized Security Intelligence Engine: unified findings, asset linking,
+    deduplication, cross-tool risk correlation & MITRE ATT&CK matrix."""
+    jobs = _all_jobs(project_id=project_id)
+    return engine.run_intel_hub(jobs)
+
+
+@router.get("/api/intel/security-graph")
+def get_security_graph(project_id: Optional[str] = None, save_snapshot: bool = False):
+    import security_graph as sg
+    jobs = _all_jobs(project_id=project_id)
+    assets_list = ai.list_assets(project_id=project_id).get("assets", [])
+    iocs = ti.list_iocs().get("iocs", [])[:50]
+    g = sg.build_security_graph(jobs, assets_list=assets_list, iocs=iocs, project_id=project_id)
+    if save_snapshot:
+        g["snapshot"] = sg.save_graph_snapshot(g)
+    return g
+
+
+@router.get("/api/posture/dashboard")
+def get_posture_dashboard(project_id: Optional[str] = None):
+    import posture_dashboard as pdash
+    return pdash.compute_posture_dashboard(_all_jobs(project_id=project_id), project_id=project_id)
+
+
+@router.get("/api/detections/rules")
+def get_detection_rules():
+    import detection_engineering as de
+    return {"rules": de.list_rules()}
+
+
+@router.post("/api/detections/rules")
+def upsert_detection_rule(req: DetectionRuleReq):
+    import detection_engineering as de
+    r = de.upsert_rule(req.model_dump())
+    edb.log_current_audit("detection:upsert", f"{r['id']} v{r['version']}")
+    return {"rule": r}
+
+
+@router.post("/api/detections/sigma/import")
+def import_sigma_rule(req: SigmaImportReq):
+    import detection_engineering as de
+    try:
+        r = de.import_sigma_yaml(req.sigma_yaml)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    edb.log_current_audit("detection:sigma_import", r["id"])
+    return {"rule": r}
+
+
+@router.get("/api/detections/sigma/{rule_id}")
+def export_sigma_rule(rule_id: str):
+    import detection_engineering as de
+    try:
+        yml = de.export_sigma_yaml(rule_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return Response(yml, media_type="text/yaml")
+
+
+@router.post("/api/detections/test")
+def test_detection_rule(req: DetectionTestReq):
+    import detection_engineering as de
+    try:
+        res = de.test_rule(req.rule_id, req.positive_samples, req.negative_samples)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return res
+
+
+@router.post("/api/detections/fp")
+def record_detection_fp(req: DetectionFpReq):
+    import detection_engineering as de
+    try:
+        return de.record_false_positive(req.rule_id, is_fp=req.is_fp)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.get("/api/intel/hub/report")
+def get_central_intel_hub_report(project_id: Optional[str] = None, download: int = 0):
+    from fastapi.responses import HTMLResponse
+    sys.path.insert(0, str(ROOT / "webvulnx"))
+    import report as dreport  # type: ignore
+    hub = engine.run_intel_hub(_all_jobs(project_id=project_id))
+    diags = [
+        f"Unified Intelligence Engine: {hub['total_unified_findings']} deduplicated finding(s) across {hub['assets_correlated']} asset(s)",
+        f"Cross-tool risk correlations detected: {len(hub['cross_tool_correlations'])}",
+    ]
+    for corr in hub["cross_tool_correlations"][:10]:
+        diags.append(f"[CORRELATION | {corr['asset']}] {corr['summary']}")
+    html = dreport.render_html({
+        "target": f"DARK Centralized Intelligence Hub (Project: {project_id or 'all'})",
+        "stats": {
+            "urls_crawled": hub["assets_correlated"],
+            "forms": len(hub["cross_tool_correlations"]),
+            "parameters": len(hub["attack_paths"]),
+            "requests_sent": hub["total_unified_findings"],
+            "modules_run": ["central-intel-hub", "cross-tool-correlator", "mitre-attack"],
+            "duration_s": 0.1,
+        },
+        "findings": hub["findings"],
+        "diagnostics": diags,
+    })
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="DARK-Intel-Hub-{project_id or "all"}.html"'
+    return HTMLResponse(html, headers=headers)
 
 
 @router.get("/api/intel/risk/weights")
@@ -629,6 +958,7 @@ def export_job_sarif(job_id: str):
         if not j:
             raise HTTPException(404, "Job not found")
         snap = {k: v for k, v in j.items() if not k.startswith("_")}
+    _check_job_tenant(snap)
     return integ.export_sarif(snap)
 
 
@@ -641,6 +971,7 @@ def export_job_cyclonedx(job_id: str):
         if not j:
             raise HTTPException(404, "Job not found")
         snap = {k: v for k, v in j.items() if not k.startswith("_")}
+    _check_job_tenant(snap)
     return integ.export_cyclonedx(snap)
 
 
@@ -653,6 +984,7 @@ def export_job_pdf(job_id: str):
         if not j:
             raise HTTPException(404, "Job not found")
         snap = {k: v for k, v in j.items() if not k.startswith("_")}
+    _check_job_tenant(snap)
     res = snap.get("result") or {}
     role_now = edb.get_current_actor().get("role", "admin")
     raw_fs = res.get("findings") or (res.get("report") or {}).get("findings") or res.get("alerts") or []
@@ -771,13 +1103,15 @@ def admin_create_tenant(req: TenantCreateReq):
 
 @router.get("/api/admin/api-keys")
 def admin_list_api_keys(tenant_id: Optional[str] = None):
-    return {"api_keys": edb.list_api_keys(tenant_id=tenant_id)}
+    tid = _scoped_tenant(tenant_id)
+    return {"api_keys": edb.list_api_keys(tenant_id=tid if tid != "default" else tenant_id)}
 
 
 @router.post("/api/admin/api-keys")
 def admin_create_api_key(req: ApiKeyCreateReq):
+    tid = _scoped_tenant(req.tenant_id)
     try:
-        k = edb.create_api_key(req.name, req.role, tenant_id=req.tenant_id, expires_days=req.expires_days)
+        k = edb.create_api_key(req.name, req.role, tenant_id=tid, expires_days=req.expires_days)
     except ValueError as e:
         raise HTTPException(400, str(e))
     edb.log_current_audit("api_key:create", f"{k['name']} ({k['role']})")
@@ -794,23 +1128,46 @@ def admin_revoke_api_key(key_id: str):
 
 @router.get("/api/admin/users")
 def admin_list_users(tenant_id: Optional[str] = None):
-    return {"users": edb.list_users(tenant_id=tenant_id), "roles": edb.ROLES}
+    tid = _scoped_tenant(tenant_id)
+    return {"users": edb.list_users(tenant_id=tid if tid != "default" else tenant_id), "roles": edb.ROLES}
 
 
 @router.post("/api/admin/users")
 def admin_create_user(req: UserCreateReq):
+    tid = _scoped_tenant(req.tenant_id)
     try:
-        u = edb.create_user(req.username, req.password, req.role, tenant_id=req.tenant_id)
+        u = edb.create_user(req.username, req.password, req.role, tenant_id=tid)
     except Exception as e:
         raise HTTPException(400, str(e))
     edb.log_current_audit("user:create", f"{u['username']} ({u['role']}@{u['tenant_id']})")
     return {"user": u}
 
 
+@router.patch("/api/admin/users/{user_id}/role")
+def admin_update_user_role(user_id: str, role: str):
+    actor = edb.get_current_actor()
+    try:
+        ok = edb.update_user_role(user_id, role, actor_username=actor.get("username"))
+    except PermissionError as e:
+        edb.log_current_audit("rbac:self_role_denied", f"{user_id} -> {role}")
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not ok:
+        raise HTTPException(404, "User not found")
+    edb.log_current_audit("user:role_update", f"{user_id} -> {role}")
+    return {"ok": True, "user_id": user_id, "role": role}
+
+
 @router.post("/api/admin/users/login")
 def admin_user_login(req: UserLoginReq, request: Request):
+    import os
+    ip = request.client.host if request.client else "global"
+    ok_rl, max_att = edb.check_login_rate_limit(ip)
+    if not ok_rl:
+        edb.log_audit(req.username, "unknown", "user:login_rate_limited", req.username, f"limit={max_att}", ip)
+        raise HTTPException(429, "Too many login attempts — please wait before retrying")
     ok, user, msg = edb.authenticate_user(req.username, req.password, req.totp_code)
-    ip = request.client.host if request.client else ""
     edb.log_audit(
         req.username, (user or {}).get("role", "unknown"),
         "user:login_ok" if ok else "user:login_fail", req.username, msg, ip,
@@ -818,11 +1175,24 @@ def admin_user_login(req: UserLoginReq, request: Request):
     )
     if not ok or not user:
         raise HTTPException(401, msg)
-    tok = edb.create_rbac_session(user["username"], user["role"], tenant_id=user.get("tenant_id", "default"))
+    old_tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    tok = edb.create_rbac_session(
+        user["username"], user["role"],
+        tenant_id=user.get("tenant_id", "default"),
+        old_token=old_tok,
+    )
     csrf_tok = edb.secrets.token_urlsafe(24)
+    samesite = os.environ.get("DARK_COOKIE_SAMESITE", "lax")
+    sec_cookie = _cookie_secure(request)
     resp = JSONResponse({"ok": True, "user": user, "token": tok, "csrf_token": csrf_tok})
-    resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
-    resp.set_cookie("dark_csrf", csrf_tok, httponly=False, samesite="lax", max_age=7 * 24 * 3600)
+    resp.set_cookie(
+        "dark_session", tok, httponly=True, samesite=samesite,
+        secure=sec_cookie, max_age=edb.SESSION_ABSOLUTE_TTL,
+    )
+    resp.set_cookie(
+        "dark_csrf", csrf_tok, httponly=False, samesite=samesite,
+        secure=sec_cookie, max_age=edb.SESSION_ABSOLUTE_TTL,
+    )
     return resp
 
 
@@ -883,7 +1253,8 @@ def admin_setup_2fa(username: str, enable: bool = True):
 
 @router.get("/api/admin/audit")
 def admin_audit(limit: int = 100):
-    return {"logs": edb.list_audit_logs(limit=limit)}
+    tid = edb.get_current_tenant()
+    return {"logs": edb.list_audit_logs(limit=limit, tenant_id=tid if tid != "default" else None)}
 
 
 @router.get("/api/admin/audit/verify")
@@ -893,22 +1264,46 @@ def admin_audit_verify():
 
 @router.get("/api/admin/vault")
 def admin_vault_list():
-    return {"secrets": edb.list_vault_secrets()}
+    tid = edb.get_current_tenant()
+    return {"secrets": edb.list_vault_secrets(tenant_id=tid)}
 
 
 @router.post("/api/admin/vault")
 def admin_vault_store(req: VaultCreateReq):
+    tid = edb.get_current_tenant()
+    actor = edb.get_current_actor()
     try:
-        s = edb.store_vault_secret(req.name, req.kind, req.secret_value)
+        s = edb.store_vault_secret(req.name, req.kind, req.secret_value, created_by=actor.get("username", "admin"), tenant_id=tid)
     except ValueError as e:
         raise HTTPException(400, str(e))
     edb.log_current_audit("vault:store", s["name"])
     return {"secret": s}
 
 
+@router.get("/api/admin/vault/{sid}/reveal")
+def admin_vault_reveal(sid: str):
+    tid = edb.get_current_tenant()
+    val = edb.reveal_vault_secret(sid, tenant_id=tid)
+    if val is None:
+        raise HTTPException(404, "Secret not found")
+    edb.log_current_audit("vault:reveal", sid)
+    return {"id": sid, "secret_value": val}
+
+
+@router.post("/api/admin/vault/rotate")
+def admin_vault_rotate():
+    try:
+        res = edb.rotate_vault_keys()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    edb.log_current_audit("vault:rotate", f"v{res['previous_version']}->v{res['current_version']} ({res['reencrypted']})")
+    return res
+
+
 @router.delete("/api/admin/vault/{sid}")
 def admin_vault_delete(sid: str):
-    if not edb.delete_vault_secret(sid):
+    tid = edb.get_current_tenant()
+    if not edb.delete_vault_secret(sid, tenant_id=tid):
         raise HTTPException(404, "Secret not found")
     edb.log_current_audit("vault:delete", sid)
     return {"ok": True}

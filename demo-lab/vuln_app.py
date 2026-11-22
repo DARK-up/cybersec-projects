@@ -128,9 +128,12 @@ class VulnHandler(BaseHTTPRequestHandler):
                            "<p>Latest news: our shop is open, we have many products "
                            "and great offers for everyone this season</p></body></html>")
         elif path == "/lfi":
-            # LFI simulation: returns fake /etc/passwd content for traversal payloads
+            # LFI simulation: safe canary + simulated local file read
             f = qs.get("file", [""])[0]
-            if "etc/passwd" in f or "win.ini" in f or "proc/self" in f:
+            if "dark_canary.txt" in f:
+                self._send(HTML_HEAD.format(title="File") +
+                           "<pre>DARK_LFI_CANARY_OK (safe traversal canary)</pre></body></html>")
+            elif "etc/passwd" in f or "win.ini" in f or "proc/self" in f:
                 self._send(HTML_HEAD.format(title="File") +
                            "<pre>root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin\n"
                            "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin</pre></body></html>")
@@ -162,9 +165,16 @@ class VulnHandler(BaseHTTPRequestHandler):
             else:
                 self._send(HTML_HEAD.format(title="Go") + "<p>redirecting...</p></body></html>")
         elif path == "/ping":
-            # Command injection simulation
+            # Command injection simulation (supports safe quote-split echo canary + id simulation)
             host = qs.get("host", [""])[0]
-            if ";" in host or "|" in host or "`" in host or "$(" in host:
+            import re as _re
+            m_echo = _re.search(r'echo\s+(DARK_CMDI_[A-Za-z0-9_""]+)', host)
+            if m_echo:
+                evaluated = m_echo.group(1).replace('""', '')
+                self._send(HTML_HEAD.format(title="Ping") +
+                           f"<pre>PING 127.0.0.1\n{html.escape(evaluated)}</pre>"
+                           "</body></html>")
+            elif ";" in host or "|" in host or "`" in host or "$(" in host:
                 self._send(HTML_HEAD.format(title="Ping") +
                            "<pre>PING 127.0.0.1\nuid=33(www-data) gid=33(www-data) groups=33(www-data)</pre>"
                            "</body></html>")
@@ -233,8 +243,13 @@ class VulnHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode("utf-8", "ignore")
         params = urllib.parse.parse_qs(body)
         if self.path == "/xxe":
-            # XXE simulation: resolve external entity when XML contains a file DOCTYPE
-            if "ENTITY" in body.upper() and "file:///" in body:
+            # XXE simulation: supports safe internal entity canary + file:// simulation
+            import re as _re
+            m_ent = _re.search(r'<!ENTITY\s+\w+\s+"(DARK_XXE_CANARY[^"]*)"\s*>', body)
+            if m_ent:
+                self._send(HTML_HEAD.format(title="XML Import") +
+                           f"<pre>{html.escape(m_ent.group(1))}</pre></body></html>")
+            elif "ENTITY" in body.upper() and "file:///" in body:
                 self._send(HTML_HEAD.format(title="XML Import") +
                            "<pre>root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin</pre>"
                            "</body></html>")

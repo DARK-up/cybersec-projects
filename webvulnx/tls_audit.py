@@ -285,3 +285,40 @@ def audit_tls(host: str, port: int = 443, timeout: float = 5.0,
                 })
 
     return findings, summary
+
+
+def build_tls_intelligence(summary: Dict[str, object], findings: List[dict]) -> Dict[str, object]:
+    """Produce an SSL/TLS Intelligence posture grade (A+..F) and protocol/cipher assessment."""
+    if not summary.get("reachable"):
+        return {"grade": "N/A", "reachable": False, "summary": summary, "issues": len(findings)}
+    score = 100
+    proto = str(summary.get("protocol") or "")
+    if "TLSv1.3" in proto:
+        score += 5
+    elif "TLSv1.0" in proto or "TLSv1.1" in proto:
+        score -= 35
+    for f in findings:
+        sev = str(f.get("severity") or "Low")
+        score -= {"Critical": 40, "High": 30, "Medium": 15, "Low": 5}.get(sev, 5)
+    score = max(0, min(100, score))
+    if score >= 95:
+        grade = "A+"
+    elif score >= 85:
+        grade = "A"
+    elif score >= 70:
+        grade = "B"
+    elif score >= 55:
+        grade = "C"
+    elif score >= 40:
+        grade = "D"
+    else:
+        grade = "F"
+    return {
+        "grade": grade,
+        "score": score,
+        "reachable": True,
+        "protocol": proto,
+        "cipher": summary.get("cipher"),
+        "not_after": summary.get("not_after"),
+        "issue_count": len(findings),
+    }

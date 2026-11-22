@@ -429,49 +429,121 @@ app = FastAPI(
                  "Unified REST API for NetRecon / WebVulnX / HashBreaker / NetSentry "
                  "+ Enterprise Security, Intelligence, Compliance & Governance.\n\n"
                  + LEGAL),
-    version="3.0.0",
+    version="4.0.0",
     docs_url=None,
     redoc_url=None,
 )
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "DARK_CORS_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000",
+    ).split(",")
+    if o.strip() and o.strip() != "*"
+]
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS or ["http://127.0.0.1:8000"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Dark-Token", "X-CSRF-Token", "X-Tenant-ID"],
 )
 eroutes.bind_hooks(start_job, JOBS, JOBS_LOCK, _jobs_to_disk, LEGAL)
 app.include_router(eroutes.router)
 
 
-def _required_permission(method: str, path: str) -> Optional[str]:
+def _required_permission(method: str, path: str) -> str:
+    """Deny-by-default RBAC Permission Matrix mapping every /api/ endpoint."""
     m = method.upper()
     if path.startswith("/api/jobs/") and path.endswith("/stop") and m == "POST":
         return "scan:stop"
-    if path.startswith("/api/jobs") and m in ("POST", "DELETE"):
+    if path.startswith("/api/jobs"):
+        if m == "GET":
+            return "report:read"
         return "scan:run"
-    if path.startswith("/api/remediation") and m in ("POST", "PATCH", "PUT", "DELETE"):
-        return "remediation:write"
-    if path.startswith("/api/verification") and m in ("POST", "PATCH", "PUT", "DELETE"):
-        return "remediation:write"
-    if path.startswith("/api/plugins") and m in ("POST", "DELETE"):
-        return "plugin:manage"
+    if path.startswith("/api/projects"):
+        if m == "GET":
+            return "report:read"
+        return "asset:write"
+    if path in ("/api/targets", "/api/compare", "/api/wordlists"):
+        return "report:read"
+    if path.startswith("/api/templates"):
+        return "report:read" if m == "GET" else "plugin:manage"
+    if path.startswith("/api/hash/"):
+        return "scan:run"
+    if path.startswith("/api/assets"):
+        return "report:read" if m == "GET" else "asset:write"
     if path in ("/api/intel/sync", "/api/intel/risk/weights") and m == "POST":
         return "intel:sync"
-    if path.startswith("/api/integrations") and m in ("POST", "DELETE"):
-        return "admin:manage"
+    if path.startswith("/api/intel"):
+        return "intel:read"
+    if path.startswith("/api/detections"):
+        return "intel:read" if m == "GET" else "plugin:manage"
+    if path.startswith("/api/posture"):
+        return "report:read"
+    if path.startswith("/api/verification"):
+        return "report:read" if m == "GET" else "remediation:write"
+    if path.startswith("/api/threat-intel"):
+        return "intel:read" if m == "GET" else "threat:write"
+    if path.startswith("/api/compliance"):
+        return "compliance:read"
+    if path.startswith("/api/remediation"):
+        return "report:read" if m == "GET" else "remediation:write"
+    if path.startswith("/api/plugins"):
+        return "report:read" if m == "GET" else "plugin:manage"
+    if path.startswith("/api/integrations"):
+        return "report:read" if m == "GET" else "admin:manage"
     if path.startswith("/api/benchmarks/run") and m == "POST":
         return "scan:run"
+    if path.startswith("/api/benchmarks") or path.startswith("/api/analytics") or path == "/api/metrics":
+        return "report:read"
+    if path.startswith("/api/reports/"):
+        return "report:read" if m == "GET" else "admin:manage"
     if path in ("/api/admin/backup", "/api/admin/restore"):
         return "backup:manage"
-    if path.startswith("/api/admin/") and path != "/api/admin/users/login":
+    if path.startswith("/api/admin/audit"):
+        return "audit:read"
+    if path.startswith("/api/admin/vault"):
+        if path == "/api/admin/vault/rotate" and m == "POST":
+            return "admin:manage"
+        if m == "GET":
+            return "vault:read"
+        if m == "DELETE":
+            return "vault:delete"
+        return "vault:write"
+    if path.startswith("/api/admin/users"):
+        return "user:manage"
+    if path.startswith("/api/admin/api-keys"):
+        return "apikey:manage"
+    if path.startswith("/api/admin/tenants"):
+        return "tenant:manage"
+    if path.startswith("/api/admin/"):
         return "admin:manage"
-    return None
+    # Deny-by-default for any unmapped API path
+    return "admin:manage"
+
+
+def get_deployment_profile() -> str:
+    val = (os.environ.get("DARK_ENV") or os.environ.get("DARK_PROFILE") or "development").strip().lower()
+    return "production" if val in ("prod", "production") else "development"
+
+
+def is_production_profile() -> bool:
+    return get_deployment_profile() == "production"
 
 
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     path = request.url.path
+    prod_mode = is_production_profile()
+    is_https = (
+        (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower() == "https"
+    )
 
     async def _finish(resp):
-        for hk, hv in sh.SECURITY_HEADERS.items():
+        for hk, hv in sh.build_security_headers(is_https=is_https).items():
             resp.headers.setdefault(hk, hv)
+        resp.headers.setdefault("X-Dark-Profile", "production" if prod_mode else "development")
         if path.startswith("/api/"):
             resp.headers.setdefault("Cache-Control", "no-store")
         return resp
@@ -487,22 +559,25 @@ async def _auth_gate(request: Request, call_next):
     api_key_hdr = request.headers.get("X-API-Key") or ""
     header_tok = request.headers.get("X-Dark-Token") or ""
     cookie_tok = request.cookies.get("dark_session") or ""
-    tok = cookie_tok or header_tok
-    if not tok:
+    if not header_tok:
         auth_h = request.headers.get("Authorization") or ""
         if auth_h.lower().startswith("bearer "):
             cand = auth_h.split(" ", 1)[1].strip()
             if cand.startswith("dark_") and not api_key_hdr:
                 api_key_hdr = cand
             else:
-                tok = cand
                 header_tok = cand
+    tok = header_tok or cookie_tok
 
     api_key_rec = edb.authenticate_api_key(api_key_hdr) if api_key_hdr else None
     rbac_sess = edb.get_rbac_session(tok) if tok else None
     legacy_user = dplat.session_user(tok) if tok else None
-    rbac_enforced = bool(edb.get_setting("rbac_enforced", False))
-    lock_enforced = bool(dplat.auth_status().get("enabled"))
+    rbac_enforced = True if prod_mode else bool(edb.get_setting("rbac_enforced", False))
+    lock_enforced = True if prod_mode else bool(dplat.auth_status().get("enabled"))
+
+    # If caller explicitly presented a token or API key that is invalid/expired/revoked, ALWAYS reject 401
+    if (tok or api_key_hdr) and not (rbac_sess or legacy_user or api_key_rec):
+        return await _finish(JSONResponse(status_code=401, content={"error": "Invalid or expired session token / API key"}))
 
     # Enforce double-submit CSRF token when browser authenticates via an active session cookie
     if request.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and cookie_tok and not header_tok and not api_key_hdr and (rbac_sess or legacy_user):
@@ -516,23 +591,38 @@ async def _auth_gate(request: Request, call_next):
 
     actor_name = "operator"
     actor_role = "admin"
-    actor_tenant = request.headers.get("X-Tenant-ID") or "default"
+    claimed_tenant = (request.headers.get("X-Tenant-ID") or "").strip()
+    actor_tenant = "default"
     if rbac_sess:
         actor_name = rbac_sess["username"]
         actor_role = rbac_sess["role"]
-        actor_tenant = rbac_sess.get("tenant_id") or actor_tenant
+        actor_tenant = rbac_sess.get("tenant_id") or "default"
+        if claimed_tenant and claimed_tenant != actor_tenant:
+            edb.log_audit(actor_name, actor_role, "tenant:cross_access_denied", path, f"claimed={claimed_tenant} actual={actor_tenant}", ip, tenant_id=actor_tenant)
+            return await _finish(JSONResponse(status_code=403, content={"error": "Cross-tenant X-Tenant-ID override rejected"}))
     elif api_key_rec:
         actor_name = f"apikey:{api_key_rec['name']}"
         actor_role = api_key_rec["role"]
-        actor_tenant = api_key_rec.get("tenant_id") or actor_tenant
+        actor_tenant = api_key_rec.get("tenant_id") or "default"
+        if claimed_tenant and claimed_tenant != actor_tenant:
+            edb.log_audit(actor_name, actor_role, "tenant:cross_access_denied", path, f"claimed={claimed_tenant} actual={actor_tenant}", ip, tenant_id=actor_tenant)
+            return await _finish(JSONResponse(status_code=403, content={"error": "Cross-tenant X-Tenant-ID override rejected"}))
     elif legacy_user:
         actor_name = legacy_user
+        actor_role = "admin"
+        actor_tenant = "default"
+    elif claimed_tenant and not prod_mode:
+        # Unauthenticated dev/local mode only when neither RBAC nor workspace lock is enforced
+        actor_tenant = claimed_tenant
 
-    if rbac_sess or api_key_rec:
+    if rbac_sess or api_key_rec or legacy_user or rbac_enforced:
         req_perm = _required_permission(request.method, path)
         if req_perm and not edb.has_permission(actor_role, req_perm):
             edb.log_audit(actor_name, actor_role, "rbac:denied", path, f"Missing permission {req_perm}", ip, tenant_id=actor_tenant)
             return await _finish(JSONResponse(status_code=403, content={"error": f"RBAC denied: role '{actor_role}' lacks '{req_perm}'"}))
+
+    if prod_mode:
+        edb.log_audit(actor_name, actor_role, f"api:{request.method.lower()}", path, "", ip, tenant_id=actor_tenant)
 
     ctx_tok = edb.set_current_actor(actor_name, actor_role, ip, tenant_id=actor_tenant)
     try:
@@ -562,8 +652,10 @@ def logo():
 def health():
     return {
         "name": "DARK",
-        "version": "3.0.0",
+        "version": "4.0.0",
         "status": "online",
+        "deployment_profile": get_deployment_profile(),
+        "debug_mode": not is_production_profile(),
         "platform": sys.platform,
         "tools": engine.tools_status(),
         "legal": LEGAL,
@@ -584,22 +676,39 @@ def list_jobs(project_id: Optional[str] = None):
                 "max_parallel": MAX_PARALLEL_JOBS}
 
 
+def _assert_job_tenant(job: dict) -> None:
+    tid = edb.get_current_tenant()
+    jtid = (job.get("tenant_id") or "default").strip() or "default"
+    if tid and tid != "default" and jtid != tid:
+        raise HTTPException(403, "Cross-tenant job access denied")
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: str):
     with JOBS_LOCK:
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
-        return _public(job)
+        snap = _public(job)
+    _assert_job_tenant(snap)
+    return snap
 
 
 @app.get("/api/jobs/{job_id}/note")
 def get_job_note(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job:
+            _assert_job_tenant(job)
     return {"job_id": job_id, "note": dplat.get_note(job_id)}
 
 
 @app.put("/api/jobs/{job_id}/note")
 def set_job_note(job_id: str, req: NoteReq):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job:
+            _assert_job_tenant(job)
     return {"job_id": job_id, "note": dplat.set_note(job_id, req.text)}
 
 
@@ -611,6 +720,7 @@ def stop_job(job_id: str):
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
+        _assert_job_tenant(job)
         ev = job.get("_stop_event")
         if ev is not None:
             ev.set()
@@ -655,6 +765,7 @@ def recover_or_reproduce_job(job_id: str):
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
+        _assert_job_tenant(job)
         kind = job.get("kind") or ""
         pid = job.get("project_id") or "default"
         tgt = job.get("target") or ""
@@ -688,6 +799,7 @@ def delete_job(job_id: str):
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
+        _assert_job_tenant(job)
         ev = job.get("_stop_event")
         if ev is not None:
             ev.set()
@@ -705,6 +817,7 @@ def job_report(job_id: str, download: int = 0):
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
         job = _public(job)
+    _assert_job_tenant(job)
     if job.get("status") not in ("done", "stopped"):
         raise HTTPException(409, f"job is {job.get('status')} — stop or wait until it finishes")
     result = job.get("result") or {}
@@ -772,9 +885,11 @@ def job_report(job_id: str, download: int = 0):
 def project_report(project_id: str, download: int = 0):
     """Unified Project Executive HTML Report combining ALL jobs in a project."""
     proj = next((p for p in dplat.list_projects() if p.get("id") == project_id), {"id": project_id, "name": project_id})
+    tid = edb.get_current_tenant()
     with JOBS_LOCK:
         jobs = [_public(j) for j in JOBS.values()
                 if (j.get("project_id") or "default") == project_id
+                and (not tid or tid == "default" or (j.get("tenant_id") or "default") == tid)
                 and j.get("status") in ("done", "stopped")]
     sys.path.insert(0, str(APP_DIR.parent / "webvulnx"))
     import report as dreport  # type: ignore
@@ -888,8 +1003,10 @@ def api_delete_project(pid: str):
 
 @app.get("/api/targets")
 def api_targets(project_id: Optional[str] = None):
+    tid = edb.get_current_tenant()
     with JOBS_LOCK:
-        items = [_public(j) for j in JOBS.values()]
+        items = [_public(j) for j in JOBS.values()
+                 if not tid or tid == "default" or (j.get("tenant_id") or "default") == tid]
     if project_id:
         items = [j for j in items if (j.get("project_id") or "default") == project_id]
     return {"targets": dplat.build_target_history(items)}
@@ -903,6 +1020,8 @@ def api_compare(a: str, b: str):
         if not ja or not jb:
             raise HTTPException(404, "one or both jobs not found")
         ja_p, jb_p = _public(ja), _public(jb)
+    _assert_job_tenant(ja_p)
+    _assert_job_tenant(jb_p)
     return dplat.compare_jobs(ja_p, jb_p)
 
 
@@ -917,14 +1036,31 @@ def api_auth_status(request: Request):
 
 
 @app.post("/api/auth/login")
-def api_auth_login(req: AuthLoginReq):
+def api_auth_login(req: AuthLoginReq, request: Request):
+    ip = request.client.host if request.client else "global"
+    ok_rl, _ = edb.check_login_rate_limit(ip)
+    if not ok_rl:
+        raise HTTPException(429, "Too many login attempts — please wait before retrying")
     if not dplat.verify_password(req.username, req.password):
+        edb.log_audit(req.username, "unknown", "workspace:login_fail", req.username, "Invalid credentials", ip)
         raise HTTPException(401, "invalid credentials")
-    tok = dplat.create_session(req.username)
+    old_tok = request.cookies.get("dark_session") or request.headers.get("X-Dark-Token")
+    tok = dplat.create_session(req.username, old_token=old_tok)
     csrf_tok = edb.secrets.token_urlsafe(24)
+    samesite = os.environ.get("DARK_COOKIE_SAMESITE", "lax")
+    sec_cookie = (
+        os.environ.get("DARK_FORCE_SECURE_COOKIES") == "1"
+        or (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower() == "https"
+    )
     resp = JSONResponse({"ok": True, "token": tok, "csrf_token": csrf_tok, "username": req.username})
-    resp.set_cookie("dark_session", tok, httponly=True, samesite="lax", max_age=7 * 24 * 3600)
-    resp.set_cookie("dark_csrf", csrf_tok, httponly=False, samesite="lax", max_age=7 * 24 * 3600)
+    resp.set_cookie(
+        "dark_session", tok, httponly=True, samesite=samesite,
+        secure=sec_cookie, max_age=dplat.SESSION_ABSOLUTE_TTL,
+    )
+    resp.set_cookie(
+        "dark_csrf", csrf_tok, httponly=False, samesite=samesite,
+        secure=sec_cookie, max_age=dplat.SESSION_ABSOLUTE_TTL,
+    )
     return resp
 
 
@@ -968,7 +1104,9 @@ def job_csv(job_id: str):
         job = JOBS.get(job_id)
         if not job:
             raise HTTPException(404, f"job not found: {job_id}")
+        snap = _public(job)
         result = (job.get("result") or {})
+    _assert_job_tenant(snap)
     findings = result.get("findings") or result.get("alerts") or []
     buf = io.StringIO()
     w = csv.writer(buf)

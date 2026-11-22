@@ -303,7 +303,7 @@ def render_html(payload: Dict[str, Any]) -> str:
     diag = "".join(f"<li>{_esc(d)}</li>" for d in diagnostics)
     modules = ", ".join(str(m) for m in (stats.get("modules_run") or [])) or "—"
     seeds = ", ".join(str(s) for s in (stats.get("seed_urls") or [])[:12]) or "—"
-    rid = hashlib.sha1(f"{target}{generated}".encode()).hexdigest()[:10].upper()
+    rid = hashlib.sha256(f"{target}{generated}".encode()).hexdigest()[:10].upper()
 
     return f"""<!DOCTYPE html>
 <html lang="en">

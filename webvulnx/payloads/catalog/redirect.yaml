@@ -1,0 +1,21 @@
+- id: redirect-https
+  category: redirect
+  engine: location_header
+  payload: "https://dark-redirect-check.example/"
+  expect: "dark-redirect-check.example"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-601
+  tags: [open-redirect, https]
+  description: Standard external Location redirect canary
+
+- id: redirect-protocol-relative
+  category: redirect
+  engine: protocol_relative
+  payload: "//dark-redirect-check.example/"
+  expect: "dark-redirect-check.example"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-601
+  tags: [open-redirect, protocol-relative]
+  description: Protocol-relative open redirect canary

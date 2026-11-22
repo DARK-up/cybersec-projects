@@ -1,0 +1,54 @@
+- id: ssrf-loopback-refused
+  category: ssrf
+  engine: ipv4_loopback
+  payload: "http://127.0.0.1:1"
+  expect: "connection refused|failed to connect|actively refused|ECONNREFUSED|timed out"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-918
+  tags: [loopback, port-oracle]
+  description: Closed loopback port oracle to detect server-side fetch without touching live services
+
+- id: ssrf-ipv6-loopback-refused
+  category: ssrf
+  engine: ipv6_loopback
+  payload: "http://[::1]:1"
+  expect: "connection refused|failed to connect|actively refused|ECONNREFUSED|timed out"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-918
+  tags: [ipv6, loopback]
+  description: IPv6 loopback port oracle
+
+- id: ssrf-decimal-loopback
+  category: ssrf
+  engine: decimal_ip
+  payload: "http://2130706433:1"
+  expect: "connection refused|failed to connect|actively refused|ECONNREFUSED|timed out"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-918
+  tags: [obfuscation, decimal-ip]
+  description: Decimal IP encoding bypass probe for 127.0.0.1:1
+
+- id: ssrf-aws-metadata
+  category: ssrf
+  engine: cloud_metadata
+  payload: "http://169.254.169.254/latest/meta-data/"
+  expect: "ami-id|instance-id|iam/|local-ipv4|security-credentials"
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-918
+  tags: [metadata, aws]
+  description: Cloud IMDSv1 check (scoped to local lab / explicit authorization)
+
+- id: ssrf-file-scheme
+  category: ssrf
+  engine: file_scheme
+  payload: "file:///etc/passwd"
+  expect: "root:.*:0:0:"
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-918
+  tags: [scheme-confusion]
+  description: file:// scheme handler check (demo-lab only)

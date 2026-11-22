@@ -370,16 +370,20 @@ def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criti
     vt = str(f.get("vuln_type") or "").lower()
     param = str(f.get("parameter") or "")
 
-    # 1. Confidence
-    conf = 0.72
-    if "confirmed" in ev.lower() or "matched" in ev.lower() or "verified" in ev.lower():
-        conf = 0.95
-    elif param and f.get("payload"):
-        conf = 0.88
-    elif "header" in vt or "banner" in vt or "cookie" in vt or "tls" in vt:
-        conf = 0.92
-    elif "heuristic" in vt or "potential" in vt or "possible" in vt or "unverified" in vt:
-        conf = 0.50
+    # 1. Confidence (preserve explicit verified scanner confidence when provided)
+    explicit_conf = f.get("confidence")
+    if isinstance(explicit_conf, (int, float)) and 0.0 < float(explicit_conf) <= 1.0:
+        conf = float(explicit_conf)
+    else:
+        conf = 0.72
+        if "confirmed" in ev.lower() or "matched" in ev.lower() or "verified" in ev.lower():
+            conf = 0.95
+        elif param and f.get("payload"):
+            conf = 0.88
+        elif "header" in vt or "banner" in vt or "cookie" in vt or "tls" in vt:
+            conf = 0.92
+        elif "heuristic" in vt or "potential" in vt or "possible" in vt or "unverified" in vt:
+            conf = 0.50
     conf_label = "Confirmed" if conf >= 0.9 else ("High" if conf >= 0.75 else "Medium")
 
     # 2. Exploitability (safe assessment using KEV/EPSS + reachability)
@@ -458,6 +462,13 @@ def score_finding_axes(finding: dict, internet_exposed: bool = True, asset_criti
         "exposure": round(exposure, 2),
     }
     f["risk_score"] = risk_score
+    try:
+        import mitre_attack as ma  # type: ignore
+        atk = ma.map_finding_to_attack(f)
+        if atk:
+            f["mitre_attack"] = atk
+    except Exception:
+        pass
     return f
 
 

@@ -358,6 +358,44 @@ def run_dns_recon(target: str, subdomains: bool = True,
             2.5, f"{domain} IN CAA",
         )
 
+    # 3b. Extended Email Security: DKIM, BIMI, MTA-STS
+    dkim_found = []
+    for sel in ("default", "selector1", "selector2", "google", "k1", "mail"):
+        q = dns_query(f"{sel}._domainkey.{domain}", "TXT", timeout=1.5, servers=servers)
+        if any("v=dkim1" in x.lower() or "p=" in x.lower() for x in q):
+            dkim_found.append(sel)
+    records["DKIM_SELECTORS"] = dkim_found
+    if not dkim_found:
+        add_finding(
+            "No Common DKIM Selector Detected", "Info",
+            f"dns://_domainkey.{domain}", "TXT (DKIM)",
+            "Checked default, selector1, selector2, google, k1, mail",
+            "DKIM cryptographically signs outbound mail; verify custom selector names if your ESP uses non-standard selectors.",
+            0.0,
+        )
+
+    bimi_txt = dns_query(f"default._bimi.{domain}", "TXT", timeout=1.5, servers=servers)
+    records["BIMI"] = bimi_txt
+    if not any("v=bimi1" in t.lower() for t in bimi_txt):
+        add_finding(
+            "Missing BIMI Record", "Info",
+            f"dns://default._bimi.{domain}", "TXT (BIMI)",
+            f"No v=BIMI1 record at default._bimi.{domain}",
+            "BIMI strengthens brand trust in supported inboxes once DMARC enforcement (quarantine/reject) is active.",
+            0.0,
+        )
+
+    mta_sts_txt = dns_query(f"_mta-sts.{domain}", "TXT", timeout=1.5, servers=servers)
+    records["MTA_STS"] = mta_sts_txt
+    if not any("v=stsv1" in t.lower() for t in mta_sts_txt):
+        add_finding(
+            "Missing MTA-STS Policy Record", "Low",
+            f"dns://_mta-sts.{domain}", "TXT (MTA-STS)",
+            f"No v=STSv1 record at _mta-sts.{domain}",
+            "MTA-STS enforces TLS encryption and valid certificates for inbound SMTP transport.",
+            2.6, f"_mta-sts.{domain} IN TXT",
+        )
+
     # 4. Subdomain Enumeration + Takeover Check
     discovered_subs: List[Dict[str, Any]] = []
     if subdomains and not (stop_event is not None and stop_event.is_set()):

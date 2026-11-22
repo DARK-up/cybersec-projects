@@ -191,6 +191,7 @@ class HostResult:
     hostname: str = ""
     alive: bool = False
     os_hint: str = "Unknown"
+    os_confidence: float = 0.0
     os_evidence: List[str] = field(default_factory=list)
     ports: List[PortResult] = field(default_factory=list)
     vulnerabilities: List[Dict] = field(default_factory=list)
@@ -199,6 +200,28 @@ class HostResult:
     @property
     def open_ports(self) -> List[PortResult]:
         return [p for p in self.ports if p.state == "open"]
+
+
+def score_service_confidence(port: int, service: str, banner: str, version: str) -> Dict[str, object]:
+    """Compute service & version detection confidence from concrete probe signals."""
+    signals: List[str] = []
+    score = 0.25
+    svc = (service or "").strip().lower()
+    if svc and svc != "unknown":
+        score += 0.30
+        signals.append("protocol-fingerprint")
+    if banner and len(banner.strip()) >= 4:
+        score += 0.15
+        signals.append("banner-observed")
+    if version and re.search(r"\d+\.\d+", version):
+        score += 0.25
+        signals.append("semver-extracted")
+    elif version:
+        score += 0.15
+        signals.append("product-token")
+    score = round(min(0.98, score), 2)
+    label = "Confirmed" if score >= 0.85 else ("High" if score >= 0.70 else ("Medium" if score >= 0.50 else "Low"))
+    return {"confidence": score, "confidence_label": label, "signals": signals}
 
 
 # ----------------------------------------------------------------------------
@@ -454,6 +477,8 @@ class NetRecon:
                 pr.service, pr.banner, pr.version = service, banner, version
             else:
                 pr.service = "unknown"
+            conf_meta = score_service_confidence(port, pr.service, pr.banner, pr.version)
+            pr.extra.update(conf_meta)
             pr.extra["latency_ms"] = round((time.monotonic() - t0) * 1000, 1)
             return pr
 
@@ -527,6 +552,26 @@ class NetRecon:
                     best = (hint, _os_priority(hint))
         if best[0] != "Unknown":
             hr.os_hint = best[0]
+            # OS confidence scales with specificity and corroborating port banners
+            base_conf = {3: 0.78, 2: 0.55, 1: 0.40}.get(best[1], 0.40)
+            bonus = min(0.18, 0.06 * max(0, len(hr.os_evidence) - 1))
+            hr.os_confidence = round(min(0.96, base_conf + bonus), 2)
+
+        # Precision CVE correlation: only match CVEs when version is verified with >= 0.70 confidence
+        try:
+            _mod_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "modules")
+            if _mod_dir not in sys.path:
+                sys.path.insert(0, _mod_dir)
+            import vuln_intel as _vi  # type: ignore
+            for pr in hr.open_ports:
+                if float(pr.extra.get("confidence", 0)) >= 0.70 and pr.version:
+                    m_prod = re.match(r"([A-Za-z][A-Za-z0-9_.\-]{1,40})[/\s_]+(\d+(?:\.\d+){1,3}[a-z0-9]*)", pr.version)
+                    if m_prod:
+                        cves = _vi.match_product_cves(m_prod.group(1), m_prod.group(2))
+                        if cves:
+                            pr.extra["matched_cves"] = [c["cve_id"] for c in cves]
+        except Exception:
+            pass
 
         if self.vuln_audit and hr.open_ports and not (self.stop_event is not None and self.stop_event.is_set()):
             try:
@@ -712,6 +757,37 @@ def main() -> None:
             scanner.save_json(args.json)
         if args.html:
             scanner.save_html(args.html)
+
+
+def build_network_topology(report_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate a graph-ready network topology map (nodes & edges) from a NetRecon report."""
+    hosts = report_dict.get("hosts") or []
+    nodes: List[Dict[str, Any]] = [{"id": "scanner-edge", "label": "DARK Scanner / Gateway", "type": "gateway"}]
+    edges: List[Dict[str, Any]] = []
+    for h in hosts:
+        hip = str(h.get("host") or "unknown")
+        os_hint = str(h.get("os_hint") or "Unknown")
+        open_ports = h.get("open_ports") or []
+        nodes.append({
+            "id": f"host:{hip}",
+            "label": hip,
+            "type": "host",
+            "os": os_hint,
+            "open_port_count": len(open_ports),
+        })
+        edges.append({"from": "scanner-edge", "to": f"host:{hip}", "relation": "reachable"})
+        for p in open_ports:
+            pnum = p.get("port")
+            svc = p.get("service") or "unknown"
+            sid = f"svc:{hip}:{pnum}"
+            nodes.append({
+                "id": sid,
+                "label": f"{pnum}/{svc}",
+                "type": "service",
+                "version": p.get("version") or "",
+            })
+            edges.append({"from": f"host:{hip}", "to": sid, "relation": "exposes"})
+    return {"nodes": nodes, "edges": edges, "host_count": len(hosts)}
 
 
 if __name__ == "__main__":

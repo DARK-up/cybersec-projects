@@ -1,0 +1,43 @@
+- id: xss-html-script-canary
+  category: xss
+  engine: html_text
+  payload: "<script>/*DARKXSS*/</script>"
+  expect: "<script>/*DARKXSS*/</script>"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-79
+  tags: [html, canary, non-executing]
+  description: Non-alert script tag canary for context verification
+
+- id: xss-attr-breakout-img
+  category: xss
+  engine: attr_value
+  payload: "\"><img src=x onerror=alert(\"XSS\")>"
+  expect: "onerror=alert("
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-79
+  tags: [attribute-breakout, event-handler]
+  description: Attribute breakout with img onerror handler
+
+- id: xss-svg-onload
+  category: xss
+  engine: html_text
+  payload: "<svg/onload=alert(\"XSS\")>"
+  expect: "<svg/onload="
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-79
+  tags: [svg, event-handler]
+  description: SVG onload reflection check
+
+- id: xss-js-string-breakout
+  category: xss
+  engine: script_str
+  payload: "'-alert('XSS')-'"
+  expect: "'-alert('XSS')-'"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-79
+  tags: [js-string]
+  description: Single-quoted JavaScript string breakout probe

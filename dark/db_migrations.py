@@ -202,6 +202,18 @@ MIGRATIONS: List[Migration] = [
             "ALTER TABLE job_queue_meta ADD COLUMN status TEXT NOT NULL DEFAULT 'running'",
         ],
     ),
+    (
+        6,
+        "session_activity_and_vault_key_rotation_tenants",
+        [
+            "ALTER TABLE rbac_sessions ADD COLUMN created_at REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE rbac_sessions ADD COLUMN last_activity REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE vault_secrets ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
+            "ALTER TABLE vault_secrets ADD COLUMN key_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE vault_secrets ADD COLUMN alg TEXT NOT NULL DEFAULT 'AES-256-GCM'",
+            "ALTER TABLE vault_secrets ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
+        ],
+    ),
 ]
 
 

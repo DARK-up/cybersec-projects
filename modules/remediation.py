@@ -24,7 +24,7 @@ VALID_STATUSES = ("open", "in_progress", "fixed_pending_retest", "verified_close
 
 def _fkey(f: dict) -> str:
     raw = f"{f.get('vuln_type','')}|{f.get('url','')}|{f.get('parameter','')}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _row_to_ticket(r) -> dict:

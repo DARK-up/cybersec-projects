@@ -1,0 +1,64 @@
+- id: ssti-jinja-arith
+  category: ssti
+  engine: jinja2_twig
+  payload: "{{19*37}}"
+  confirm_payload: "{{29*31}}"
+  expect: "703"
+  confirm_expect: "899"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-94
+  tags: [arithmetic, multi-engine, non-destructive]
+  description: Jinja2 / Twig arithmetic evaluation canary
+
+- id: ssti-el-arith
+  category: ssti
+  engine: spring_el_freemarker
+  payload: "${19*37}"
+  confirm_payload: "${29*31}"
+  expect: "703"
+  confirm_expect: "899"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-94
+  tags: [arithmetic, el, freemarker]
+  description: Spring EL / Freemarker arithmetic evaluation canary
+
+- id: ssti-erb-arith
+  category: ssti
+  engine: erb_ejs
+  payload: "<%=19*37%>"
+  confirm_payload: "<%=29*31%>"
+  expect: "703"
+  confirm_expect: "899"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-94
+  tags: [arithmetic, erb, ejs]
+  description: ERB / EJS arithmetic evaluation canary
+
+- id: ssti-ruby-pug-arith
+  category: ssti
+  engine: ruby_pug
+  payload: "#{19*37}"
+  confirm_payload: "#{29*31}"
+  expect: "703"
+  confirm_expect: "899"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-94
+  tags: [arithmetic, ruby, pug]
+  description: Ruby / Pug interpolation arithmetic canary
+
+- id: ssti-jinja-str-mult
+  category: ssti
+  engine: jinja2
+  payload: "{{7*'7'}}"
+  confirm_payload: "{{3*'9'}}"
+  expect: "7777777"
+  confirm_expect: "999"
+  safe_scope: any
+  risk_level: safe
+  cwe: CWE-94
+  tags: [jinja2-fingerprint]
+  description: Distinguishes Jinja2 Python string multiplication from Twig

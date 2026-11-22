@@ -441,6 +441,36 @@
   </label>
   <button class="run" style="margin-top:8px" onclick="runForensics()">▶ ANALYZE LOGS &amp; IOCS</button>
   <div class="out" id="for-out">Forensics timeline &amp; IOC matches…</div>
+
+  <hr style="border:0;border-top:1px solid var(--border);margin:22px 0">
+  <h3 style="color:var(--cyan);font-size:14px;margin:8px 0">🎯 Threat Hunting, Malware Triage, Phishing, Active Directory &amp; Wireless</h3>
+  <div class="row">
+    <label>Threat Hunt Logs (JSON/Syslog)
+      <textarea id="hunt-logs" style="min-height:70px" placeholder="powershell -enc SQBFAFgA..."></textarea>
+      <button class="run" style="margin-top:6px" onclick="runThreatHunt()">▶ HUNT THREATS</button>
+    </label>
+    <label>Phishing Email (.eml raw headers + body)
+      <textarea id="phish-eml" style="min-height:70px" placeholder="From: security@paypa1.com&#10;Reply-To: attacker@evil.tld&#10;Subject: Urgent Verify Your Account"></textarea>
+      <button class="run" style="margin-top:6px" onclick="runPhishingAnalyze()">▶ ANALYZE EMAIL</button>
+    </label>
+  </div>
+  <div class="row">
+    <label>Active Directory Snapshot JSON
+      <textarea id="ad-json" style="min-height:70px" placeholder='{"domain":"corp.local","users":[{"name":"svc_sql","spns":["MSSQL/db:1433"],"dont_req_preauth":true}]}'></textarea>
+      <button class="run" style="margin-top:6px" onclick="runAdAudit()">▶ AUDIT AD</button>
+    </label>
+    <label>Wireless AP Inventory JSON
+      <textarea id="wifi-json" style="min-height:70px" placeholder='[{"ssid":"Corp-WiFi","bssid":"aa:bb:cc:dd:ee:ff","encryption":"WPA2-PSK","wps_enabled":true,"corporate":true}]'></textarea>
+      <button class="run" style="margin-top:6px" onclick="runWirelessAudit()">▶ AUDIT WIRELESS</button>
+    </label>
+  </div>
+  <div class="row">
+    <label>Malware Static Triage (Path or Text/Script Sample)
+      <input id="mal-path" placeholder="/path/to/sample.bin (optional)">
+      <button class="run" style="margin-top:6px" onclick="runMalwareTriage()">▶ TRIAGE SAMPLE</button>
+    </label>
+  </div>
+  <div class="out" id="secops-out">Threat Hunting / Phishing / Malware / AD / Wireless results…</div>
 </section>
 
 <!-- ============ PLATFORM & COMPARE ============ -->
@@ -530,6 +560,16 @@
   </label>
   <button class="run" style="margin-top:8px" onclick="runSastAudit()">▶ RUN SAST</button>
   <div class="out" id="sast-out">SAST output…</div>
+
+  <h3 style="color:var(--cyan);font-size:14px;margin:18px 0 8px">🔑 Secrets &amp; Credential Exposure Scanner</h3>
+  <div class="row">
+    <label>Workspace Folder / File Path (optional) <input id="sec-path" placeholder="/path/to/repo"></label>
+  </div>
+  <label>Or Paste Code / Env / Config
+    <textarea id="sec-txt" style="min-height:70px" placeholder="AWS_SECRET_ACCESS_KEY=..."></textarea>
+  </label>
+  <button class="run" style="margin-top:8px" onclick="runSecretsScan()">▶ SCAN SECRETS</button>
+  <div class="out" id="sec-out">Secrets scanner output (values automatically redacted)…</div>
 </section>
 
 <!-- ============ ASSETS & RISK INTEL ============ -->
@@ -538,10 +578,15 @@
   <p class="desc">Interactive Attack Surface Graph, Asset Discovery/Disappearance Timeline, 5-Axis Risk Prioritization, Attack Path Correlation, and NVD/CISA KEV/EPSS Feeds.</p>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
     <button class="run" onclick="loadAssetsAndRisk()">🔄 REFRESH ASSETS &amp; RISK</button>
+    <button class="run" onclick="loadCentralIntelHub()" style="background:var(--cyan);color:#09111d">🧠 RUN CENTRAL INTELLIGENCE ENGINE</button>
+    <button class="run" onclick="loadSecurityGraph()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🕸️ SECURITY GRAPH &amp; ATTACK PATHS</button>
+    <a class="run" style="display:inline-block;text-decoration:none;background:var(--panel2);color:var(--yellow);border:1px solid var(--border)" href="/api/intel/hub/report" target="_blank">📄 UNIFIED INTEL REPORT</a>
     <button class="run" onclick="syncIntelFeed()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">🌐 SYNC NVD / CISA KEV FEED</button>
     <a class="run" style="display:inline-block;text-decoration:none;background:var(--panel2);color:var(--green);border:1px solid var(--border)" href="/api/assets/export.csv" target="_blank">⬇ EXPORT ASSETS CSV</a>
     <button class="run" onclick="exportSvgChart('asm-graph-svg','DARK-Attack-Surface.svg')" style="background:var(--panel2);color:var(--text);border:1px solid var(--border)">🖼 EXPORT GRAPH SVG</button>
   </div>
+  <div class="out" id="hub-out">Centralized Security Intelligence Engine — click 🧠 RUN CENTRAL INTELLIGENCE ENGINE to correlate findings across all tools…</div>
+  <div class="out" id="secgraph-out">Security Graph Engine — click 🕸️ SECURITY GRAPH &amp; ATTACK PATHS for multi-entity risk propagation and attack path chains…</div>
   <div class="row">
     <label>Search Assets <input id="ast-flt-q" placeholder="name, owner, tag, context…" oninput="loadAssetsAndRisk()"></label>
     <label>Filter Kind <select id="ast-flt-kind" onchange="loadAssetsAndRisk()"><option value="">All</option><option>domain</option><option>ip</option><option>service</option><option>api</option><option>cloud</option><option>container</option></select></label>
@@ -642,6 +687,18 @@
     <svg id="posture-chart-svg" viewBox="0 0 820 200" style="width:100%;height:190px;background:#070b12;border:1px solid var(--border);border-radius:8px;margin-top:8px"></svg>
   </div>
   <div class="out" id="bench-out">Benchmark &amp; QA Lab history…</div>
+  <h3 style="color:var(--cyan);font-size:14px;margin:16px 0 8px">🛡️ Detection Engineering Framework (Custom &amp; Sigma Rules)</h3>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+    <button class="run" onclick="loadPostureSnapshot()">📈 SNAPSHOT EXECUTIVE POSTURE</button>
+    <button class="run" onclick="loadDetectionRules()" style="background:var(--panel2);color:var(--cyan);border:1px solid var(--border)">📋 LIST DETECTION RULES</button>
+  </div>
+  <div class="row">
+    <label>Import Sigma YAML Rule
+      <textarea id="sigma-yaml" style="min-height:68px" placeholder="title: Suspicious Certutil Download&#10;level: high&#10;tags: [attack.execution, attack.t1105]&#10;detection:&#10;  selection:&#10;    CommandLine|contains: certutil -urlcache"></textarea>
+    </label>
+    <div style="display:flex;align-items:flex-end"><button class="run" onclick="importSigmaRule()">📥 IMPORT SIGMA RULE</button></div>
+  </div>
+  <div class="out" id="det-out">Detection Engineering rules &amp; Executive Posture snapshot…</div>
   <h3 style="color:var(--cyan);font-size:14px;margin:16px 0 8px">📑 Custom Report Templates</h3>
   <div class="row">
     <label>Template Name <input id="rtpl-name" placeholder="Executive Board Brief"></label>
@@ -2560,6 +2617,167 @@ async function restoreBackup() {
   });
   alert('Restored: ' + JSON.stringify(r.restored));
   loadAdminPanel();
+}
+
+async function runSecretsScan() {
+  $('sec-out').textContent = 'Scanning for exposed secrets & keys…';
+  try {
+    const {job_id} = await api('/api/jobs/secrets-scan', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        content: $('sec-txt').value,
+        target_path: $('sec-path').value.trim() || null,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('sec-out'));
+  } catch (e) { $('sec-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runThreatHunt() {
+  $('secops-out').textContent = 'Running Threat Hunting hypotheses…';
+  try {
+    const {job_id} = await api('/api/jobs/threat-hunt', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        raw_logs: $('hunt-logs').value,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('secops-out'));
+  } catch (e) { $('secops-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runPhishingAnalyze() {
+  $('secops-out').textContent = 'Analyzing email headers & phishing indicators…';
+  try {
+    const {job_id} = await api('/api/jobs/phishing-analyze', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        raw_eml: $('phish-eml').value,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('secops-out'));
+  } catch (e) { $('secops-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runAdAudit() {
+  $('secops-out').textContent = 'Auditing Active Directory snapshot…';
+  try {
+    const {job_id} = await api('/api/jobs/ad-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        raw_json: $('ad-json').value,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('secops-out'));
+  } catch (e) { $('secops-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runWirelessAudit() {
+  $('secops-out').textContent = 'Auditing Wireless AP inventory…';
+  try {
+    const {job_id} = await api('/api/jobs/wireless-audit', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        raw_json: $('wifi-json').value,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('secops-out'));
+  } catch (e) { $('secops-out').textContent = 'Error: ' + e.message; }
+}
+
+async function runMalwareTriage() {
+  const fp = $('mal-path').value.trim();
+  if (!fp) return alert('Enter a workspace file path for safe static triage');
+  $('secops-out').textContent = 'Performing static malware triage…';
+  try {
+    const {job_id} = await api('/api/jobs/malware-triage', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        file_path: fp,
+        project_id: ACTIVE_PROJECT === '__all__' ? 'default' : ACTIVE_PROJECT
+      })
+    });
+    await pollJob(job_id, $('secops-out'));
+  } catch (e) { $('secops-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadCentralIntelHub() {
+  $('hub-out').textContent = 'Correlating cross-tool findings in Centralized Security Intelligence Engine…';
+  try {
+    const q = (ACTIVE_PROJECT && ACTIVE_PROJECT !== '__all__') ? ('?project_id=' + encodeURIComponent(ACTIVE_PROJECT)) : '';
+    const r = await api('/api/intel/hub' + q);
+    let txt = '🧠 ' + r.engine + '\n' +
+      'Unified Findings: ' + r.total_unified_findings +
+      ' | Correlated Assets: ' + r.assets_correlated +
+      ' | Cross-Tool Correlations: ' + (r.cross_tool_correlations || []).length + '\n\n';
+    for (const c of (r.cross_tool_correlations || [])) {
+      txt += '[CORRELATION][' + c.severity + '] ' + c.asset + ' — ' + c.correlation_type + '\n  ' + c.summary + '\n';
+    }
+    if ((r.assets || []).length) {
+      txt += '\nTop Risk Assets:\n';
+      for (const a of r.assets.slice(0, 8)) {
+        txt += '  • ' + a.asset + ' | Risk=' + a.asset_risk_score + ' | Tools=' + (a.tools_observed || []).join(',') + ' | Findings=' + a.finding_count + '\n';
+      }
+    }
+    $('hub-out').textContent = txt;
+  } catch (e) { $('hub-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadSecurityGraph() {
+  $('secgraph-out').textContent = 'Building multi-entity Security Graph & computing Risk Propagation…';
+  try {
+    const q = (ACTIVE_PROJECT && ACTIVE_PROJECT !== '__all__') ? ('?project_id=' + encodeURIComponent(ACTIVE_PROJECT)) : '';
+    const g = await api('/api/intel/security-graph' + q);
+    let txt = '🕸️ ' + g.engine + '\nNodes: ' + g.node_count + ' | Edges: ' + g.edge_count + ' | Attack Paths: ' + (g.attack_paths || []).length + '\n\n';
+    for (const p of (g.attack_paths || []).slice(0, 8)) {
+      txt += '  [Risk ' + p.path_risk + '] ' + (p.path_nodes || []).join(' → ') + '\n';
+    }
+    $('secgraph-out').textContent = txt;
+  } catch (e) { $('secgraph-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadPostureSnapshot() {
+  $('det-out').textContent = 'Computing Security Posture Dashboard metrics…';
+  try {
+    const q = (ACTIVE_PROJECT && ACTIVE_PROJECT !== '__all__') ? ('?project_id=' + encodeURIComponent(ACTIVE_PROJECT)) : '';
+    const p = await api('/api/posture/dashboard' + q);
+    $('det-out').textContent =
+      '📈 Executive Security Posture Score: ' + p.security_posture_score + '/100\n' +
+      'Critical Findings: ' + p.critical_findings + ' | High: ' + p.high_findings + ' | Exposed Assets: ' + p.exposed_assets + '\n' +
+      'Detection Coverage: ' + p.detection_coverage_pct + '% | Remediation Progress: ' + p.remediation_progress_pct + '% | Compliance: ' + p.compliance_score_pct + '%\n' +
+      'Threat Activity: ' + p.threat_activity_count + ' | Active Rules: ' + p.active_detection_rules;
+  } catch (e) { $('det-out').textContent = 'Error: ' + e.message; }
+}
+
+async function loadDetectionRules() {
+  $('det-out').textContent = 'Loading Detection Engineering rules…';
+  try {
+    const r = await api('/api/detections/rules');
+    let txt = '🛡️ Detection Engineering Rules (' + (r.rules || []).length + '):\n';
+    for (const rule of (r.rules || [])) {
+      txt += '  • [' + rule.id + ' v' + rule.version + '][' + rule.severity + '] ' + rule.name + ' (' + rule.mitre_technique + ') | FP Rate=' + rule.fp_rate + '\n';
+    }
+    $('det-out').textContent = txt;
+  } catch (e) { $('det-out').textContent = 'Error: ' + e.message; }
+}
+
+async function importSigmaRule() {
+  const yml = $('sigma-yaml').value.trim();
+  if (!yml) return alert('Paste Sigma YAML first');
+  try {
+    const r = await api('/api/detections/sigma/import', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sigma_yaml: yml})
+    });
+    $('sigma-yaml').value = '';
+    alert('Imported Sigma rule: ' + r.rule.id + ' v' + r.rule.version);
+    loadDetectionRules();
+  } catch (e) { alert('Error: ' + e.message); }
 }
 
 refreshAuth();

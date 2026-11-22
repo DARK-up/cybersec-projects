@@ -128,7 +128,6 @@ def dispatch_event(
     payload: Dict[str, Any],
     tenant_id: Optional[str] = None,
 ) -> dict:
-    import requests
     tid = (tenant_id or edb.get_current_tenant() or "default").strip() or "default"
     loaded = _load_config(integration_id, tid)
     if not loaded:
@@ -146,13 +145,14 @@ def dispatch_event(
         _log_delivery(tid, integration_id, event_type, "skipped_no_url", "No endpoint configured")
         return {"status": "skipped_no_url"}
 
-    ok_ssrf, reason = sh.validate_outbound_url(url, allow_loopback=bool(cfg.get("allow_loopback", False)))
+    allow_lb = bool(cfg.get("allow_loopback", False))
+    ok_ssrf, reason = sh.validate_outbound_url(url, allow_loopback=allow_lb, strict_dns=True)
     if not ok_ssrf:
         _log_delivery(tid, integration_id, event_type, "blocked_ssrf", reason)
         raise ValueError(reason)
 
     body_bytes = json.dumps({"event": event_type, "tenant_id": tid, "data": payload}, default=str).encode("utf-8")
-    headers = {"Content-Type": "application/json", "User-Agent": "DARK-Integrations/3.0"}
+    headers = {"Content-Type": "application/json", "User-Agent": "DARK-Integrations/4.0"}
     secret = str(cfg.get("secret") or "")
     if secret:
         sig = hmac.new(secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
@@ -161,10 +161,15 @@ def dispatch_event(
         headers["Authorization"] = f"Bearer {cfg['token']}"
 
     try:
-        r = requests.post(url, data=body_bytes, headers=headers, timeout=6)
+        r = sh.safe_outbound_request(
+            "POST", url, allow_loopback=allow_lb, data=body_bytes, headers=headers, timeout=6.0
+        )
         status = "delivered" if 200 <= r.status_code < 300 else f"http_{r.status_code}"
         _log_delivery(tid, integration_id, event_type, status, f"HTTP {r.status_code}")
         return {"status": status, "http_status": r.status_code}
+    except ValueError as ve:
+        _log_delivery(tid, integration_id, event_type, "blocked_ssrf", str(ve))
+        raise
     except Exception as e:
         _log_delivery(tid, integration_id, event_type, "error", type(e).__name__)
         return {"status": "error", "error": type(e).__name__}
