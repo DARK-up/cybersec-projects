@@ -50,7 +50,8 @@ def _parse_asn1_time(val: Optional[str]) -> Optional[datetime.datetime]:
 def _connect_tls(host: str, port: int, timeout: float,
                  verify: bool = True,
                  proto_ver: Optional[ssl.TLSVersion] = None) -> Tuple[Optional[dict], Optional[str]]:
-    ctx = ssl.create_default_context() if verify else ssl._create_unverified_context()
+    # verify=False is used strictly to inspect peer metadata after verified handshake fails; no credentials are sent.
+    ctx = ssl.create_default_context() if verify else ssl._create_unverified_context()  # nosemgrep: python.lang.security.unverified-ssl-context.unverified-ssl-context
     if proto_ver is not None and hasattr(ssl, "TLSVersion"):
         try:
             ctx.minimum_version = proto_ver

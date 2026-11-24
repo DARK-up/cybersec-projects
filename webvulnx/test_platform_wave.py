@@ -195,8 +195,8 @@ def test_hashbreaker_crackstation():
     ntlm_h = hb.compute("ntlm", "Password123").upper()
     mysql5_h = hb.compute("mysql5", "admin").upper()
     sha3_h = hb.compute("sha3-256", "cairo")
-    salted_h = hashlib.md5(b"salt99" + b"secret").hexdigest() + ":salt99"
-    ldap_h = "{SHA}" + base64.b64encode(hashlib.sha1(b"letmein").digest()).decode()
+    salted_h = hashlib.md5(b"salt99" + b"secret", usedforsecurity=False).hexdigest() + ":salt99"  # nosemgrep: python.lang.security.insecure-hash-algorithms-md5.insecure-hash-algorithm-md5 (unit test fixture)
+    ldap_h = "{SHA}" + base64.b64encode(hashlib.sha1(b"letmein", usedforsecurity=False).digest()).decode()  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1 (unit test fixture)
     dk = hashlib.pbkdf2_hmac("sha256", b"hello123", b"s1", 1000)
     dj_h = "pbkdf2_sha256$1000$s1$" + base64.b64encode(dk).decode()
 
