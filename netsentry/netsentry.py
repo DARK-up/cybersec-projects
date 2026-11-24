@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ipaddress
 import json
 import os
 import re
@@ -170,7 +171,12 @@ class ArpDetector:
         ts = ts if ts is not None else float(pkt.time if hasattr(pkt, "time") else time.time())
         arp = pkt[ARP]
         ip, mac = arp.psrc, arp.hwsrc
-        if not ip or ip == "0.0.0.0":
+        if not ip:
+            return
+        try:
+            if ipaddress.ip_address(ip).is_unspecified:
+                return
+        except ValueError:
             return
 
         # Expire stale MAC bindings outside window_s
