@@ -214,23 +214,66 @@ MIGRATIONS: List[Migration] = [
             "ALTER TABLE vault_secrets ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        7,
+        "vault_secrets_composite_tenant_unique",
+        [
+            """CREATE TABLE IF NOT EXISTS vault_secrets_v7 (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                nonce_b64 TEXT NOT NULL,
+                cipher_b64 TEXT NOT NULL,
+                mac_b64 TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                key_version INTEGER NOT NULL DEFAULT 1,
+                alg TEXT NOT NULL DEFAULT 'AES-256-GCM',
+                updated_at REAL NOT NULL DEFAULT 0,
+                UNIQUE(tenant_id, name)
+            )""",
+            """INSERT OR IGNORE INTO vault_secrets_v7(
+                id, name, kind, nonce_b64, cipher_b64, mac_b64, created_by, created_at,
+                tenant_id, key_version, alg, updated_at
+            )
+            SELECT id, name, kind, nonce_b64, cipher_b64, mac_b64, created_by, created_at,
+                   COALESCE(NULLIF(tenant_id, ''), 'default'),
+                   COALESCE(key_version, 1),
+                   COALESCE(NULLIF(alg, ''), 'AES-256-GCM'),
+                   COALESCE(updated_at, created_at)
+            FROM vault_secrets""",
+            "DROP TABLE vault_secrets",
+            "ALTER TABLE vault_secrets_v7 RENAME TO vault_secrets",
+        ],
+    ),
+    (
+        8,
+        "audit_logs_chain_version",
+        [
+            "ALTER TABLE audit_logs ADD COLUMN chain_version INTEGER NOT NULL DEFAULT 1",
+        ],
+    ),
 ]
 
 
 def get_backend_info() -> dict:
     pg_dsn = os.environ.get("DARK_POSTGRES_DSN", "").strip()
     pg_driver = False
+    pg_err = ""
     if pg_dsn:
         try:
             import psycopg  # type: ignore  # noqa: F401
             pg_driver = True
-        except ImportError:
+        except ImportError as e:
             pg_driver = False
+            pg_err = f"psycopg driver missing: {e}"
     return {
-        "active_engine": "postgresql" if (pg_dsn and pg_driver) else "sqlite",
-        "sqlite_path": str(DB_PATH),
+        "active_engine": "postgresql" if pg_dsn else "sqlite",
+        "sqlite_path": str(DB_PATH) if not pg_dsn else "",
         "postgres_configured": bool(pg_dsn),
         "postgres_driver_available": pg_driver,
+        "postgres_error": pg_err,
     }
 
 

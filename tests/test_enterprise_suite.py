@@ -14,9 +14,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for p in (str(ROOT / "dark"), str(ROOT / "modules"), str(ROOT / "webvulnx")):
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 
 import enterprise_db as edb  # noqa: E402
 import asset_intel as ai  # noqa: E402
@@ -306,7 +308,7 @@ def test_zero_false_positives_on_hardened_targets():
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        res = dark_eng.run_web_scan(f"http://127.0.0.1:{port}", time_blind=None, max_urls=10, depth=1)
+        res = dark_eng.run_web_scan(f"http://127.0.0.1:{port}", time_blind=None, max_urls=10, depth=1, rate_limit=0)
         actionable = [f for f in res["findings"] if f.get("severity") != "Info"]
         assert len(actionable) == 0, f"Unexpected false positives: {actionable}"
     finally:

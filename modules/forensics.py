@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(ROOT / "netsentry") not in sys.path:
-    sys.path.insert(0, str(ROOT / "netsentry"))
+    sys.path.append(str(ROOT / "netsentry"))
 
 KNOWN_BAD_IOCS = {
     "198.51.100.44": "Simulated C2 Beacon IP",

@@ -46,29 +46,43 @@ def compute_posture_dashboard(jobs: List[Dict[str, Any]], project_id: Optional[s
     tactics_covered = len(set(hub.get("mitre_attack", {}).get("by_tactic", {}).keys()) | {r.get("mitre_tactic") for r in rules})
     detection_coverage_pct = round(min(100.0, (tactics_covered / 14.0) * 100.0), 1)
 
+    scoped_jobs = [
+        j for j in (jobs or [])
+        if not (project_id and j.get("project_id") and j.get("project_id") != project_id)
+    ]
+    completed_jobs = [j for j in scoped_jobs if j.get("status") in ("done", "stopped")]
+    assessed_d, failed_d = comp.domains_from_jobs(scoped_jobs)
+
     raw_tickets = rem.list_tickets(project_id=project_id)
     tickets = raw_tickets.get("tickets", []) if isinstance(raw_tickets, dict) else (raw_tickets or [])
     closed_t = sum(1 for t in tickets if t.get("status") in ("verified_closed", "accepted_risk"))
-    remediation_progress_pct = round((closed_t / len(tickets)) * 100.0, 1) if tickets else (100.0 if crit_count == 0 else 0.0)
+    remediation_progress_pct = round((closed_t / len(tickets)) * 100.0, 1) if tickets else (100.0 if (completed_jobs and crit_count == 0) else 0.0)
 
-    comp_res = comp.evaluate_compliance(findings)
-    fw_scores = [float(v.get("score_pct") or v.get("score") or 0) for v in (comp_res.get("frameworks") or {}).values()]
-    compliance_score_pct = round(sum(fw_scores) / len(fw_scores), 1) if fw_scores else 100.0
+    comp_res = comp.evaluate_compliance(findings, assessed_domains=assessed_d, failed_domains=failed_d)
+    fw_scores = [float(v.get("score_pct") or 0) for v in (comp_res.get("frameworks") or {}).values()]
+    compliance_score_pct = round(sum(fw_scores) / len(fw_scores), 1) if fw_scores else 0.0
 
     threat_activity = sum(
         1 for f in findings
         if any(s in ("threat-hunt", "forensics", "monitor-demo", "monitor-pcap", "phishing-analyze", "malware-triage") for s in f.get("sources", []))
     )
 
-    # Composite Security Posture Score (0..100)
-    penalty = min(65.0, crit_count * 12.0 + high_count * 4.0 + min(15.0, threat_activity * 2.0))
-    bonus = (detection_coverage_pct * 0.15) + (compliance_score_pct * 0.10) + (remediation_progress_pct * 0.10)
-    posture_score = round(max(0.0, min(100.0, (100.0 - penalty) * 0.65 + bonus)), 1)
+    # Composite Security Posture Score (0..100), or None/'Unknown' when no completed scans exist
+    if not completed_jobs:
+        posture_score = None
+        posture_status = "Unknown"
+    else:
+        penalty = min(65.0, crit_count * 12.0 + high_count * 4.0 + min(15.0, threat_activity * 2.0))
+        bonus = (detection_coverage_pct * 0.15) + (compliance_score_pct * 0.10) + (remediation_progress_pct * 0.10)
+        posture_score = round(max(0.0, min(100.0, (100.0 - penalty) * 0.65 + bonus)), 1)
+        posture_status = "Healthy" if posture_score >= 80 else ("Moderate" if posture_score >= 50 else "At Risk")
 
     snapshot = {
         "project_id": project_id or "default",
         "generated_at": time.time(),
         "security_posture_score": posture_score,
+        "posture_status": posture_status,
+        "completed_scans": len(completed_jobs),
         "critical_findings": crit_count,
         "high_findings": high_count,
         "exposed_assets": exposed_assets,
@@ -82,7 +96,7 @@ def compute_posture_dashboard(jobs: List[Dict[str, Any]], project_id: Optional[s
     hist_key = f"posture_history:{project_id or 'default'}"
     hist = edb.get_setting(hist_key, []) or []
     delta = {}
-    if hist:
+    if hist and posture_score is not None and hist[-1].get("security_posture_score") is not None:
         prev = hist[-1]
         delta = {
             "score_delta": round(posture_score - float(prev.get("security_posture_score", posture_score)), 1),

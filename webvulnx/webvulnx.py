@@ -49,8 +49,6 @@ import payload_mgr as pm
 import ssrf_scanner as ssrf_mod
 import threading
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 BANNER = r"""
  __      __     _   _   _   _  __   __
  \ \    / /__ _| | | | | | | \ \ / /__ _ _   _ _ __ _  _
@@ -318,10 +316,21 @@ class HttpClient:
     def __init__(self, timeout: float = 10.0, delay: float = 0.0,
                  user_agent: str = "",
                  cookies: Optional[Dict] = None, headers: Optional[Dict] = None,
-                 proxy: Optional[str] = None, verify: bool = False,
-                 stealth: bool = True, target: str = ""):
+                 proxy: Optional[str] = None, verify: bool = True,
+                 stealth: bool = True, target: str = "",
+                 allow_insecure_tls: Optional[bool] = None,
+                 rate_limit: Optional[float] = 1.0):
         self.sess = requests.Session()
-        self.sess.verify = verify
+        # Safe-by-default TLS verification unless caller explicitly opts into insecure mode
+        if allow_insecure_tls is not None:
+            effective_verify = not bool(allow_insecure_tls)
+        else:
+            effective_verify = bool(verify)
+        self.sess.verify = effective_verify
+        self.tls_verify = effective_verify
+        self.tls_insecure_reasons: List[str] = []
+        if not effective_verify:
+            self.tls_insecure_reasons.append("TLS certificate verification explicitly disabled (verify=False)")
         # Adapter pooling — fewer TCP/TLS handshakes = faster AND less noisy.
         try:
             from requests.adapters import HTTPAdapter
@@ -341,14 +350,20 @@ class HttpClient:
             })
         if user_agent:
             self.sess.headers["User-Agent"] = user_agent
+        self.custom_headers: Dict[str, str] = {}
         if headers:
-            self.sess.headers.update(headers)
+            for hk, hv in headers.items():
+                if hk is not None and hv is not None:
+                    self.custom_headers[str(hk).strip()] = str(hv).strip()
+            self.sess.headers.update(self.custom_headers)
         if cookies:
             self.sess.cookies.update(cookies)
         if proxy:
             self.sess.proxies = {"http": proxy, "https": proxy}
         self.timeout = timeout
         self.delay = delay
+        self.rate_limit = rate_limit
+        self.last_network_rtt: float = 0.0
         self.last_error: Optional[str] = None
         self.stats: Dict[str, Any] = {
             "requests": 0, "errors": 0, "blocked": 0, "waf_hits": 0,
@@ -359,15 +374,17 @@ class HttpClient:
         self._cache: Dict[str, requests.Response] = {}
         self._referer: Optional[str] = None
         local = stl.is_local_target(target) if target else False
-        if self.stealth and delay <= 0 and not local:
-            # Remote + stealth + no explicit delay → polite pacing with auto-backoff on 429/WAF.
+        rate_interval = (1.0 / float(rate_limit)) if (rate_limit is not None and float(rate_limit) > 0.0) else 0.0
+        if delay > 0 or rate_interval > 0:
+            min_i = max(float(delay or 0.0), rate_interval)
+            jit = min(0.05, min_i * 0.1) if rate_interval > 0 else min(0.25, delay)
+        elif self.stealth and not local:
+            # Remote + stealth + explicit unlimited rate -> polite pacing with auto-backoff
             min_i, jit = 0.04, 0.05
-        elif delay > 0:
-            min_i, jit = delay, min(0.25, delay)
         else:
             min_i, jit = 0.0, 0.0
-        self.gate = stl.RateGate(min_interval=min_i, jitter=jit)
-        self.workers = 6 if local else 3
+        self.gate = stl.RateGate(min_interval=min_i, jitter=jit, floor_interval=rate_interval)
+        self.workers = 1 if (rate_interval >= 0.5) else (6 if local else 3)
 
     def _cache_key(self, method: str, url: str, kw: dict) -> Optional[str]:
         if method.upper() != "GET":
@@ -389,30 +406,44 @@ class HttpClient:
                 self.stats["cache_hits"] = self.stats.get("cache_hits", 0) + 1
             return self._cache[key]
 
-        self.gate.wait(stop_event=ev)
-        if ev is not None and ev.is_set():
-            return None
         kw.setdefault("timeout", self.timeout)
         kw.setdefault("allow_redirects", True)
-        # Real browsers send a Referer on same-origin navigations.
+        # Never send Authorization/credentials silently over an unverified TLS override
+        if url.lower().startswith("https://") and not self.tls_verify:
+            has_auth = bool(self.sess.headers.get("Authorization") or kw.get("headers", {}).get("Authorization"))
+            if has_auth and not getattr(self, "allow_secrets_over_insecure_tls", False):
+                self.last_error = "Blocked sending Authorization header over unverified TLS (verify=False)"
+                return None
+        # Preserve explicit custom headers (--header) and avoid overwriting user-supplied Referer
         headers = dict(kw.get("headers") or {})
-        if self.stealth and self._referer and "Referer" not in headers \
+        custom_lower = {k.lower() for k in self.custom_headers}
+        if self.custom_headers:
+            merged = dict(self.custom_headers)
+            merged.update(headers)
+            headers = merged
+        if self.stealth and self._referer and "referer" not in custom_lower \
                 and "referer" not in {h.lower() for h in headers}:
             headers["Referer"] = self._referer
             headers.setdefault("Sec-Fetch-Site", "same-origin")
             headers.setdefault("Sec-Fetch-Mode", "navigate")
+        if headers:
             kw["headers"] = headers
 
         last_exc = None
-        with self._lock:
-            self.stats["requests"] += 1
-            self.stats["by_module"][self.module] = \
-                self.stats["by_module"].get(self.module, 0) + 1
         for attempt in range(2):
             if ev is not None and ev.is_set():
                 return None
+            self.gate.wait(stop_event=ev)
+            if ev is not None and ev.is_set():
+                return None
+            with self._lock:
+                self.stats["requests"] += 1
+                self.stats["by_module"][self.module] = \
+                    self.stats["by_module"].get(self.module, 0) + 1
             try:
+                t_net0 = time.monotonic()
                 resp = self.sess.request(method, url, **kw)
+                self.last_network_rtt = time.monotonic() - t_net0
                 self.last_error = None
                 sc = str(resp.status_code)
                 with self._lock:
@@ -475,8 +506,8 @@ def diagnose_error(err: str) -> str:
                 "response — this often means the site is filtering/blocking your "
                 "IP (cloud IPs are often blocked by WAFs) or the service is hung.")
     if "ssl" in low or "certificate" in low:
-        return ("TLS/SSL problem — the site may have a broken certificate. "
-                "(WebVulnX already runs with verification disabled.)")
+        return ("TLS/SSL verification failed — certificate untrusted, expired, or hostname mismatch. "
+                "Verify the target certificate or explicitly enable allow_insecure_tls=True in lab environments.")
     if "missingschema" in low or "invalidurl" in low or "invalid schema" in low:
         return "The URL is malformed — use a full URL like http://target.com"
     if "proxy" in low:
@@ -822,15 +853,15 @@ class SqliScanner:
         base_params = base_params or {p: "1" for p in params}
         parsed = urllib.parse.urlsplit(url)
         clean = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-        # Baseline (measure stability & RTT twice so dynamic external pages don't trigger FPs)
+        # Baseline (measure stability & net RTT twice so dynamic external pages and RateGate waits don't trigger FPs)
         t_b0 = time.monotonic()
         if method.upper() == "GET":
             base_resp = self.client.get(clean, params=base_params)
-            base_rtt = time.monotonic() - t_b0
+            base_rtt = getattr(self.client, "last_network_rtt", 0.0) or (time.monotonic() - t_b0)
             base_resp2 = self.client.get(clean, params=base_params) if base_resp is not None else None
         else:
             base_resp = self.client.request("POST", clean, data=base_params)
-            base_rtt = time.monotonic() - t_b0
+            base_rtt = getattr(self.client, "last_network_rtt", 0.0) or (time.monotonic() - t_b0)
             base_resp2 = self.client.request("POST", clean, data=base_params) if base_resp is not None else None
         if base_resp is None:
             return
@@ -932,20 +963,20 @@ class SqliScanner:
                         return
                     t0 = time.monotonic()
                     resp = self._send(url, method, param, payload, base_params, baseline)
-                    elapsed = time.monotonic() - t0
+                    elapsed = getattr(self.client, "last_network_rtt", 0.0) or (time.monotonic() - t0)
                     if self.state.should_stop():
                         return
                     if resp is not None and (elapsed - base_rtt) >= (self.time_delay - 0.5):
                         # Neutral control check to rule out temporary server congestion
                         t_ctl = time.monotonic()
                         self._send(url, method, param, str(base_params.get(param, "1")), base_params, baseline)
-                        ctl_elapsed = time.monotonic() - t_ctl
+                        ctl_elapsed = getattr(self.client, "last_network_rtt", 0.0) or (time.monotonic() - t_ctl)
                         if (ctl_elapsed - base_rtt) >= (self.time_delay - 0.8):
                             continue
                         # Confirmation: must delay AGAIN
                         t1 = time.monotonic()
                         self._send(url, method, param, payload, base_params, baseline)
-                        elapsed2 = time.monotonic() - t1
+                        elapsed2 = getattr(self.client, "last_network_rtt", 0.0) or (time.monotonic() - t1)
                         if (elapsed2 - base_rtt) >= (self.time_delay - 0.5):
                             self.state.add(Finding(
                                 vuln_type="SQL Injection (Time-Based Blind)",
@@ -1077,35 +1108,33 @@ class XssScanner:
             csp_info = xd.audit_csp(dict(resp.headers))
             raw, exec_ = self._is_reflected(payload, resp.text)
             if exec_:
-                sev = "Medium" if csp_info.get("blocks_inline") else "High"
-                vtype = "Reflected XSS (Executable, CSP-Mitigated)" if csp_info.get("blocks_inline") else "Reflected XSS (Executable)"
+                # Legacy heuristic NEVER promotes raw reflection to Confirmed execution
                 self.state.add(Finding(
-                    vuln_type=vtype,
-                    severity=sev, url=url, parameter=param, payload=payload,
-                    evidence=f"payload reflected and rendered as active HTML/JS | {csp_info.get('detail')}",
-                    detail="The application reflects user input into the page without "
-                           "adequate encoding — script execution is possible.",
-                    cvss_hint=5.4 if csp_info.get("blocks_inline") else 7.4,
-                    confidence=0.90 if not csp_info.get("blocks_inline") else 0.72,
-                    verification_status="Confirmed" if not csp_info.get("blocks_inline") else "Probable",
+                    vuln_type="Reflected Input Observation (XSS Legacy Heuristic — Deprecated, Unverified)",
+                    severity="Medium", url=url, parameter=param, payload=payload,
+                    evidence=f"Legacy heuristic matched raw active-looking tag in body (not context-parsed or browser-verified) | {csp_info.get('detail')}",
+                    detail="Deprecated legacy reflection heuristic only; does not prove JavaScript execution "
+                           "(e.g., <textarea> or rawtext tags may echo unescaped without executing). Use default DeepXssScanner.",
+                    cvss_hint=5.4,
+                    confidence=0.45,
+                    verification_status="Observation",
                     cwe="CWE-79",
                     remediation="Apply context-aware output encoding (HTML entity, attribute, JS literal) and enforce a strict Content-Security-Policy without 'unsafe-inline'.",
-                    signals=["unescaped-reflection", "html-content-type", "csp-checked"],
+                    signals=["legacy-raw-reflection-only"],
                 ))
                 return
             if raw:
                 self.state.add(Finding(
-                    vuln_type="Reflected XSS (Reflected, encoding dependent)",
-                    severity="Medium", url=url, parameter=param, payload=payload,
-                    evidence=f"payload reflected verbatim into the response body | {csp_info.get('detail')}",
-                    detail="Input is reflected without sanitization; exploitability depends "
-                           "on where it lands in the HTML context.",
-                    cvss_hint=5.4,
-                    confidence=0.65,
-                    verification_status="Probable",
+                    vuln_type="Input Reflection Observation (Encoded / Non-Executing — Legacy)",
+                    severity="Info", url=url, parameter=param, payload=payload,
+                    evidence=f"HTML-escaped or inert reflection observed | {csp_info.get('detail')}",
+                    detail="Reflected safely encoded or inert; not an executable XSS vulnerability.",
+                    cvss_hint=0.0,
+                    confidence=0.35,
+                    verification_status="Observation",
                     cwe="CWE-79",
-                    remediation="Apply context-aware output encoding before rendering user input in HTML.",
-                    signals=["verbatim-reflection"],
+                    remediation="Maintain context-aware output encoding.",
+                    signals=["inert-reflection"],
                 ))
                 return
 
@@ -2405,7 +2434,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-d", "--depth", type=int, default=3, help="Crawl depth [3]")
     p.add_argument("--max-urls", type=int, default=150, help="Max crawled URLs [150]")
     p.add_argument("--timeout", type=float, default=10.0, help="HTTP timeout [10]")
-    p.add_argument("--delay", type=float, default=0.0, help="Delay between requests [0]")
+    p.add_argument("--delay", type=float, default=0.0, help="Extra minimum delay between requests in seconds [0]")
+    p.add_argument("--rate-limit", type=float, default=1.0,
+                   help="Max HTTP requests per second across all modules including time-blind SQLi [default: 1.0; use 0 for unlimited in local labs]")
     p.add_argument("--stealth", dest="stealth", action="store_true", default=True,
                    help="Browser fingerprint + WAF backoff + human jitter (default ON)")
     p.add_argument("--no-stealth", dest="stealth", action="store_false",
@@ -2416,7 +2447,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Skip time-based SQLi (much faster on slow/remote targets)")
     p.add_argument("--cookie", help='Cookies, e.g. "PHPSESSID=abc; role=user"')
     p.add_argument("--header", action="append", default=[],
-                   help='Extra header "Name: Value" (repeatable)')
+                   help='Custom HTTP header "Name: Value" injected on every outgoing request, repeatable (e.g. --header "Deck-Research: 1" --header "X-Bron-Bugbounty: user")')
     p.add_argument("--proxy", help="HTTP proxy, e.g. http://127.0.0.1:8080")
     p.add_argument("--no-crawl", action="store_true", help="Skip crawling (test base URL only)")
     p.add_argument("--no-root-expansion", action="store_true",
@@ -2458,9 +2489,15 @@ def main() -> None:
     # Headers / cookies
     extra_headers = {}
     for h in args.header:
-        if ":" in h:
-            k, _, v = h.partition(":")
-            extra_headers[k.strip()] = v.strip()
+        if ":" not in h:
+            warn(f"Ignoring invalid --header '{h}' (expected 'Name: Value')")
+            continue
+        k, _, v = h.partition(":")
+        k = k.strip()
+        if not k:
+            warn(f"Ignoring empty header name in '{h}'")
+            continue
+        extra_headers[k] = v.strip()
     cookies = {}
     if args.cookie:
         for part in args.cookie.split(";"):
@@ -2470,7 +2507,8 @@ def main() -> None:
 
     client = HttpClient(timeout=args.timeout, delay=args.delay,
                         cookies=cookies, headers=extra_headers, proxy=args.proxy,
-                        stealth=args.stealth, target=args.url)
+                        stealth=args.stealth, target=args.url,
+                        rate_limit=args.rate_limit)
     args.url = ensure_scheme(args.url)
     state = ScanState(base_url=args.url, start_ts=time.time())
 
@@ -2518,6 +2556,9 @@ def main() -> None:
         state.crawled_urls.add(args.url)
     else:
         state.crawled_urls.add(args.url)
+        qs = urllib.parse.parse_qs(urllib.parse.urlsplit(args.url).query, keep_blank_values=True)
+        if qs:
+            state.params.setdefault(args.url, set()).update(qs.keys())
         state.note("Crawling disabled (--no-crawl): only the given URL was tested")
 
     # Modules

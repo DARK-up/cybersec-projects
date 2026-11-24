@@ -37,6 +37,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR.parent) not in sys.path:
+    sys.path.insert(0, str(APP_DIR.parent))
+for _p in (str(APP_DIR), str(APP_DIR.parent / "modules")):
+    if _p not in sys.path:
+        sys.path.append(_p)
+
 import engine
 import enterprise_db as edb
 import enterprise_routes as eroutes
@@ -45,10 +52,8 @@ import security_hardening as sh
 import verification as dverif
 import reporting_analytics as drpt
 
-APP_DIR = Path(__file__).resolve().parent
-
 def _load_platform():
-    spec = importlib.util.spec_from_file_location("dark_platform", APP_DIR / "platform.py")
+    spec = importlib.util.spec_from_file_location("dark_workspace_platform", APP_DIR / "workspace_platform.py")
     mod = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(mod)
@@ -82,28 +87,69 @@ JOB_DEADLINES = {"web-scan": 3600, "network-scan": 1800, "hash-crack": 3600,
 JOB_DEADLINE_DEFAULT = 1800
 
 
+_SENSITIVE_PAYLOAD_KEYS = {
+    "cookie", "auth_header", "login_pass", "password", "pass", "token",
+    "secret", "api_key", "apikey", "authorization", "private_key", "extra_headers",
+}
+JOB_RETENTION_DAYS = int(os.environ.get("DARK_JOB_RETENTION_DAYS", "7"))
+
+
+def _redact_repro_payload(payload: dict) -> dict:
+    """Replace credentials/cookies/headers in persisted/exposed job payloads with redaction tokens."""
+    out: Dict[str, Any] = {}
+    for k, v in (payload or {}).items():
+        if k == "stop_event":
+            continue
+        kl = str(k).lower()
+        if kl in _SENSITIVE_PAYLOAD_KEYS or any(s in kl for s in ("password", "secret", "token", "cookie", "auth_")):
+            out[k] = "[REDACTED]" if v else v
+        elif kl == "proxy" and isinstance(v, str) and "@" in v:
+            out[k] = sh.redact_sensitive(v, max_len=200)
+        elif isinstance(v, dict):
+            out[k] = _redact_repro_payload(v)
+        else:
+            out[k] = v
+    return out
+
+
 def _jobs_to_disk() -> None:
-    """Persist job metadata: history survives a restart and no job can be
-    left displayed as 'running' after the API was restarted."""
+    """Persist job metadata: history survives a restart, sensitive payloads are redacted,
+    and file mode is restricted to 0600."""
     try:
+        cutoff = time.time() - (max(1, JOB_RETENTION_DAYS) * 86400)
         with JOBS_LOCK:
-            items = sorted(JOBS.values(), key=lambda j: j.get("started_at") or 0,
-                           reverse=True)[:MAX_JOBS_KEPT]
+            items = [
+                j for j in sorted(JOBS.values(), key=lambda x: x.get("started_at") or 0, reverse=True)
+                if (j.get("started_at") or time.time()) >= cutoff
+            ][:MAX_JOBS_KEPT]
             slim = []
             for j in items:
                 c = {k: v for k, v in j.items() if not k.startswith("_")}
+                if isinstance(c.get("repro_payload"), dict):
+                    c["repro_payload"] = _redact_repro_payload(c["repro_payload"])
                 r = c.get("result")
-                if isinstance(r, dict) and isinstance(r.get("log"), str) \
-                        and len(r["log"]) > 200_000:
+                if isinstance(r, dict):
                     r = dict(r)
-                    r["log"] = r["log"][:200_000] + "\n…[log truncated]…"
+                    if isinstance(r.get("log"), str):
+                        log_red = sh.redact_sensitive(r["log"], max_len=200_000)
+                        if len(r["log"]) > 200_000:
+                            log_red += "\n…[log truncated]…"
+                        r["log"] = log_red
                     c["result"] = r
                 c.pop("progress", None)
                 slim.append(c)
         tmp = JOBS_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(slim, ensure_ascii=False, default=str),
                        encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except Exception:
+            pass
         tmp.replace(JOBS_FILE)
+        try:
+            os.chmod(JOBS_FILE, 0o600)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -154,15 +200,20 @@ def _watchdog() -> None:
                 deadline = j.get("deadline") or (
                     (j.get("started_at") or now) + JOB_DEADLINE_DEFAULT)
                 if now > deadline:
+                    ev = j.get("_stop_event")
+                    if ev is not None:
+                        ev.set()
                     j["status"] = "timeout"
+                    j["timed_out"] = True
+                    j["stop_signaled_at"] = now
                     j["finished_at"] = now
                     buf = j.get("_log")
                     tail = buf.snapshot(tail_lines=25) if buf is not None else ""
                     j["error"] = (f"Job exceeded its "
                                   f"{int(JOB_DEADLINES.get(j['kind'], JOB_DEADLINE_DEFAULT))}s "
-                                  f"limit and was stopped by the watchdog. Narrow the scan "
-                                  f"(fewer targets/URLs) or raise the limit."
-                                  + (f"\n\nLast output before the stop:\n{tail}" if tail else ""))
+                                  f"limit; cooperative stop event signaled by watchdog. "
+                                  f"Narrow the scan (fewer targets/URLs) or raise the limit."
+                                  + (f"\n\nLast output before timeout:\n{tail}" if tail else ""))
                     changed = True
         try:
             with JOBS_LOCK:
@@ -197,8 +248,11 @@ threading.Thread(target=_watchdog, daemon=True).start()
 
 
 def _public(job: dict) -> dict:
-    """Strip private runtime handles (log buffers) from API responses."""
-    return {k: v for k, v in job.items() if not k.startswith("_")}
+    """Strip private runtime handles and redact sensitive payload fields from API responses."""
+    out = {k: v for k, v in job.items() if not k.startswith("_")}
+    if isinstance(out.get("repro_payload"), dict):
+        out["repro_payload"] = _redact_repro_payload(out["repro_payload"])
+    return out
 
 
 def start_job(kind: str, runner, project_id: str = "default",
@@ -221,7 +275,7 @@ def start_job(kind: str, runner, project_id: str = "default",
     pid = (project_id or "default").strip() or "default"
     actor_now = edb.get_current_actor()
     tid = actor_now.get("tenant_id", "default")
-    repro_payload = {k: v for k, v in payload.items() if k != "stop_event"}
+    repro_payload = _redact_repro_payload(payload)
     with JOBS_LOCK:
         JOBS[job_id] = {
             "id": job_id, "kind": kind, "status": "running",
@@ -287,6 +341,9 @@ def start_job(kind: str, runner, project_id: str = "default",
                 elif isinstance(result, dict) and result.get("error"):
                     JOBS[job_id].update(status="error", error=result["error"],
                                         result=result, finished_at=time.time())
+                elif isinstance(result, dict) and result.get("partial_failure"):
+                    JOBS[job_id].update(status="partial", result=result,
+                                        finished_at=time.time())
                 else:
                     JOBS[job_id].update(status="done", result=result,
                                         finished_at=time.time())
@@ -343,6 +400,7 @@ class WebScanReq(BaseModel):
     max_urls: int = 80
     timeout: float = 10.0
     delay: float = 0.0
+    rate_limit: float = 1.0
     time_blind: float = 5.0
     cookie: Optional[str] = None
     auth_header: Optional[str] = None
@@ -532,6 +590,60 @@ def is_production_profile() -> bool:
     return get_deployment_profile() == "production"
 
 
+_PLACEHOLDER_SECRETS = ("dark_change_me", "changeme", "dev-secret", "test-secret", "replace-with-")
+
+
+def validate_production_config(strict: bool = False) -> List[str]:
+    """Validate production deployment config; raise RuntimeError on insecure defaults."""
+    errors: List[str] = []
+    if not is_production_profile():
+        return errors
+    vk = (os.environ.get("DARK_VAULT_KEY") or "").strip()
+    dsn = (os.environ.get("DARK_POSTGRES_DSN") or "").strip()
+    cors_raw = (os.environ.get("DARK_CORS_ORIGINS") or "").strip()
+    if vk and any(p in vk.lower() for p in _PLACEHOLDER_SECRETS):
+        errors.append("DARK_VAULT_KEY uses a placeholder/demo secret")
+    if dsn and any(p in dsn.lower() for p in _PLACEHOLDER_SECRETS):
+        errors.append("DARK_POSTGRES_DSN contains a placeholder/demo password")
+    if "*" in cors_raw:
+        errors.append("DARK_CORS_ORIGINS must not contain wildcard '*'")
+    if strict or os.environ.get("DARK_STRICT_PROD_STARTUP") == "1":
+        if not vk or len(vk) < 16:
+            errors.append("DARK_VAULT_KEY must be set (>=16 chars) in strict production mode")
+        if not cors_raw:
+            errors.append("DARK_CORS_ORIGINS must be explicitly set in strict production mode")
+        if not dsn:
+            errors.append("DARK_POSTGRES_DSN must be configured in strict production mode")
+    if errors:
+        raise RuntimeError("Insecure production configuration: " + "; ".join(errors))
+    return errors
+
+
+validate_production_config(strict=False)
+
+
+def _enforce_cookie_csrf(request: Request) -> Optional[JSONResponse]:
+    """Fail-closed CSRF validation whenever state-changing requests authenticate via cookie."""
+    if request.method.upper() not in ("POST", "PUT", "PATCH", "DELETE"):
+        return None
+    cookie_tok = request.cookies.get("dark_session") or ""
+    header_tok = request.headers.get("X-Dark-Token") or ""
+    auth_h = request.headers.get("Authorization") or ""
+    api_key_hdr = request.headers.get("X-API-Key") or ""
+    if not header_tok and auth_h.lower().startswith("bearer "):
+        cand = auth_h.split(" ", 1)[1].strip()
+        if cand.startswith("dark_"):
+            api_key_hdr = api_key_hdr or cand
+        else:
+            header_tok = cand
+    if cookie_tok and not header_tok and not api_key_hdr:
+        csrf_cookie = request.cookies.get("dark_csrf") or ""
+        csrf_hdr = request.headers.get("X-CSRF-Token") or ""
+        if not csrf_cookie or not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr):
+            return JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"})
+    return None
+
+
 @app.middleware("http")
 async def _auth_gate(request: Request, call_next):
     path = request.url.path
@@ -549,6 +661,10 @@ async def _auth_gate(request: Request, call_next):
         return resp
 
     if not path.startswith("/api/") or path.startswith("/api/auth/") or path in ("/api/health", "/api/admin/users/login"):
+        if path in ("/api/auth/setup", "/api/auth/disable", "/api/auth/logout"):
+            csrf_fail = _enforce_cookie_csrf(request)
+            if csrf_fail is not None:
+                return await _finish(csrf_fail)
         return await _finish(await call_next(request))
 
     ip = request.client.host if request.client else "global"
@@ -579,11 +695,11 @@ async def _auth_gate(request: Request, call_next):
     if (tok or api_key_hdr) and not (rbac_sess or legacy_user or api_key_rec):
         return await _finish(JSONResponse(status_code=401, content={"error": "Invalid or expired session token / API key"}))
 
-    # Enforce double-submit CSRF token when browser authenticates via an active session cookie
+    # Fail-closed double-submit CSRF enforcement when authenticating via session cookie
     if request.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and cookie_tok and not header_tok and not api_key_hdr and (rbac_sess or legacy_user):
         csrf_cookie = request.cookies.get("dark_csrf") or ""
         csrf_hdr = request.headers.get("X-CSRF-Token") or ""
-        if csrf_cookie and (not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr)):
+        if not csrf_cookie or not csrf_hdr or not edb.hmac.compare_digest(csrf_cookie, csrf_hdr):
             return await _finish(JSONResponse(status_code=403, content={"error": "CSRF token missing or invalid"}))
 
     if (lock_enforced or rbac_enforced) and not (rbac_sess or legacy_user or api_key_rec):
@@ -650,12 +766,15 @@ def logo():
 
 @app.get("/api/health")
 def health():
+    backend = edb._dbm.get_backend_info()
     return {
         "name": "DARK",
         "version": "4.0.0",
         "status": "online",
         "deployment_profile": get_deployment_profile(),
         "debug_mode": not is_production_profile(),
+        "db_engine": backend.get("active_engine", "sqlite"),
+        "db_backend": backend,
         "platform": sys.platform,
         "tools": engine.tools_status(),
         "legal": LEGAL,
@@ -1117,8 +1236,8 @@ def job_csv(job_id: str):
             f.get("vuln_type") or f.get("category") or "",
             f.get("parameter") or "",
             f.get("url") or f.get("src") or "",
-            (f.get("payload") or "")[:300],
-            (f.get("evidence") or f.get("detail") or "")[:400],
+            sh.redact_sensitive(str(f.get("payload") or ""), max_len=300),
+            sh.redact_sensitive(str(f.get("evidence") or f.get("detail") or ""), max_len=400),
             f.get("cvss_hint") or "",
         ])
     return Response(buf.getvalue(), media_type="text/csv",
@@ -1163,7 +1282,8 @@ def job_web_scan(req: WebScanReq):
                  "param_fuzz": req.param_fuzz, "default_creds": req.default_creds,
                  "templates": req.templates},
         depth=req.depth, max_urls=req.max_urls, timeout=req.timeout,
-        delay=req.delay, time_blind=None if req.fast else req.time_blind,
+        delay=req.delay, rate_limit=req.rate_limit,
+        time_blind=None if req.fast else req.time_blind,
         cookie=req.cookie, proxy=req.proxy, stealth=req.stealth,
         auth_header=req.auth_header, extra_headers=req.extra_headers,
         login_url=req.login_url, login_user=req.login_user, login_pass=req.login_pass,
@@ -1355,3 +1475,14 @@ def wordlists():
 @app.exception_handler(Exception)
 def on_error(request, exc):
     return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+
+def run_cli(argv: Optional[List[str]] = None) -> None:
+    import argparse
+    import uvicorn
+    p = argparse.ArgumentParser(prog="dark-api", description="DARK Security Platform API Server")
+    p.add_argument("--host", default=os.environ.get("DARK_HOST", "127.0.0.1"), help="Bind host (default: 127.0.0.1)")
+    p.add_argument("--port", type=int, default=int(os.environ.get("DARK_PORT", "8000")), help="Bind port (default: 8000)")
+    p.add_argument("--version", action="version", version=f"DARK {app.version}")
+    args = p.parse_args(argv)
+    uvicorn.run(app, host=args.host, port=args.port)

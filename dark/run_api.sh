@@ -23,11 +23,13 @@ echo "[2/3] Installing dependencies ..."
 echo
 echo "[3/3] Starting DARK API ..."
 echo
-echo "   Dashboard : http://localhost:8000"
-echo "   API docs  : http://localhost:8000/docs"
+DARK_HOST="${DARK_HOST:-127.0.0.1}"
+DARK_PORT="${DARK_PORT:-8000}"
+echo "   Dashboard : http://${DARK_HOST}:${DARK_PORT}"
+echo "   API docs  : http://${DARK_HOST}:${DARK_PORT}/docs"
 echo
 echo "   NOTE: live capture needs root:"
-echo "         sudo .venv/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000"
+echo "         sudo .venv/bin/python3 -m uvicorn main:app --host ${DARK_HOST} --port ${DARK_PORT}"
 echo
 
-.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000
+.venv/bin/python -m uvicorn main:app --host "${DARK_HOST}" --port "${DARK_PORT}"

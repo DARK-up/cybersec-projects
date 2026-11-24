@@ -233,8 +233,8 @@ class ContextMap:
                     if q in "\"'":
                         close = b.find(q, k + 1)
                         close = n if close < 0 else close + 1
-                        self._add(k + 1, close - 1,
-                                  f"attr:{aname}:{'dq' if q == '\"' else 'sq'}", aname)
+                        q_kind = "dq" if q == '"' else "sq"
+                        self._add(k + 1, close - 1, f"attr:{aname}:{q_kind}", aname)
                         j = close
                         continue
                     um = re.compile(r"[^\s>]*").match(b, k)
@@ -807,6 +807,10 @@ class DeepXssScanner:
         body = resp.text or ""
         if marker not in body:
             return False                      # nothing reflects here
+        renderable, why_ct = renderable_as_html(resp.headers)
+        if not renderable:
+            self._log(f"[*] XSS skipped on non-renderable response ({why_ct}) -> {url}")
+            return False
         cmap = ContextMap(body, resp.headers.get("Content-Type", ""))
         hits = cmap.find(marker)
         labels, instant = self._ctx_labels(hits)
@@ -817,13 +821,13 @@ class DeepXssScanner:
         # 1) input already lands in executable code — no payload needed
         if instant:
             self.confirmed.add(key)
-            self._found(f"Direct code injection [{point}] -> {url} ({', '.join(instant)})")
-            self._add(vuln_type="XSS — input lands directly in JavaScript source",
+            self._found(f"Direct code injection (static parser) [{point}] -> {url} ({', '.join(instant)})")
+            self._add(vuln_type="XSS — input lands directly in JavaScript source (static HTML/JS parser)",
                       severity="High", url=url, parameter=point, payload=marker,
-                      evidence="; ".join(sorted(instant)),
-                      detail="User input is placed into the page as executable "
-                             "code without any delimiter to break out of. Any "
-                             "JavaScript can be injected.",
+                      evidence="; ".join(sorted(instant)) + f" | {why_ct} | static HTML/JS parser (no browser DOM run)",
+                      detail="User input is placed into the page as executable JS source according "
+                             "to the static HTML/JS parser without any delimiter to break out of. "
+                             "Confirm live execution in a browser.",
                       cvss_hint=8.1)
             return True
 

@@ -29,10 +29,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for _tool in ("netrecon", "webvulnx", "hashbreaker", "netsentry", "modules", "dark"):
     _p = str(ROOT / _tool)
     if _p not in sys.path:
-        sys.path.insert(0, _p)
+        sys.path.append(_p)
 
 
 def tools_status() -> Dict[str, bool]:
@@ -298,7 +300,8 @@ def run_dns_recon(target: str, subdomains: bool = True,
 # ---------------------------------------------------------------------------
 def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
                  depth: int = 3, max_urls: int = 80, timeout: float = 10.0,
-                 delay: float = 0.0, time_blind: float = 5.0,
+                 delay: float = 0.0, rate_limit: Optional[float] = 1.0,
+                 time_blind: float = 5.0,
                  wordlist_path: Optional[str] = None,
                  cookie: Optional[str] = None, proxy: Optional[str] = None,
                  stealth: bool = True,
@@ -340,7 +343,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
 
     client = wx.HttpClient(timeout=timeout, delay=delay, cookies=cookies,
                            headers=hdrs or None, proxy=proxy,
-                           stealth=stealth, target=url)
+                           stealth=stealth, target=url, rate_limit=rate_limit)
     client.stop_event = stop_event
     state = wx.ScanState(base_url=url, start_ts=time.time(), stop_event=stop_event)
 
@@ -359,16 +362,23 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
         "preview": probe.text[:200].replace("\n", " "),
     }
 
+    module_outcomes: Dict[str, dict] = {}
+
     def run_module(name, fn, *a, **kw):
         if state.should_stop():
+            module_outcomes[name] = {"status": "skipped", "reason": "stop_event signaled"}
             return None
         client.module = name
         state.modules_run.append(name)
         try:
-            return fn(*a, **kw)
+            res = fn(*a, **kw)
+            module_outcomes[name] = {"status": "completed"}
+            return res
         except Exception as e:      # one broken module must not kill the scan
-            print(f"[!] module {name} crashed: {type(e).__name__}: {e}")
-            state.note(f"Module {name} failed: {type(e).__name__}: {e}")
+            msg = f"{type(e).__name__}: {e}"
+            print(f"[!] module {name} crashed: {msg}")
+            state.note(f"Module {name} failed: {msg}")
+            module_outcomes[name] = {"status": "failed", "error": msg}
             return None
 
     seeds = [url]
@@ -549,10 +559,17 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             tls_intel = ta.build_tls_intelligence(tls_sum, tls_findings)
         except Exception:
             pass
+    failed_mods = [m for m, info_m in module_outcomes.items() if info_m.get("status") == "failed"]
+    cov = state.coverage()
+    cov["module_outcomes"] = module_outcomes
+    cov["failed_modules"] = failed_mods
     return {
         "target": url,
         "debug": debug,
         "stopped_early": bool(state.stopped_early or (stop_event is not None and stop_event.is_set())),
+        "partial_failure": bool(failed_mods),
+        "module_outcomes": module_outcomes,
+        "tls_verification": {"verify_enabled": bool(getattr(client, "tls_verify", True)), "notes": list(getattr(client, "tls_insecure_reasons", []))},
         "auth_info": auth_info,
         "openapi_info": openapi_info,
         "stats": {
@@ -573,7 +590,7 @@ def run_web_scan(url: str, modules: Optional[Dict[str, bool]] = None,
             "degraded": state.degraded,
             "duration_s": round(time.time() - state.start_ts, 2),
         },
-        "coverage": state.coverage(),
+        "coverage": cov,
         "diagnostics": state.diagnostics,
         "tech_stack": getattr(state, "tech_stack", []) or [],
         "tls_summary": tls_sum,

@@ -678,8 +678,22 @@ def resolve_algos(t: Target, force_algo: Optional[str]) -> None:
         t.algo = ALGO_MAP[name]
         t.candidate_algos = [t.algo]
     elif name.startswith("Base64"):
-        t.algo = "sha1"
-        t.candidate_algos = ["sha1"]
+        try:
+            raw_bytes = base64.b64decode(h + "=" * (-len(h) % 4))
+            hex_digest = raw_bytes.hex()
+            t.hash_str = hex_digest
+            by_b64_len = {
+                16: ["md5", "ntlm", "md4"],
+                20: ["sha1", "ripemd160"],
+                32: ["sha256", "blake2s"],
+                64: ["sha512", "blake2b"],
+            }
+            cands = by_b64_len.get(len(raw_bytes), ["sha1"])
+            t.algo = cands[0]
+            t.candidate_algos = cands
+        except Exception:
+            t.algo = "sha1"
+            t.candidate_algos = ["sha1"]
     else:
         t.algo = "md5"
         t.candidate_algos = ["md5"]
@@ -854,6 +868,17 @@ _WEAK_ALGOS = {
     "double md5", "double sha1", "md5(md5)", "sha1(sha1)",
 }
 _MEMHARD_ALGOS = {"argon2", "argon2id", "argon2i", "scrypt", "bcrypt"}
+
+
+CAPABILITY_MATRIX: Dict[str, Dict[str, str]] = {
+    "raw_hex_hashes": {"status": "Supported", "notes": "MD5, SHA1, SHA256, SHA512, NTLM, salted variants."},
+    "base64_digest_cracking": {"status": "Partial", "notes": "Decodes raw Base64 digest bytes to hex; specify --algo explicitly when multiple lengths collide."},
+    "kdf_formats": {"status": "Supported", "notes": "PBKDF2-HMAC-SHA256, LDAP {SHA}, bcrypt/argon2 identification."},
+}
+
+
+def get_capability_matrix() -> Dict[str, Dict[str, str]]:
+    return dict(CAPABILITY_MATRIX)
 
 
 def assess_hash_algorithm(hash_or_algo: str) -> Dict[str, Any]:

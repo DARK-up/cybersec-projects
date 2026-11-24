@@ -259,16 +259,20 @@ async def evaluate_host(host: str, open_ports: list, timeout: float = 3.0) -> Li
                 add({
                     "plugin_id": pid,
                     "family": fam,
-                    "vuln_type": f"[{pid}] {title}",
+                    "vuln_type": f"[{pid}] Potential Advisory Match: {title}",
                     "severity": sev,
                     "cvss_hint": cvss,
                     "cves": list(cves),
                     "port": port,
                     "service": svc,
+                    "finding_certainty": "Potential",
+                    "observation_type": "potential_advisory_match",
+                    "applicability_conditions": "Matched service banner/version range only; OS distro backports and configuration mitigations are not verified.",
+                    "advisory_source": "DARK-NetRecon-Banner-Heuristics",
                     "parameter": f"tcp/{port} ({svc})",
                     "url": f"{host}:{port}",
-                    "evidence": f"{blob[:140]} — CVEs: {', '.join(cves)}",
-                    "detail": f"Service version matched vulnerable range. Remediation: {rem}",
+                    "evidence": f"Observed banner '{blob[:140]}' matches version range [{mn}, {mx}) for CVEs: {', '.join(cves)} (potential match only)",
+                    "detail": f"Potential banner-based CVE match (not confirmed exploitation; verify OS backports). Remediation: {rem}",
                 })
 
         # 2. Unauthenticated service proof checks from protocol probes
@@ -283,6 +287,8 @@ async def evaluate_host(host: str, open_ports: list, timeout: float = 3.0) -> Li
                     "cves": [],
                     "port": port,
                     "service": "Redis",
+                    "finding_certainty": "Confirmed",
+                    "observation_type": "verified_protocol_probe",
                     "parameter": f"tcp/{port} (Redis)",
                     "url": f"{host}:{port}",
                     "evidence": "PING returned +PONG without AUTH",
@@ -300,6 +306,8 @@ async def evaluate_host(host: str, open_ports: list, timeout: float = 3.0) -> Li
                     "cves": ["CVE-2018-1000115"],
                     "port": port,
                     "service": "Memcached",
+                    "finding_certainty": "Confirmed",
+                    "observation_type": "verified_protocol_probe",
                     "parameter": f"tcp/{port} (Memcached)",
                     "url": f"{host}:{port}",
                     "evidence": "stats command returned STAT pid",
@@ -307,22 +315,25 @@ async def evaluate_host(host: str, open_ports: list, timeout: float = 3.0) -> Li
                               "data and UDP amplification risk. Bind to private loopback.",
                 })
 
-        # 3. Exposed / cleartext port rules
+        # 3. Exposed / cleartext port rules (observation only — reachability != internet exposure or unauthenticated)
         if port in EXPOSED_PORT_RULES:
             r = EXPOSED_PORT_RULES[port]
             add({
                 "plugin_id": r["plugin_id"],
                 "family": r["family"],
-                "vuln_type": f"[{r['plugin_id']}] {r['title']}",
+                "vuln_type": f"[{r['plugin_id']}] Service Reachable: {r['title']}",
                 "severity": r["severity"],
                 "cvss_hint": r["cvss"],
                 "cves": [],
                 "port": port,
                 "service": svc,
+                "finding_certainty": "Observation",
+                "observation_type": "observed_service",
+                "applicability_conditions": "Port answered TCP connect from scanner vantage point; internet exposure and authentication enforcement require separate validation.",
                 "parameter": f"tcp/{port}",
                 "url": f"{host}:{port}",
-                "evidence": f"Open port tcp/{port} ({svc}) {ver}".strip(),
-                "detail": f"CWE: {r['cwe']}. Remediation: {r['remediation']}",
+                "evidence": f"Observed open port tcp/{port} ({svc}) {ver}".strip(),
+                "detail": f"CWE: {r['cwe']}. Observed open port only. Remediation: {r['remediation']}",
             })
 
         # 4. Safe FTP anonymous login check

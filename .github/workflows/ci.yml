@@ -1,0 +1,68 @@
+name: DARK Enterprise CI & Security Gates
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package & test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Clean wheel build & isolated import verification
+        run: |
+          pip wheel --no-deps --wheel-dir /tmp/wheels .
+          python -c "import dark.main, modules.compliance, webvulnx.xss_deep, netrecon.netrecon, netsentry.netsentry, hashbreaker.hashbreaker"
+      - name: Syntax & bytecode check
+        run: |
+          python -m compileall -q dark modules webvulnx netrecon hashbreaker netsentry demo-lab tests
+      - name: Unit, Integration, Security & Regression Test Suites
+        run: |
+          pytest -v --junitxml=validation_artifacts/pytest-results.xml \
+            tests/unit tests/integration tests/security tests/regression \
+            tests/test_enterprise_suite.py tests/test_roadmap_suite.py tests/test_expansion_v4.py \
+            webvulnx/test_nessus_and_accuracy.py webvulnx/test_platform_wave.py
+      - name: WebVulnX Deep XSS Suite
+        run: |
+          python webvulnx/test_xss_deep.py
+
+  security-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install security gates
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r dark/requirements.txt bandit pip-audit semgrep
+      - name: Static Security Analysis (Bandit — fail on Medium+ High confidence)
+        run: |
+          bandit -r dark modules netrecon netsentry -ll -q
+      - name: Semgrep SAST Check (fail on error)
+        run: |
+          semgrep --config p/python --error dark modules webvulnx netrecon netsentry
+      - name: Dependency Vulnerability Audit (pip-audit — strict failure on known CVEs)
+        run: |
+          pip-audit -r dark/requirements.txt --strict
+      - name: Trivy Filesystem & Container Scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"

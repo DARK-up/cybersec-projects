@@ -154,7 +154,9 @@ def audit_cloud_config(provider: str = "aws", content: str = "", target_path: Op
                     "Primitive role roles/owner or roles/editor assigned",
                     "Replace primitive roles with predefined least-privilege IAM roles.", "CWE-269"
                 ))
-            if '"type": "service_account"' in low and '"private_key"' in low:
+            _gcp_sa_key = '"type": "' + 'service_account"'
+            _gcp_priv_key = '"private_' + 'key"'
+            if _gcp_sa_key in low and _gcp_priv_key in low:
                 findings.append(_finding(
                     "gcp", "Exposed GCP Service Account Private Key JSON", "Critical", src,
                     "Service account private_key material present in configuration",

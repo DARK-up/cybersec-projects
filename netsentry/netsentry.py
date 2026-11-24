@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import ipaddress
 import json
 import os
 import re
@@ -117,25 +118,52 @@ class AlertBus:
 
 
 # ============================================================================
-# Detector 1 — ARP spoofing
+# Detector 1 — ARP spoofing (windowed state + cooldown + conflict vs conclusion)
 # ============================================================================
+CAPABILITY_MATRIX: Dict[str, Dict[str, str]] = {
+    "arp_conflict_and_flapping": {"status": "Supported", "notes": "Windowed IP->MAC conflict, cooldown, and gateway flapping."},
+    "tcp_syn_vertical_scan": {"status": "Supported", "notes": "Detects single-source sweep across >=threshold distinct ports within time window."},
+    "tcp_syn_horizontal_sweep": {"status": "Unsupported", "notes": "Same-port sweep across many hosts is not flagged as vertical scan; inspect flow stats explicitly."},
+    "dns_tunneling_and_dga": {"status": "Supported", "notes": "Heuristic label length, Shannon entropy, and query burst checks."},
+    "live_pcap_capture": {"status": "Partial", "notes": "Requires optional scapy and root/CAP_NET_RAW privileges."},
+}
+
+
+def get_capability_matrix() -> Dict[str, Dict[str, str]]:
+    return dict(CAPABILITY_MATRIX)
+
+
 class ArpDetector:
     """
-    Tracks IP->MAC bindings. Alerts on:
-      * one IP claiming multiple MACs        (ARP spoof / conflict)
-      * gateway MAC changing repeatedly      (poisoning / MITM)
-      * mass unsolicited ARP replies         (arpspoof / bettercap style)
+    Tracks IP->MAC bindings with time-window expiry, active MAC state, and alert
+    cooldown so a single failover/DHCP renewal followed by stable packets does
+    not produce an unbounded storm of Critical alerts.
     """
 
-    def __init__(self, bus: AlertBus, gateway_ip: Optional[str] = None):
+    def __init__(self, bus: AlertBus, gateway_ip: Optional[str] = None,
+                 window_s: float = 120.0, cooldown_s: float = 300.0):
         self.bus = bus
         self.gateway_ip = gateway_ip
-        self.ip_mac: Dict[str, Set[str]] = collections.defaultdict(set)
+        self.window_s = float(window_s)
+        self.cooldown_s = float(cooldown_s)
+        self.ip_mac: Dict[str, Dict[str, float]] = collections.defaultdict(dict)  # ip -> {mac: last_seen_ts}
         self.mac_ip: Dict[str, Set[str]] = collections.defaultdict(set)
+        self.active_mac: Dict[str, str] = {}
+        self.last_alert_ts: Dict[Tuple[str, str], float] = {}
+        self.transitions: Dict[str, Deque[Tuple[float, str]]] = collections.defaultdict(
+            lambda: collections.deque(maxlen=50)
+        )
         self.unsolicited: Dict[str, Deque[float]] = collections.defaultdict(
             lambda: collections.deque(maxlen=200)
         )
         self.known_pairs: Set[Tuple[str, str]] = set()
+
+    def _emit_with_cooldown(self, key: Tuple[str, str], ts: float, alert: Alert) -> None:
+        prev = self.last_alert_ts.get(key)
+        if prev is not None and (ts - prev) < self.cooldown_s:
+            return
+        self.last_alert_ts[key] = ts
+        self.bus.emit(alert)
 
     def feed(self, pkt, ts: Optional[float] = None) -> None:
         if not SCAPY_OK or ARP not in pkt:
@@ -143,32 +171,66 @@ class ArpDetector:
         ts = ts if ts is not None else float(pkt.time if hasattr(pkt, "time") else time.time())
         arp = pkt[ARP]
         ip, mac = arp.psrc, arp.hwsrc
-        if not ip or ip == "0.0.0.0":
+        if not ip:
+            return
+        try:
+            if ipaddress.ip_address(ip).is_unspecified:
+                return
+        except ValueError:
             return
 
-        # Conflict detection
-        self.ip_mac[ip].add(mac)
+        # Expire stale MAC bindings outside window_s
+        bindings = self.ip_mac[ip]
+        for old_m in [m for m, seen_ts in bindings.items() if (ts - seen_ts) > self.window_s]:
+            del bindings[old_m]
+        bindings[mac] = ts
         self.mac_ip[mac].add(ip)
-        if len(self.ip_mac[ip]) > 1:
-            self.bus.emit(Alert(
-                ts=ts, category="ARP-SPOOF(CONFLICT)", severity="CRITICAL",
-                src=mac, dst=ip,
-                detail=f"IP {ip} is claimed by multiple MACs: {sorted(self.ip_mac[ip])}",
-                evidence="Same IP answered ARP with different hardware addresses — "
-                         "classic ARP poisoning / MITM attempt.",
-            ))
+
+        prev_mac = self.active_mac.get(ip)
+        self.active_mac[ip] = mac
+
+        # Only trigger when the active MAC changes or multiple MACs are concurrently active in-window
+        if prev_mac is not None and prev_mac != mac:
+            self.transitions[ip].append((ts, mac))
+            recent_changes = [t for t, _ in self.transitions[ip] if (ts - t) <= self.window_s]
+            # First single change -> Conflict observation (Medium/High); repeated flapping -> Critical MITM indicator
+            if len(recent_changes) >= 2:
+                self._emit_with_cooldown(
+                    ("ARP-FLAP", ip), ts,
+                    Alert(
+                        ts=ts, category="ARP-SPOOF(FLAPPING)", severity="CRITICAL",
+                        src=mac, dst=ip,
+                        detail=f"IP {ip} repeatedly flapped MACs ({len(recent_changes)} changes in {int(self.window_s)}s): {sorted(bindings.keys())}",
+                        evidence="Repeated MAC oscillation within short window indicates active ARP poisoning/MITM.",
+                        confidence=0.90,
+                    ),
+                )
+            else:
+                self._emit_with_cooldown(
+                    ("ARP-CONFLICT", ip), ts,
+                    Alert(
+                        ts=ts, category="ARP-CONFLICT-OBSERVATION", severity="MEDIUM",
+                        src=mac, dst=ip,
+                        detail=f"IP {ip} MAC changed {prev_mac} -> {mac} (observed change; verify failover/DHCP vs spoofing)",
+                        evidence=f"Single MAC transition recorded; active bindings in window: {sorted(bindings.keys())}",
+                        confidence=0.60,
+                    ),
+                )
 
         # Gateway MAC change
         if self.gateway_ip and ip == self.gateway_ip:
             known = {m for (i, m) in self.known_pairs if i == ip}
-            if known and mac not in known:
-                self.bus.emit(Alert(
-                    ts=ts, category="ARP-SPOOF(GW-MAC-CHANGE)", severity="CRITICAL",
-                    src=mac, dst=ip,
-                    detail=f"Gateway {ip} MAC changed {sorted(known)} -> {mac}",
-                    evidence="The gateway's MAC address changed unexpectedly — "
-                             "possible man-in-the-middle.",
-                ))
+            if known and mac not in known and prev_mac != mac:
+                self._emit_with_cooldown(
+                    ("GW-MAC-CHANGE", ip), ts,
+                    Alert(
+                        ts=ts, category="ARP-SPOOF(GW-MAC-CHANGE)", severity="HIGH",
+                        src=mac, dst=ip,
+                        detail=f"Gateway {ip} MAC changed {sorted(known)} -> {mac}",
+                        evidence="Gateway MAC changed — investigate failover vs MITM.",
+                        confidence=0.78,
+                    ),
+                )
             self.known_pairs.add((ip, mac))
         else:
             self.known_pairs.add((ip, mac))
@@ -178,13 +240,15 @@ class ArpDetector:
             self.unsolicited[ip].append(ts)
             window = [t for t in self.unsolicited[ip] if ts - t <= 5.0]
             if len(window) >= 15:
-                self.bus.emit(Alert(
-                    ts=ts, category="ARP-FLOOD", severity="HIGH",
-                    src=mac, dst=ip,
-                    detail=f"{len(window)} ARP replies from {mac} for {ip} within 5s",
-                    evidence="Unsolicited ARP reply bursts are typical of active "
-                             "ARP spoofing tooling.",
-                ))
+                self._emit_with_cooldown(
+                    ("ARP-FLOOD", ip), ts,
+                    Alert(
+                        ts=ts, category="ARP-FLOOD", severity="HIGH",
+                        src=mac, dst=ip,
+                        detail=f"{len(window)} ARP replies from {mac} for {ip} within 5s",
+                        evidence="Unsolicited ARP reply bursts are typical of active ARP spoofing tooling.",
+                    ),
+                )
                 self.unsolicited[ip].clear()
 
 
