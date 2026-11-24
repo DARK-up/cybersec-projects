@@ -25,22 +25,31 @@ def _sfinding(lang: str, title: str, severity: str, loc: str, evidence: str,
     return {
         "vuln_type": f"[SAST:{lang}] {title}",
         "severity": severity,
+        "certainty": "Heuristic Rule Match",
+        "dataflow_verified": False,
         "url": loc,
         "parameter": lang.lower(),
-        "how_it_entered": f"Static source analysis at {loc}",
+        "how_it_entered": f"Heuristic static analysis (non-dataflow) at {loc}",
         "evidence": evidence[:240],
-        "impact": "Source-level security flaws can allow code execution, injection, or credential exposure when deployed.",
+        "impact": "Potential source-level security pattern; requires dataflow/context verification.",
         "remediation": remediation,
         "cwe": cwe,
         "owasp": "A03:2021 Injection",
     }
 
 
-def _scan_python_ast(src: str, code: str) -> List[dict]:
+def _scan_python_ast(src: str, code: str, parse_failures: Optional[List[dict]] = None) -> List[dict]:
     findings: List[dict] = []
     try:
         tree = ast.parse(code)
-    except SyntaxError:
+    except SyntaxError as e:
+        if parse_failures is not None:
+            parse_failures.append({
+                "file": src,
+                "language": "Python",
+                "status": "Not Analyzed",
+                "reason": f"SyntaxError at line {e.lineno}: {e.msg}",
+            })
         return findings
 
     lines = code.splitlines()
@@ -165,7 +174,8 @@ def _detect_lang(filename: str, code: str, hint: str) -> str:
     return "Python"
 
 
-def scan_sast(code: str = "", target_path: Optional[str] = None, language: str = "auto") -> dict:
+def scan_sast(code: str = "", target_path: Optional[str] = None, language: str = "auto",
+              suppressions: Optional[List[dict]] = None) -> dict:
     files: List[tuple[str, str]] = []
     if code and code.strip():
         files.append(("inline-source", code))
@@ -185,21 +195,48 @@ def scan_sast(code: str = "", target_path: Optional[str] = None, language: str =
                     files.append((str(fp), fp.read_text(encoding="utf-8", errors="ignore")))
 
     findings: List[dict] = []
+    parse_failures: List[dict] = []
     langs_seen = set()
+    analyzed_files = 0
     for src, txt in files:
         if Path(src).name.lower() in ("requirements.txt", "package.json"):
             dep_fs, _ = ca._parse_dependencies(src, txt)
             findings.extend(dep_fs)
+            analyzed_files += 1
             continue
         lang = _detect_lang(src, txt, language)
         langs_seen.add(lang)
+        before_pf = len(parse_failures)
         if lang == "Python":
-            findings.extend(_scan_python_ast(src, txt))
-        findings.extend(_scan_generic(lang, src, txt))
+            findings.extend(_scan_python_ast(src, txt, parse_failures=parse_failures))
+        if len(parse_failures) == before_pf:
+            findings.extend(_scan_generic(lang, src, txt))
+            analyzed_files += 1
+
+    # Apply documented temporary suppressions (e.g., {"rule_substring": "...", "reason": "...", "expires": "2027-01-01"})
+    suppressed_count = 0
+    if suppressions:
+        import time as _t
+        today_iso = _t.strftime("%Y-%m-%d", _t.gmtime())
+        active_sups = [s for s in suppressions if str(s.get("expires", "9999-12-31")) >= today_iso and s.get("reason")]
+        filtered: List[dict] = []
+        for f in findings:
+            matched_sup = next((s for s in active_sups if s.get("rule_substring", "").lower() in str(f.get("vuln_type", "")).lower()), None)
+            if matched_sup:
+                suppressed_count += 1
+            else:
+                filtered.append(f)
+        findings = filtered
 
     return {
         "target": target_path or f"sast-{language}",
+        "analysis_mode": "heuristic_ast_and_regex_no_dataflow",
+        "supported_languages": ["Python (AST + Regex)", "JavaScript/TypeScript (Regex)", "Java (Regex)", "PHP (Regex)", "C/C++ (Regex)"],
         "files_scanned": len(files),
+        "files_analyzed": analyzed_files,
+        "parse_failures": parse_failures,
+        "analysis_status": "Not Analyzed" if (files and analyzed_files == 0 and parse_failures) else ("Partial" if parse_failures else "Completed"),
+        "suppressed_count": suppressed_count,
         "languages": sorted(langs_seen),
         "findings": findings,
         "stats": {"urls_crawled": len(files), "requests_sent": len(files), "duration_s": 0.1},

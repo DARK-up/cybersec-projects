@@ -13,8 +13,11 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "webvulnx"))
-sys.path.insert(0, str(ROOT / "netrecon"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+for _p in (str(ROOT / "webvulnx"), str(ROOT / "netrecon")):
+    if _p not in sys.path:
+        sys.path.append(_p)
 
 import nessus_plugins as np
 import vuln_plugins as nvp
@@ -118,7 +121,7 @@ def test_soft404_and_dynamic_stability():
     t.start()
     try:
         base = f"http://127.0.0.1:{port}/"
-        client = wx.HttpClient(timeout=3.0, stealth=True, target=base)
+        client = wx.HttpClient(timeout=3.0, stealth=True, target=base, rate_limit=0)
         state = wx.ScanState(base_url=base, start_ts=time.time())
 
         # 1. DirBuster soft-404 calibration MUST filter fake catch-all 200s,

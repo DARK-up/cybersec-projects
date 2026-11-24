@@ -40,48 +40,72 @@ BUILTIN_PLUGINS: List[dict] = [
         "name": "RFC 9116 security.txt Presence Check",
         "category": "web-hygiene",
         "version": "1.0.0",
+        "min_dark_version": "4.0.0",
+        "provenance": "DARK Core Builtin Ruleset (HMAC-SHA256 local integrity check)",
         "severity": "Info",
+        "cwe_ids": ["CWE-200"],
         "cve_mapping": [],
         "detection_logic": {"type": "http_absent_or_match", "path": "/.well-known/security.txt", "expect_status": [200], "must_contain": "Contact:", "flag_when": "missing"},
         "evidence_schema": {"required_keys": ["url", "status_code", "detail"]},
         "remediation": "Publish /.well-known/security.txt per RFC 9116 with a security contact.",
-        "test_cases": [{"name": "sample_pass", "body": "Contact: mailto:sec@example.com", "status": 200, "expect_hit": False}],
+        "test_cases": [
+            {"name": "sample_pass", "body": "Contact: mailto:sec@example.com", "status": 200, "expect_hit": False},
+            {"name": "sample_missing", "body": "Not Found", "status": 404, "expect_hit": True},
+        ],
     },
     {
         "plugin_id": "dark-plg-phpinfo-exposure",
         "name": "Exposed phpinfo() Diagnostic Page",
         "category": "misconfiguration",
         "version": "1.1.0",
+        "min_dark_version": "4.0.0",
+        "provenance": "DARK Core Builtin Ruleset (HMAC-SHA256 local integrity check)",
         "severity": "Medium",
-        "cve_mapping": ["CWE-200"],
+        "cwe_ids": ["CWE-200"],
+        "cve_mapping": [],
         "detection_logic": {"type": "http_match", "path": "/phpinfo.php", "expect_status": [200], "regex": r"PHP Version\s+[0-9]+\.[0-9]+", "flag_when": "matched"},
         "evidence_schema": {"required_keys": ["url", "status_code", "matched_regex"]},
         "remediation": "Remove phpinfo.php and diagnostic scripts from production web roots.",
-        "test_cases": [{"name": "phpinfo_hit", "body": "<title>phpinfo()</title><h1>PHP Version 8.2.1</h1>", "status": 200, "expect_hit": True}],
+        "test_cases": [
+            {"name": "phpinfo_hit", "body": "<title>phpinfo()</title><h1>PHP Version 8.2.1</h1>", "status": 200, "expect_hit": True},
+            {"name": "phpinfo_clean", "body": "<html><body>Home</body></html>", "status": 200, "expect_hit": False},
+        ],
     },
     {
         "plugin_id": "dark-plg-spring-actuator-env",
         "name": "Spring Boot Actuator /actuator/env Exposure",
         "category": "api-security",
-        "version": "1.0.2",
+        "version": "1.0.3",
+        "min_dark_version": "4.0.0",
+        "provenance": "DARK Core Builtin Ruleset (HMAC-SHA256 local integrity check)",
         "severity": "High",
-        "cve_mapping": ["CVE-2022-22965", "CWE-200"],
+        "cwe_ids": ["CWE-200", "CWE-284"],
+        "cve_mapping": [],
         "detection_logic": {"type": "http_match", "path": "/actuator/env", "expect_status": [200], "must_contain": "propertySources", "flag_when": "matched"},
         "evidence_schema": {"required_keys": ["url", "status_code", "detail"]},
         "remediation": "Disable sensitive Actuator endpoints or restrict behind authenticated admin network.",
-        "test_cases": [{"name": "actuator_hit", "body": '{"activeProfiles":[],"propertySources":[]}', "status": 200, "expect_hit": True}],
+        "test_cases": [
+            {"name": "actuator_hit", "body": '{"activeProfiles":[],"propertySources":[]}', "status": 200, "expect_hit": True},
+            {"name": "actuator_clean", "body": '{"status":"UP"}', "status": 200, "expect_hit": False},
+        ],
     },
     {
         "plugin_id": "dark-plg-graphql-playground",
         "name": "Exposed GraphQL Playground / GraphiQL IDE",
         "category": "api-security",
         "version": "1.0.0",
+        "min_dark_version": "4.0.0",
+        "provenance": "DARK Core Builtin Ruleset (HMAC-SHA256 local integrity check)",
         "severity": "Low",
-        "cve_mapping": ["CWE-200"],
+        "cwe_ids": ["CWE-200"],
+        "cve_mapping": [],
         "detection_logic": {"type": "http_match", "path": "/graphiql", "expect_status": [200], "regex": r"(GraphiQL|graphql-playground)", "flag_when": "matched"},
         "evidence_schema": {"required_keys": ["url", "status_code"]},
         "remediation": "Disable interactive GraphQL IDEs in production environments.",
-        "test_cases": [{"name": "graphiql_hit", "body": "<title>GraphiQL</title>", "status": 200, "expect_hit": True}],
+        "test_cases": [
+            {"name": "graphiql_hit", "body": "<title>GraphiQL</title>", "status": 200, "expect_hit": True},
+            {"name": "graphiql_clean", "body": '{"errors":[{"message":"forbidden"}]}', "status": 403, "expect_hit": False},
+        ],
     },
 ]
 
@@ -105,7 +129,7 @@ def verify_manifest_signature(manifest: dict, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-def validate_manifest(manifest: dict) -> List[str]:
+def validate_manifest(manifest: dict, require_negative_tests: bool = True) -> List[str]:
     errs = []
     for k in REQUIRED_FIELDS:
         if k not in manifest:
@@ -113,6 +137,15 @@ def validate_manifest(manifest: dict) -> List[str]:
     logic = manifest.get("detection_logic") or {}
     if not isinstance(logic, dict) or not logic.get("path"):
         errs.append("detection_logic must be an object containing 'path'")
+    for bad_cve in (manifest.get("cve_mapping") or []):
+        if str(bad_cve).upper().startswith("CWE-"):
+            errs.append(f"CWE identifier '{bad_cve}' must be placed in cwe_ids, not cve_mapping")
+    tcs = manifest.get("test_cases") or []
+    if require_negative_tests:
+        if not any(bool(tc.get("expect_hit")) is True for tc in tcs):
+            errs.append("Plugin manifest must include at least one positive test case (expect_hit=True)")
+        if not any(bool(tc.get("expect_hit")) is False for tc in tcs):
+            errs.append("Plugin manifest must include at least one negative test case (expect_hit=False)")
     # Safety check: refuse arbitrary shell/eval code in declarative plugins
     blob = json.dumps(manifest).lower()
     if any(bad in blob for bad in ("os.system", "subprocess", "__import__", "eval(", "exec(")):
@@ -146,7 +179,7 @@ ensure_builtin_plugins()
 
 
 def register_plugin(manifest: dict) -> dict:
-    errs = validate_manifest(manifest)
+    errs = validate_manifest(manifest, require_negative_tests=True)
     if errs:
         raise ValueError("; ".join(errs))
     sig = sign_manifest(manifest)
@@ -164,7 +197,13 @@ def register_plugin(manifest: dict) -> dict:
             c.commit()
         finally:
             c.close()
-    return {"plugin_id": pid, "signature": sig, "verified": True, "enabled": True}
+    return {
+        "plugin_id": pid,
+        "signature": sig,
+        "integrity_check": "HMAC-SHA256 (shared local key — not third-party PKI)",
+        "verified": True,
+        "enabled": True,
+    }
 
 
 def list_plugins() -> List[dict]:
@@ -182,6 +221,7 @@ def list_plugins() -> List[dict]:
                     "manifest": m,
                     "signature": r["signature"],
                     "signature_valid": sig_ok,
+                    "integrity_status": "HMAC-Verified (Shared Key — Not Independent Publisher PKI)" if sig_ok else "HMAC-Invalid",
                     "enabled": bool(r["enabled"]),
                 })
             return out

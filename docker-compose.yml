@@ -1,51 +1,87 @@
+# DARK Local Development Compose — bound to loopback only, Redis internal only.
+# For production deployment, use: docker compose -f docker-compose.prod.yml up -d
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: dark-postgres
+    container_name: dark-postgres-dev
     environment:
-      POSTGRES_USER: dark
-      POSTGRES_PASSWORD: dark_change_me
-      POSTGRES_DB: dark
+      POSTGRES_USER: ${DARK_PG_USER:-dark}
+      POSTGRES_PASSWORD: ${DARK_PG_PASSWORD:?Set DARK_PG_PASSWORD in .env for local Postgres}
+      POSTGRES_DB: ${DARK_PG_DB:-dark}
     volumes:
-      - dark_pgdata:/var/lib/postgresql/data
+      - dark_pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DARK_PG_USER:-dark} -d ${DARK_PG_DB:-dark}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    container_name: dark-redis
-    ports:
-      - "6379:6379"
+    container_name: dark-redis-dev
+    # Never expose Redis externally; reachable only on the internal compose network.
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   dark-controller:
-    build: .
-    container_name: dark-enterprise
+    build:
+      context: .
+      args:
+        INSTALL_DISTRIBUTED: "1"
+    container_name: dark-enterprise-dev
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
+      - DARK_ENV=development
       - DARK_MAX_PARALLEL=24
       - DARK_REDIS_URL=redis://redis:6379/0
-      - DARK_POSTGRES_DSN=postgresql://dark:dark_change_me@postgres:5432/dark
+      - DARK_POSTGRES_DSN=postgresql://${DARK_PG_USER:-dark}:${DARK_PG_PASSWORD}@postgres:5432/${DARK_PG_DB:-dark}
+      - DARK_CORS_ORIGINS=${DARK_CORS_ORIGINS:-http://127.0.0.1:8000,http://localhost:8000}
     volumes:
       - ./dark/data:/app/dark/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   dark-worker:
-    build: .
-    container_name: dark-worker-1
+    build:
+      context: .
+      args:
+        INSTALL_DISTRIBUTED: "1"
+    container_name: dark-worker-dev
     depends_on:
-      - redis
-      - postgres
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     command: ["python3", "-m", "celery", "-A", "celery_worker", "worker", "--loglevel=info", "--concurrency=4"]
     environment:
+      - DARK_ENV=development
       - DARK_REDIS_URL=redis://redis:6379/0
-      - DARK_POSTGRES_DSN=postgresql://dark:dark_change_me@postgres:5432/dark
+      - DARK_POSTGRES_DSN=postgresql://${DARK_PG_USER:-dark}:${DARK_PG_PASSWORD}@postgres:5432/${DARK_PG_DB:-dark}
     volumes:
       - ./dark/data:/app/dark/data
+    healthcheck:
+      test: ["CMD", "python3", "-m", "celery", "-A", "celery_worker", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
 volumes:
-  dark_pgdata:
+  dark_pgdata_dev:

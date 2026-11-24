@@ -11,22 +11,28 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 if str(ROOT / "webvulnx") not in sys.path:
-    sys.path.insert(0, str(ROOT / "webvulnx"))
+    sys.path.append(str(ROOT / "webvulnx"))
 
 import webvulnx as wx  # noqa: E402
 import openapi_auth as oa  # noqa: E402
 
 
-def _afind(title: str, sev: str, url: str, param: str, evidence: str, rem: str, cwe: str = "CWE-284") -> dict:
+def _afind(title: str, sev: str, url: str, param: str, evidence: str, rem: str,
+           cwe: str = "CWE-284", certainty: str = "Schema Observation", source: str = "openapi-schema") -> dict:
     return {
         "vuln_type": f"[API] {title}",
         "severity": sev,
+        "certainty": certainty,
+        "source": source,
+        "live_authz_tested": False,
         "url": url,
         "parameter": param,
-        "how_it_entered": f"API security assessment on {url} [{param}]",
+        "how_it_entered": f"API schema/config review at {url} [{param}] (not live RBAC exploitation)",
         "evidence": evidence,
-        "impact": "API schema, authentication, or authorization weaknesses can expose business endpoints or sensitive user objects.",
+        "impact": "API schema or design observation requiring authorization verification against live server behavior.",
         "remediation": rem,
         "cwe": cwe,
         "owasp": "API2:2023 / API3:2023",
@@ -92,18 +98,23 @@ def run_api_audit(
                 inventory.append({"method": m.upper(), "path": path, "authenticated": has_sec})
                 if not has_sec and not any(pub in path.lower() for pub in ("health", "login", "auth", "public", "docs")):
                     findings.append(_afind(
-                        "API Endpoint Lacks Security Scheme in Schema", "Medium", ep_url, m.upper(),
-                        f"{m.upper()} {path} defines no OpenAPI security requirement",
-                        "Define bearerAuth/OAuth2 security requirements explicitly or mark public routes intentionally.", "CWE-306"
+                        "Schema Observation / Review Required: Endpoint Lacks OpenAPI Security Scheme", "Medium", ep_url, m.upper(),
+                        f"{m.upper()} {path} omits OpenAPI security declaration (schema-only observation; live enforcement not tested)",
+                        "Define bearerAuth/OAuth2 security requirements explicitly or verify middleware enforces auth.", "CWE-306",
+                        certainty="Schema Observation", source=spec_src,
                     ))
-                # Mass Assignment risk check on writable body schemas
+                # Mass Assignment risk check on writable body schemas (ignore explicit admin routes unless verified)
                 rb = json.dumps(op.get("requestBody") or {}).lower()
+                is_admin_route = any(seg in path.lower() for seg in ("/admin", "/roles", "/permissions"))
                 for sensitive_field in ('"role"', '"isadmin"', '"is_admin"', '"admin"', '"permissions"'):
                     if sensitive_field in rb:
                         findings.append(_afind(
-                            "Potential Mass Assignment Field in API Request Schema", "High", ep_url, sensitive_field.strip('"'),
-                            f"Writable schema on {m.upper()} {path} exposes {sensitive_field}",
-                            "Remove privileged fields from public DTOs/request schemas and enforce server-side allowlists.", "CWE-915"
+                            "Schema Observation / Review Required: Mass Assignment / Privileged Field in Request Schema",
+                            "Low" if is_admin_route else "Medium",
+                            ep_url, sensitive_field.strip('"'),
+                            f"Writable schema on {m.upper()} {path} includes {sensitive_field} (schema-only; requires live authz verification)",
+                            "Confirm endpoint restricts role/admin mutations to authorized administrators via server-side allowlists.", "CWE-915",
+                            certainty="Schema Observation", source=spec_src,
                         ))
                 # IDOR / BOLA indicator check
                 if "{id}" in path.lower() or "userid" in path.lower() or "accountid" in path.lower():

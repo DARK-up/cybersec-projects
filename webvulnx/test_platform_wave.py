@@ -17,10 +17,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "webvulnx"))
-sys.path.insert(0, str(ROOT / "netrecon"))
-sys.path.insert(0, str(ROOT / "hashbreaker"))
-sys.path.insert(0, str(ROOT / "dark"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+for _p in (str(ROOT / "webvulnx"), str(ROOT / "netrecon"), str(ROOT / "hashbreaker"), str(ROOT / "dark")):
+    if _p not in sys.path:
+        sys.path.append(_p)
 
 import webvulnx as wx  # noqa: E402
 import templates_engine as te  # noqa: E402
@@ -127,7 +128,7 @@ http:
         port = srv.server_address[1]
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         try:
-            client = wx.HttpClient(target=f"http://127.0.0.1:{port}", stealth=False)
+            client = wx.HttpClient(target=f"http://127.0.0.1:{port}", stealth=False, rate_limit=0)
             state = wx.ScanState(base_url=f"http://127.0.0.1:{port}")
             hits = te.run_templates(client, f"http://127.0.0.1:{port}", state, wx.Finding)
             assert hits >= 3, f"expected env + metrics + custom hits, got {hits}"
@@ -146,11 +147,11 @@ def test_openapi_and_autologin():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     try:
-        c1 = wx.HttpClient(target=base, stealth=False)
+        c1 = wx.HttpClient(target=base, stealth=False, rate_limit=0)
         r1 = oa.perform_auto_login(c1, f"{base}/login", "admin", "pass123")
         assert r1["ok"] and c1.sess.cookies.get("sess") == "authed_ok", r1
 
-        c2 = wx.HttpClient(target=base, stealth=False)
+        c2 = wx.HttpClient(target=base, stealth=False, rate_limit=0)
         r2 = oa.perform_auto_login(c2, f"{base}/api/login", "admin", "secret")
         assert r2["ok"] and "Bearer eyJ" in c2.sess.headers.get("Authorization", ""), r2
 

@@ -10,9 +10,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for p in (str(ROOT / "dark"), str(ROOT / "modules"), str(ROOT / "webvulnx"), str(ROOT / "netrecon"), str(ROOT / "hashbreaker")):
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 
 import main as dark_main
 import secrets_scanner as ss

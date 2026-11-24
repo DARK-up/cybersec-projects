@@ -11,9 +11,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for p in (str(ROOT / "netrecon"), str(ROOT / "netsentry"), str(ROOT / "modules"), str(ROOT / "dark")):
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 
 import netrecon as nr  # noqa: E402
 import netsentry as ns  # noqa: E402

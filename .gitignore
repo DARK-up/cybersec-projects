@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
 
 # Sensitive / runtime
 *.log

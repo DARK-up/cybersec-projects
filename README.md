@@ -18,7 +18,13 @@
 | 3 | **[HashBreaker](hashbreaker/)** | Hash identification & cracking suite — dictionary + rules + mask attacks, multiprocessing, pure-Python MD4/NTLM | Python (multiprocessing) — zero dependencies |
 | 4 | **[NetSentry](netsentry/)** | Real-time network threat detection — ARP spoofing, port scans, DNS tunneling, cleartext credential leakage | Python (scapy) |
 | 5 | **[Demo Lab](demo-lab/)** | Intentionally vulnerable web app + fake services — practice the tools legally on your own machine | Python (stdlib) |
-| 6 | **[DARK](dark/)** | ⚡ Unified Enterprise Security Platform v3.0 — Web/API/Net/DNS/Cloud/Container/SAST/Forensics, Asset & Risk Intel, Compliance, Remediation, Signed Plugins, RBAC/2FA & Governance | Python (FastAPI + SQLite) |
+| 6 | **[DARK](dark/)** | ⚡ Unified Enterprise Security Platform v4.0.0 — Web/API/Net/DNS/Cloud/Container/SAST/Forensics, Asset & Risk Intel, Compliance, Remediation, Signed Plugins, RBAC/2FA & Governance | Python (FastAPI + SQLite/PostgreSQL) |
+
+### DARK v4.0.0 Hardening & Reliability Updates (26-Point Closure)
+- **Multi-Tenant & Secrets Isolation:** Per-tenant `vault_secrets` composite key (`UNIQUE(tenant_id, name)`), credential redaction across jobs/exports/`jobs_state.json` (`0o600`), and fail-closed CSRF enforcement (`dark_csrf` cookie + `X-CSRF-Token` header) on all session-authenticated state-changing endpoints including `/api/auth/*`.
+- **Deployment & Database Integrity:** Split development (`docker-compose.yml`, loopback `127.0.0.1:8000`, non-exposed Redis) and production (`docker-compose.prod.yml`, `DARK_ENV=production`, strict startup secret checks), loud failure on invalid `DARK_POSTGRES_DSN` without silent SQLite fallback, and canonical `v2` `audit_logs` hash chain with `tenant_id` protection.
+- **Evidence & Accuracy Discipline:** Compliance defaults unassessed controls to `Not Assessed` (`0%`), executive posture returns `Unknown` when coverage is absent, non-HTML MIME gating precedes instant XSS reporting, `HttpClient` defaults to `verify=True` (blocking `Authorization` over insecure TLS), SAST reports Python parse failures (`Not Analyzed`), and NetRecon/NetSentry/HashBreaker expose explicit `CAPABILITY_MATRIX` & certainty labels (`Confirmed` vs `Potential` vs `Observation`).
+- **Packaging, CI & DR:** Standard Python packaging (`pyproject.toml`, `dark-api` CLI entrypoint, Python `>=3.10` AST compatibility, CycloneDX SBOM, `dark/requirements-lock.txt`), strict `.github/workflows/ci.yml`, and verified disaster recovery paths (`docs/DISASTER_RECOVERY.md`, `get_backup_manifest()`).
 
 ### DARK Enterprise v3 Capabilities (`modules/` & `dark/`)
 - **Asset Intelligence (`modules/asset_intel.py`):** Asset inventory, domain/IP/service/API/cloud relationship mapping, criticality classification, and new-asset diff tracking.
@@ -49,9 +55,20 @@ python3 fake_services.py &        # fake SSH/FTP/SMTP/IMAP/Redis banners
 cd ../netrecon
 python3 netrecon.py -t 127.0.0.1 -p top100 --json reports/scan.json --html reports/scan.html
 
-# 3) Scan the web application
+# 3) Scan the web application (conservative default: 1.0 req/s)
 cd ../webvulnx
-python3 webvulnx.py -u http://127.0.0.1:8080 --full --html reports/web.html
+# Safe Bug Bounty / external authorized scan with rate limiting & custom program headers:
+python3 webvulnx.py -u https://target.example --full --rate-limit 1.0 \
+  --header "Deck-Research: your-handle" --header "X-Bron-Bugbounty: your-handle" \
+  --html reports/web.html
+
+# Local training lab only (high-rate unlimited mode):
+python3 webvulnx.py -u http://127.0.0.1:8080 --full --rate-limit 0 --html reports/web.html
+```
+
+### WebVulnX `--rate-limit` & `--header` Usage
+- **`--rate-limit <RPS>` (default: `1.0` req/s):** Enforces a global maximum HTTP request rate across **all** modules (`Crawler`, `SqliScanner` including `time-blind` SQLi + neutral controls, `DeepXssScanner`, `DirBuster`, `AdvancedScanner`, `WorldScanner`, and retries). While `RateGate` pauses requests to respect the RPS cap, `SqliScanner` measures pure network RTT (`last_network_rtt`) separately so low `--rate-limit` values (e.g. `0.5` req/s) never cause time-based SQLi false positives. Pass `--rate-limit 0` only against local labs (`127.0.0.1`).
+- **`--header "Name: Value"` (repeatable):** Injects custom HTTP headers into **every** outgoing request across all modules (such as bug-bounty identification requirements `Deck-Research` and `X-Bron-Bugbounty`), without being overwritten by stealth `Referer` defaults.
 
 # 4) Crack sample hashes
 cd ../hashbreaker

@@ -202,6 +202,18 @@ class HostResult:
         return [p for p in self.ports if p.state == "open"]
 
 
+CAPABILITY_MATRIX: Dict[str, Dict[str, str]] = {
+    "tcp_connect_scan": {"status": "Supported", "notes": "Async TCP connect scan on specified ports."},
+    "plaintext_banner_grab": {"status": "Supported", "notes": "Reads initial service greeting & sends HTTP/protocol probes."},
+    "tls_banner_negotiation": {"status": "Unsupported", "notes": "grab_banner does not wrap sockets in TLS; use webvulnx/tls_audit for TLS inspection."},
+    "udp_port_scan": {"status": "Unsupported", "notes": "TCP only; absence of UDP findings does not imply UDP ports are closed."},
+}
+
+
+def get_capability_matrix() -> Dict[str, Dict[str, str]]:
+    return dict(CAPABILITY_MATRIX)
+
+
 def score_service_confidence(port: int, service: str, banner: str, version: str) -> Dict[str, object]:
     """Compute service & version detection confidence from concrete probe signals."""
     signals: List[str] = []

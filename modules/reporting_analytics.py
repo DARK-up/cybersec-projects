@@ -92,11 +92,14 @@ def build_executive_analytics(
     by_sev = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Info": 0}
     seen = set()
 
-    for j in sorted(jobs, key=lambda x: x.get("started_at") or 0):
-        if project_id and (j.get("project_id") or "default") != project_id:
-            continue
-        if j.get("status") not in ("done", "stopped"):
-            continue
+    scoped_jobs = [
+        j for j in sorted(jobs, key=lambda x: x.get("started_at") or 0)
+        if not (project_id and j.get("project_id") and j.get("project_id") != project_id)
+    ]
+    completed_jobs = [j for j in scoped_jobs if j.get("status") in ("done", "stopped")]
+    failed_jobs = [j for j in scoped_jobs if j.get("status") in ("error", "timeout", "interrupted")]
+
+    for j in completed_jobs:
         res = j.get("result") or {}
         fs = res.get("findings") or (res.get("report") or {}).get("findings") or []
         trends.append({
@@ -120,14 +123,25 @@ def build_executive_analytics(
     assets_data = ai.list_assets(project_id=project_id, tenant_id=tid)
     verif_data = vf.list_verifications(project_id=project_id, tenant_id=tid)
     tickets = rem.list_tickets(project_id=project_id)
-    comp_data = comp.evaluate_compliance(all_findings)
+    assessed_d, failed_d = comp.domains_from_jobs(scoped_jobs)
+    comp_data = comp.evaluate_compliance(all_findings, assessed_domains=assessed_d, failed_domains=failed_d)
 
     open_t = sum(1 for t in tickets if t["status"] in ("open", "in_progress"))
     closed_t = sum(1 for t in tickets if t["status"] == "verified_closed")
 
-    # Security Posture Score (0-100): higher is healthier
-    penalty = by_sev["Critical"] * 12 + by_sev["High"] * 6 + by_sev["Medium"] * 2 + by_sev["Low"] * 0.5
-    posture_score = round(max(5.0, min(100.0, 100.0 - min(90.0, penalty * 0.6))), 1)
+    # Security Posture Score (0-100): Unknown (None) when no completed scans exist
+    now_ts = time.time()
+    last_scan_ts = max((float(j.get("finished_at") or j.get("started_at") or 0) for j in completed_jobs), default=0.0)
+    freshness_hours = round((now_ts - last_scan_ts) / 3600.0, 2) if last_scan_ts else None
+    coverage_ratio = round(len(completed_jobs) / max(len(scoped_jobs), 1), 3) if scoped_jobs else 0.0
+
+    if not completed_jobs:
+        posture_score = None
+        posture_status = "Unknown"
+    else:
+        penalty = by_sev["Critical"] * 12 + by_sev["High"] * 6 + by_sev["Medium"] * 2 + by_sev["Low"] * 0.5
+        posture_score = round(max(5.0, min(100.0, 100.0 - min(90.0, penalty * 0.6))), 1)
+        posture_status = "Healthy" if posture_score >= 80 else ("Moderate" if posture_score >= 50 else "At Risk")
 
     avg_comp = 0.0
     if comp_data["frameworks"]:
@@ -139,6 +153,16 @@ def build_executive_analytics(
         "project_id": project_id or "all",
         "viewer_role": role,
         "security_posture_score": posture_score,
+        "posture_status": posture_status,
+        "coverage_and_freshness": {
+            "completed_scans": len(completed_jobs),
+            "failed_scans": len(failed_jobs),
+            "total_scans": len(scoped_jobs),
+            "scan_success_ratio": coverage_ratio,
+            "assessed_domains": sorted(assessed_d),
+            "failed_domains": sorted(failed_d),
+            "last_scan_age_hours": freshness_hours,
+        },
         "executive_summary": {
             "total_unique_findings": len(all_findings),
             "by_severity": by_sev,

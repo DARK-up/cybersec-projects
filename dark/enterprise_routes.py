@@ -734,7 +734,8 @@ def record_detection_fp(req: DetectionFpReq):
 @router.get("/api/intel/hub/report")
 def get_central_intel_hub_report(project_id: Optional[str] = None, download: int = 0):
     from fastapi.responses import HTMLResponse
-    sys.path.insert(0, str(ROOT / "webvulnx"))
+    if str(ROOT / "webvulnx") not in sys.path:
+        sys.path.append(str(ROOT / "webvulnx"))
     import report as dreport  # type: ignore
     hub = engine.run_intel_hub(_all_jobs(project_id=project_id))
     diags = [
@@ -849,8 +850,10 @@ def post_threat_match(req: IocMatchReq):
 # ---------------------------------------------------------------------------
 @router.get("/api/compliance")
 def get_compliance(project_id: Optional[str] = None, framework: Optional[str] = None):
+    jobs = _all_jobs(project_id=project_id)
+    assessed_d, failed_d = comp.domains_from_jobs(jobs)
     fs = _all_project_findings(project_id=project_id)
-    return comp.evaluate_compliance(fs, framework=framework)
+    return comp.evaluate_compliance(fs, framework=framework, assessed_domains=assessed_d, failed_domains=failed_d)
 
 
 # ---------------------------------------------------------------------------

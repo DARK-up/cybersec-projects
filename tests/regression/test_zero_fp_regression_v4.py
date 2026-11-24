@@ -7,9 +7,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for p in (str(ROOT / "dark"), str(ROOT / "modules"), str(ROOT / "webvulnx")):
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 
 import sast_audit as sa  # noqa: E402
 import verification as vf  # noqa: E402

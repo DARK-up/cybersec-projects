@@ -1,0 +1,91 @@
+# DARK Production Compose — secure-by-default profile, strict secrets, internal Redis/Postgres.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dark-postgres-prod
+    environment:
+      POSTGRES_USER: ${DARK_PG_USER:-dark}
+      POSTGRES_PASSWORD: ${DARK_PG_PASSWORD:?DARK_PG_PASSWORD must be set to a strong secret in production}
+      POSTGRES_DB: ${DARK_PG_DB:-dark}
+    volumes:
+      - dark_pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DARK_PG_USER:-dark} -d ${DARK_PG_DB:-dark}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  redis:
+    image: redis:7-alpine
+    container_name: dark-redis-prod
+    command: ["redis-server", "--requirepass", "${DARK_REDIS_PASSWORD:?DARK_REDIS_PASSWORD must be set in production}"]
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DARK_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  dark-controller:
+    build:
+      context: .
+      args:
+        INSTALL_DISTRIBUTED: "1"
+    container_name: dark-enterprise-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Bind controller to loopback behind a TLS reverse proxy (Nginx/Caddy/Traefik)
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - DARK_ENV=production
+      - DARK_STRICT_PROD_STARTUP=1
+      - DARK_FORCE_SECURE_COOKIES=1
+      - DARK_MAX_PARALLEL=24
+      - DARK_VAULT_KEY=${DARK_VAULT_KEY:?DARK_VAULT_KEY must be set to a high-entropy secret in production}
+      - DARK_CORS_ORIGINS=${DARK_CORS_ORIGINS:?DARK_CORS_ORIGINS must list explicit HTTPS origins}
+      - DARK_REDIS_URL=redis://:${DARK_REDIS_PASSWORD}@redis:6379/0
+      - DARK_POSTGRES_DSN=postgresql://${DARK_PG_USER:-dark}:${DARK_PG_PASSWORD}@postgres:5432/${DARK_PG_DB:-dark}
+    volumes:
+      - ./dark/data:/app/dark/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  dark-worker:
+    build:
+      context: .
+      args:
+        INSTALL_DISTRIBUTED: "1"
+    container_name: dark-worker-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["python3", "-m", "celery", "-A", "celery_worker", "worker", "--loglevel=info", "--concurrency=4"]
+    environment:
+      - DARK_ENV=production
+      - DARK_VAULT_KEY=${DARK_VAULT_KEY:?DARK_VAULT_KEY must be set in production}
+      - DARK_REDIS_URL=redis://:${DARK_REDIS_PASSWORD}@redis:6379/0
+      - DARK_POSTGRES_DSN=postgresql://${DARK_PG_USER:-dark}:${DARK_PG_PASSWORD}@postgres:5432/${DARK_PG_DB:-dark}
+    volumes:
+      - ./dark/data:/app/dark/data
+    healthcheck:
+      test: ["CMD", "python3", "-m", "celery", "-A", "celery_worker", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: always
+
+volumes:
+  dark_pgdata_prod:

@@ -1,0 +1,13 @@
+# Pinned core runtime & test dependency versions for DARK 4.0.0
+argon2-cffi==25.1.0
+beautifulsoup4==4.15.0
+fastapi==0.165.0
+httpx==0.28.1
+Jinja2==3.1.6
+pydantic==2.14.3
+pytest==9.0.3
+python-multipart==0.0.34
+PyYAML==6.0.3
+requests==2.33.0
+starlette==1.10.0
+uvicorn==0.54.0

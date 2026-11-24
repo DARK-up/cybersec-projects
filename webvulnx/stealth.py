@@ -59,9 +59,11 @@ def is_local_target(url: str) -> bool:
 class RateGate:
     """Per-client min-interval + exponential backoff on 429/WAF."""
 
-    def __init__(self, min_interval: float = 0.0, jitter: float = 0.0, stop_event=None):
-        self.min_interval = min_interval
-        self.jitter = jitter
+    def __init__(self, min_interval: float = 0.0, jitter: float = 0.0, stop_event=None,
+                 floor_interval: float = 0.0):
+        self.floor_interval = max(0.0, float(floor_interval or 0.0))
+        self.min_interval = max(float(min_interval or 0.0), self.floor_interval)
+        self.jitter = max(0.0, float(jitter or 0.0))
         self.stop_event = stop_event
         self._lock = threading.Lock()
         self._next = 0.0
@@ -72,10 +74,14 @@ class RateGate:
         if ev is not None and ev.is_set():
             return
         with self._lock:
-            now = time.time()
+            now = time.monotonic()
             extra = random.uniform(0.0, self.jitter) if self.jitter else 0.0
-            target = self._next + extra
-            self._next = max(now, target) + self.min_interval
+            interval = max(self.min_interval, self.floor_interval)
+            if self._next <= 0.0:
+                target = now
+            else:
+                target = max(now, self._next + extra)
+            self._next = target + interval
         sleep_for = target - now
         if sleep_for > 0:
             if ev is not None:
@@ -87,9 +93,9 @@ class RateGate:
         with self._lock:
             self.strikes += 1
             pause = retry_after if retry_after and retry_after > 0 else min(8.0, 1.5 ** self.strikes)
-            self.min_interval = min(1.5, max(self.min_interval, 0.25) * 1.6)
+            self.min_interval = max(self.floor_interval, min(1.5, max(self.min_interval, 0.25) * 1.6))
             self.jitter = max(self.jitter, 0.15)
-            self._next = time.time() + pause
+            self._next = time.monotonic() + pause
 
     def reward(self) -> None:
         if self.strikes and self.strikes > 0:

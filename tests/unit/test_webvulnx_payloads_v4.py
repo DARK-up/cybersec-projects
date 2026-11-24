@@ -13,9 +13,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 for p in (str(ROOT / "webvulnx"), str(ROOT / "demo-lab"), str(ROOT / "dark")):
     if p not in sys.path:
-        sys.path.insert(0, p)
+        sys.path.append(p)
 
 import payload_mgr as pm  # noqa: E402
 import ssrf_scanner as ssrf_mod  # noqa: E402
@@ -62,7 +64,7 @@ def test_csp_audit_and_json_anti_fp():
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        client = wx.HttpClient(stealth=False)
+        client = wx.HttpClient(stealth=False, rate_limit=0)
         state = wx.ScanState(base_url=f"http://127.0.0.1:{port}")
         state.params[f"http://127.0.0.1:{port}/api?q=hi"] = {"q"}
         wx.XssScanner(client, state).run()
@@ -77,7 +79,7 @@ def test_safe_canaries_against_demo_lab_and_ssrf_module():
     base = f"http://127.0.0.1:{port}"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        client = wx.HttpClient(stealth=False, timeout=5.0)
+        client = wx.HttpClient(stealth=False, timeout=5.0, rate_limit=0)
         state = wx.ScanState(base_url=base)
         state.crawled_urls.update({
             f"{base}/lfi?file=index.php",
@@ -135,7 +137,7 @@ def test_ssrf_baseline_anti_fp():
     port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        client = wx.HttpClient(stealth=False)
+        client = wx.HttpClient(stealth=False, rate_limit=0)
         state = wx.ScanState(base_url=f"http://127.0.0.1:{port}")
         hits = ssrf_mod.scan_ssrf_targets(
             client, state,

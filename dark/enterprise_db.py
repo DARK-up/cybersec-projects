@@ -73,9 +73,15 @@ def _conn() -> Any:
         try:
             import psycopg  # type: ignore
             from psycopg.rows import dict_row  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "DARK_POSTGRES_DSN is configured, but the PostgreSQL driver ('psycopg') is not installed. "
+                "Install 'psycopg[binary]' or unset DARK_POSTGRES_DSN to use SQLite."
+            ) from e
+        try:
             return _dbm.PostgresCompatConnection(psycopg.connect(pg_dsn, row_factory=dict_row))
-        except ImportError:
-            pass
+        except Exception as e:
+            raise RuntimeError(f"Failed to connect to PostgreSQL configured via DARK_POSTGRES_DSN: {e}") from e
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=15.0)
     c.row_factory = sqlite3.Row
@@ -115,13 +121,18 @@ def init_db() -> None:
                 );
                 CREATE TABLE IF NOT EXISTS vault_secrets (
                     id TEXT PRIMARY KEY,
-                    name TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     nonce_b64 TEXT NOT NULL,
                     cipher_b64 TEXT NOT NULL,
                     mac_b64 TEXT NOT NULL,
                     created_by TEXT NOT NULL,
-                    created_at REAL NOT NULL
+                    created_at REAL NOT NULL,
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    key_version INTEGER NOT NULL DEFAULT 1,
+                    alg TEXT NOT NULL DEFAULT 'AES-256-GCM',
+                    updated_at REAL NOT NULL DEFAULT 0,
+                    UNIQUE(tenant_id, name)
                 );
                 CREATE TABLE IF NOT EXISTS scope_rules (
                     id TEXT PRIMARY KEY,
@@ -550,8 +561,41 @@ def check_target_in_scope(target: str) -> Tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Tamper-Evident Audit Trail (SHA-256 Hash Chain)
+# Tamper-Evident Audit Trail (SHA-256 Hash Chain, Canonical JSON v2)
 # ---------------------------------------------------------------------------
+AUDIT_CHECKPOINT_FILE = VAULT_KEY_FILE.parent / "audit_checkpoint.json"
+
+
+def _audit_canonical_v2(
+    ts: float, actor: str, role: str, action: str, resource: str,
+    detail: str, ip: str, tenant_id: str, prev_hash: str,
+) -> str:
+    obj = {
+        "v": 2,
+        "ts": f"{float(ts):.6f}",
+        "actor": str(actor or "system"),
+        "role": str(role or "system"),
+        "action": str(action),
+        "resource": str(resource),
+        "detail": str(detail or ""),
+        "ip": str(ip or ""),
+        "tenant_id": str(tenant_id or "default"),
+        "prev_hash": str(prev_hash),
+    }
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _write_audit_checkpoint(last_id: int, entry_hash: str, ts: float) -> None:
+    try:
+        AUDIT_CHECKPOINT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AUDIT_CHECKPOINT_FILE.write_text(
+            json.dumps({"last_id": int(last_id), "head_hash": entry_hash, "ts": ts}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
 def log_audit(actor: str, role: str, action: str, resource: str,
               detail: str = "", ip: str = "", tenant_id: Optional[str] = None) -> dict:
     ctx = _CURRENT_ACTOR.get()
@@ -561,24 +605,28 @@ def log_audit(actor: str, role: str, action: str, resource: str,
         if not ip:
             ip = ctx.get("ip") or ""
     tid = tenant_id or (ctx.get("tenant_id") if ctx else None) or "default"
+    actor_s = actor or "system"
+    role_s = role or "system"
+    detail_stored = str(detail or "")[:2000]
     ts = time.time()
     with _DB_LOCK:
         c = _conn()
         try:
             last = c.execute("SELECT entry_hash FROM audit_logs ORDER BY id DESC LIMIT 1").fetchone()
             prev_hash = last["entry_hash"] if last else ("0" * 64)
-            payload = f"{ts:.6f}|{actor}|{role}|{action}|{resource}|{detail}|{ip}|{prev_hash}"
+            payload = _audit_canonical_v2(ts, actor_s, role_s, action, resource, detail_stored, ip, tid, prev_hash)
             entry_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             cur = c.execute(
-                "INSERT INTO audit_logs(ts, actor, role, action, resource, detail, ip, prev_hash, entry_hash, tenant_id) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (ts, actor or "system", role or "system", action, resource, detail[:500], ip, prev_hash, entry_hash, tid),
+                "INSERT INTO audit_logs(ts, actor, role, action, resource, detail, ip, prev_hash, entry_hash, tenant_id, chain_version) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,2)",
+                (ts, actor_s, role_s, action, resource, detail_stored, ip, prev_hash, entry_hash, tid),
             )
             c.commit()
+            _write_audit_checkpoint(cur.lastrowid, entry_hash, ts)
             return {
-                "id": cur.lastrowid, "ts": ts, "actor": actor, "role": role, "tenant_id": tid,
-                "action": action, "resource": resource, "detail": detail[:500],
-                "ip": ip, "prev_hash": prev_hash, "entry_hash": entry_hash,
+                "id": cur.lastrowid, "ts": ts, "actor": actor_s, "role": role_s, "tenant_id": tid,
+                "action": action, "resource": resource, "detail": detail_stored,
+                "ip": ip, "prev_hash": prev_hash, "entry_hash": entry_hash, "chain_version": 2,
             }
         finally:
             c.close()
@@ -611,7 +659,15 @@ def verify_audit_chain() -> dict:
             for r in rows:
                 if r["prev_hash"] != prev:
                     return {"valid": False, "broken_at_id": r["id"], "checked": len(rows)}
-                payload = f"{r['ts']:.6f}|{r['actor']}|{r['role']}|{r['action']}|{r['resource']}|{r['detail']}|{r['ip']}|{r['prev_hash']}"
+                ver = int(r["chain_version"] or 1) if "chain_version" in r.keys() else 1
+                if ver >= 2:
+                    rtid = r["tenant_id"] if "tenant_id" in r.keys() else "default"
+                    payload = _audit_canonical_v2(
+                        r["ts"], r["actor"], r["role"], r["action"],
+                        r["resource"], r["detail"], r["ip"], rtid, r["prev_hash"],
+                    )
+                else:
+                    payload = f"{r['ts']:.6f}|{r['actor']}|{r['role']}|{r['action']}|{r['resource']}|{r['detail']}|{r['ip']}|{r['prev_hash']}"
                 expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
                 if not hmac.compare_digest(expected, r["entry_hash"]):
                     return {"valid": False, "broken_at_id": r["id"], "checked": len(rows)}
@@ -1099,12 +1155,12 @@ def store_vault_secret(
             c.execute(
                 "INSERT INTO vault_secrets(id, name, kind, nonce_b64, cipher_b64, mac_b64, created_by, created_at, tenant_id, key_version, alg, updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,'AES-256-GCM',?) "
-                "ON CONFLICT(name) DO UPDATE SET kind=excluded.kind, nonce_b64=excluded.nonce_b64, "
+                "ON CONFLICT(tenant_id, name) DO UPDATE SET kind=excluded.kind, nonce_b64=excluded.nonce_b64, "
                 "cipher_b64=excluded.cipher_b64, mac_b64=excluded.mac_b64, created_by=excluded.created_by, "
-                "tenant_id=excluded.tenant_id, key_version=excluded.key_version, alg='AES-256-GCM', updated_at=excluded.updated_at",
+                "key_version=excluded.key_version, alg='AES-256-GCM', updated_at=excluded.updated_at",
                 (sid, name.strip(), (kind or "generic").strip(), nb, cb, mb, created_by, now, tid, key_ver, now),
             )
-            row_id = c.execute("SELECT id FROM vault_secrets WHERE name=?", (name.strip(),)).fetchone()
+            row_id = c.execute("SELECT id FROM vault_secrets WHERE tenant_id=? AND name=?", (tid, name.strip())).fetchone()
             if row_id:
                 sid = row_id["id"]
             c.commit()
@@ -1374,6 +1430,19 @@ _BACKUP_INSERT_SQL = {
     "schedules": ("id", "project_id", "name", "kind", "payload_json", "interval_minutes", "enabled", "last_run", "next_run", "created_at"),
     "plugins": ("plugin_id", "manifest_json", "signature", "enabled", "verified", "created_at"),
 }
+
+
+def get_backup_manifest() -> dict:
+    """Return authoritative storage paths for database, external vault keyring, and audit checkpoint."""
+    backend = _dbm.get_backend_info()
+    return {
+        "schema_version": "4.0.0",
+        "db_engine": backend.get("active_engine", "sqlite"),
+        "database_path": str(DB_PATH) if backend.get("active_engine") == "sqlite" else "DARK_POSTGRES_DSN (external PostgreSQL)",
+        "vault_keyring_path": "env:DARK_VAULT_KEY" if os.environ.get("DARK_VAULT_KEY", "").strip() else str(VAULT_KEY_FILE),
+        "audit_checkpoint_path": str(AUDIT_CHECKPOINT_FILE),
+        "jobs_state_path": str(APP_DIR / "jobs_state.json"),
+    }
 
 
 def export_backup() -> dict:
