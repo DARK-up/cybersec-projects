@@ -102,6 +102,30 @@ class RateGate:
             self.strikes -= 1
 
 
+class RateGateRegistry:
+    """Thread-safe registry sharing a single RateGate per target origin across concurrent clients."""
+
+    _lock = threading.Lock()
+    _gates: Dict[str, RateGate] = {}
+
+    @classmethod
+    def get_gate(cls, key: str, min_interval: float, jitter: float, floor_interval: float) -> RateGate:
+        with cls._lock:
+            g = cls._gates.get(key)
+            if g is None:
+                g = RateGate(min_interval=min_interval, jitter=jitter, floor_interval=floor_interval)
+                cls._gates[key] = g
+            else:
+                with g._lock:
+                    if floor_interval > g.floor_interval:
+                        g.floor_interval = floor_interval
+                    if min_interval > g.min_interval:
+                        g.min_interval = min_interval
+                    if jitter > g.jitter:
+                        g.jitter = jitter
+            return g
+
+
 def looks_like_waf(status: int, body: str) -> bool:
     if status in (403, 406, 429, 503, 999):
         blob = (body or "")[:2500].lower()

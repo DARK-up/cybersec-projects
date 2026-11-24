@@ -508,3 +508,163 @@ def test_webvulnx_rate_limit_and_custom_header_across_paths():
         assert not any("Time-Based Blind" in f.vuln_type for f in state.findings)
     finally:
         srv.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Dockerfile 0.0.0.0 inside container + host loopback publishing verification
+# ---------------------------------------------------------------------------
+def test_dockerfile_0000_bind_and_host_published_port_reachability():
+    import socket
+    import urllib.request
+
+    df_txt = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert '"--host", "0.0.0.0"' in df_txt
+    assert '"--host", "127.0.0.1"' not in df_txt
+    for cname in ("docker-compose.yml", "docker-compose.prod.yml"):
+        ctxt = (ROOT / cname).read_text(encoding="utf-8")
+        assert "127.0.0.1:8000:8000" in ctxt
+
+    # Live host probe against uvicorn bound on 0.0.0.0:<ephemeral_port>
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free_port = s.getsockname()[1]
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(free_port)],
+        cwd=str(ROOT / "dark"),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        ok_body = None
+        for _ in range(30):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{free_port}/api/health", timeout=2.0) as resp:
+                    if resp.status == 200:
+                        ok_body = json.loads(resp.read().decode("utf-8"))
+                        break
+            except Exception:
+                time.sleep(0.25)
+        assert ok_body is not None and ok_body.get("status") == "online"
+        assert ok_body.get("version") == "4.0.0"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# WebVulnX Redirect-Chain Rate Limit, Cross-Origin Header Isolation & Concurrent Clients
+# ---------------------------------------------------------------------------
+def test_webvulnx_redirect_chain_cross_origin_and_concurrent_clients():
+    from concurrent.futures import ThreadPoolExecutor
+
+    all_events: list[tuple[str, float, dict]] = []
+    ev_lock = threading.Lock()
+    port_b_holder: list[int] = []
+
+    class _ExtHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            with ev_lock:
+                all_events.append(("ext", time.monotonic(), {k.lower(): v for k, v in self.headers.items()}))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body>external landing</body></html>")
+
+    class _MainHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            with ev_lock:
+                all_events.append((self.path, time.monotonic(), {k.lower(): v for k, v in self.headers.items()}))
+            if self.path == "/r1":
+                self.send_response(302)
+                self.send_header("Location", "/r2")
+                self.end_headers()
+            elif self.path == "/r2":
+                self.send_response(302)
+                self.send_header("Location", "/r3")
+                self.end_headers()
+            elif self.path == "/r3":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{port_b_holder[0]}/ext")
+                self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>ok</body></html>")
+
+    srv_b = http.server.HTTPServer(("127.0.0.1", 0), _ExtHandler)
+    port_b_holder.append(srv_b.server_address[1])
+    srv_a = http.server.HTTPServer(("127.0.0.1", 0), _MainHandler)
+    port_a = srv_a.server_address[1]
+    threading.Thread(target=srv_b.serve_forever, daemon=True).start()
+    threading.Thread(target=srv_a.serve_forever, daemon=True).start()
+
+    try:
+        # 1. Single request triggering a 4-hop redirect chain (3 same-origin + 1 cross-origin)
+        client = wx.HttpClient(
+            target=f"http://127.0.0.1:{port_a}",
+            stealth=True,
+            rate_limit=2.5,  # 0.4s per hop
+            cookies={"session_tok": "secret-cookie-123"},
+            headers={
+                "Deck-Research": "deck-secret-handle",
+                "X-Bron-Bugbounty": "bron-secret-handle",
+                "Authorization": "Bearer topsecret-jwt",
+            },
+        )
+        resp = client.get(f"http://127.0.0.1:{port_a}/r1")
+        assert resp is not None and resp.status_code == 200
+        assert len(resp.history) == 3
+        assert len(all_events) == 4
+        assert client.stats["redirects"] == 3
+        assert client.stats["cross_origin_redirects_stripped"] == 1
+
+        # Every redirect hop must obey RateGate (>= 0.35s between hops)
+        hop_times = [e[1] for e in all_events]
+        hop_intervals = [hop_times[i] - hop_times[i - 1] for i in range(1, len(hop_times))]
+        assert all(dt >= 0.35 for dt in hop_intervals), f"Redirect chain bypassed rate limit: {hop_intervals}"
+
+        # Same-origin hops (/r1, /r2, /r3) carry custom headers; cross-origin hop (/ext) MUST NOT leak them
+        for path, _, hdrs in all_events[:3]:
+            assert hdrs.get("deck-research") == "deck-secret-handle", path
+            assert hdrs.get("x-bron-bugbounty") == "bron-secret-handle", path
+            assert hdrs.get("authorization") == "Bearer topsecret-jwt", path
+        _, _, ext_hdrs = all_events[3]
+        assert "deck-research" not in ext_hdrs, f"Leaked Deck-Research cross-origin: {ext_hdrs}"
+        assert "x-bron-bugbounty" not in ext_hdrs, f"Leaked X-Bron-Bugbounty cross-origin: {ext_hdrs}"
+        assert "authorization" not in ext_hdrs, f"Leaked Authorization cross-origin: {ext_hdrs}"
+        assert "cookie" not in ext_hdrs, f"Leaked Cookie cross-origin: {ext_hdrs}"
+
+        # 2. Concurrent clients targeting the same local lab server share RateGate pacing
+        all_events.clear()
+        base_a = f"http://127.0.0.1:{port_a}"
+
+        def _worker(idx: int):
+            c = wx.HttpClient(
+                target=base_a, stealth=False, rate_limit=4.0,  # 0.25s floor shared across clients
+                headers={"Deck-Research": f"worker-{idx}"},
+            )
+            for j in range(3):
+                r = c.get(f"{base_a}/ok?w={idx}&n={j}")
+                assert r is not None and r.status_code == 200
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futs = [pool.submit(_worker, i) for i in range(3)]
+            for f in futs:
+                f.result()
+
+        assert len(all_events) == 9
+        conc_times = sorted(e[1] for e in all_events)
+        conc_intervals = [conc_times[i] - conc_times[i - 1] for i in range(1, len(conc_times))]
+        assert all(dt >= 0.20 for dt in conc_intervals), f"Concurrent clients breached shared rate limit: {conc_intervals}"
+        assert all("deck-research" in e[2] for e in all_events)
+    finally:
+        srv_a.shutdown()
+        srv_b.shutdown()
+
