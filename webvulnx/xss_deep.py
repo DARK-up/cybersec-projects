@@ -233,8 +233,8 @@ class ContextMap:
                     if q in "\"'":
                         close = b.find(q, k + 1)
                         close = n if close < 0 else close + 1
-                        self._add(k + 1, close - 1,
-                                  f"attr:{aname}:{'dq' if q == '\"' else 'sq'}", aname)
+                        q_kind = "dq" if q == '"' else "sq"
+                        self._add(k + 1, close - 1, f"attr:{aname}:{q_kind}", aname)
                         j = close
                         continue
                     um = re.compile(r"[^\s>]*").match(b, k)
