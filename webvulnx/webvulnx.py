@@ -309,6 +309,14 @@ class LinkFormParser(HTMLParser):
             self._form = None
 
 
+def _origin_of(url: str) -> Tuple[str, str, int]:
+    p = urllib.parse.urlsplit(url)
+    sch = (p.scheme or "").lower()
+    host = (p.hostname or "").lower()
+    port = p.port or (443 if sch == "https" else 80)
+    return (sch, host, port)
+
+
 # ============================================================================
 # HTTP layer
 # ============================================================================
@@ -319,7 +327,9 @@ class HttpClient:
                  proxy: Optional[str] = None, verify: bool = True,
                  stealth: bool = True, target: str = "",
                  allow_insecure_tls: Optional[bool] = None,
-                 rate_limit: Optional[float] = 1.0):
+                 rate_limit: Optional[float] = 1.0,
+                 gate: Optional[stl.RateGate] = None,
+                 shared_gate: bool = True):
         self.sess = requests.Session()
         # Safe-by-default TLS verification unless caller explicitly opts into insecure mode
         if allow_insecure_tls is not None:
@@ -350,12 +360,12 @@ class HttpClient:
             })
         if user_agent:
             self.sess.headers["User-Agent"] = user_agent
+        # Store custom headers (--header) separately from Session.headers so they are NEVER leaked across origins on redirect
         self.custom_headers: Dict[str, str] = {}
         if headers:
             for hk, hv in headers.items():
                 if hk is not None and hv is not None:
                     self.custom_headers[str(hk).strip()] = str(hv).strip()
-            self.sess.headers.update(self.custom_headers)
         if cookies:
             self.sess.cookies.update(cookies)
         if proxy:
@@ -363,11 +373,13 @@ class HttpClient:
         self.timeout = timeout
         self.delay = delay
         self.rate_limit = rate_limit
+        self.target = target
         self.last_network_rtt: float = 0.0
         self.last_error: Optional[str] = None
         self.stats: Dict[str, Any] = {
             "requests": 0, "errors": 0, "blocked": 0, "waf_hits": 0,
             "statuses": {}, "by_module": {}, "cache_hits": 0,
+            "redirects": 0, "cross_origin_redirects_stripped": 0,
         }
         self.module: str = "crawl"
         self._lock = threading.Lock()
@@ -383,7 +395,13 @@ class HttpClient:
             min_i, jit = 0.04, 0.05
         else:
             min_i, jit = 0.0, 0.0
-        self.gate = stl.RateGate(min_interval=min_i, jitter=jit, floor_interval=rate_interval)
+        if gate is not None:
+            self.gate = gate
+        elif shared_gate and target and rate_interval > 0:
+            orig_key = ":".join(str(x) for x in _origin_of(ensure_scheme(target)))
+            self.gate = stl.RateGateRegistry.get_gate(orig_key, min_interval=min_i, jitter=jit, floor_interval=rate_interval)
+        else:
+            self.gate = stl.RateGate(min_interval=min_i, jitter=jit, floor_interval=rate_interval)
         self.workers = 1 if (rate_interval >= 0.5) else (6 if local else 3)
 
     def _cache_key(self, method: str, url: str, kw: dict) -> Optional[str]:
@@ -395,39 +413,31 @@ class HttpClient:
             return None
         return url
 
-    def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
-        ev = getattr(self, "stop_event", None)
-        if ev is not None and ev.is_set():
-            return None
-        cacheable = kw.pop("cache", False)
-        key = self._cache_key(method, url, kw) if cacheable else None
-        if key and key in self._cache:
-            with self._lock:
-                self.stats["cache_hits"] = self.stats.get("cache_hits", 0) + 1
-            return self._cache[key]
-
-        kw.setdefault("timeout", self.timeout)
-        kw.setdefault("allow_redirects", True)
-        # Never send Authorization/credentials silently over an unverified TLS override
-        if url.lower().startswith("https://") and not self.tls_verify:
-            has_auth = bool(self.sess.headers.get("Authorization") or kw.get("headers", {}).get("Authorization"))
-            if has_auth and not getattr(self, "allow_secrets_over_insecure_tls", False):
-                self.last_error = "Blocked sending Authorization header over unverified TLS (verify=False)"
-                return None
-        # Preserve explicit custom headers (--header) and avoid overwriting user-supplied Referer
-        headers = dict(kw.get("headers") or {})
-        custom_lower = {k.lower() for k in self.custom_headers}
-        if self.custom_headers:
-            merged = dict(self.custom_headers)
-            merged.update(headers)
-            headers = merged
-        if self.stealth and self._referer and "referer" not in custom_lower \
-                and "referer" not in {h.lower() for h in headers}:
-            headers["Referer"] = self._referer
-            headers.setdefault("Sec-Fetch-Site", "same-origin")
-            headers.setdefault("Sec-Fetch-Mode", "navigate")
-        if headers:
-            kw["headers"] = headers
+    def _send_single_hop(self, method: str, url: str, same_origin: bool,
+                         ev, hop_kw: dict) -> Optional[requests.Response]:
+        """Execute one HTTP hop (with retry on transport failure), gated by RateGate."""
+        if not same_origin:
+            # Cross-origin redirect: strip custom_headers, auth headers, cookies, and internal referer
+            sens_lower = {k.lower() for k in self.custom_headers} | {
+                "authorization", "proxy-authorization", "cookie", "x-api-key", "x-auth-token", "referer"
+            }
+            clean_h = {
+                k: v for k, v in (hop_kw.get("headers") or {}).items()
+                if k.lower() not in sens_lower
+            }
+            # Also isolate from self.sess.headers/cookies by using a clean transient Request/Session
+            req_kw = dict(hop_kw)
+            req_kw["headers"] = {
+                **{k: v for k, v in self.sess.headers.items() if k.lower() not in sens_lower},
+                **clean_h,
+            }
+            req_kw["allow_redirects"] = False
+            req_kw["verify"] = self.tls_verify
+            if self.sess.proxies:
+                req_kw["proxies"] = dict(self.sess.proxies)
+        else:
+            req_kw = dict(hop_kw)
+            req_kw["allow_redirects"] = False
 
         last_exc = None
         for attempt in range(2):
@@ -442,7 +452,10 @@ class HttpClient:
                     self.stats["by_module"].get(self.module, 0) + 1
             try:
                 t_net0 = time.monotonic()
-                resp = self.sess.request(method, url, **kw)
+                if same_origin:
+                    resp = self.sess.request(method, url, **req_kw)
+                else:
+                    resp = requests.request(method, url, **req_kw)
                 self.last_network_rtt = time.monotonic() - t_net0
                 self.last_error = None
                 sc = str(resp.status_code)
@@ -459,10 +472,8 @@ class HttpClient:
                                        f"— backing off so we are not banned")
                 else:
                     self.gate.reward()
-                    if method.upper() == "GET" and resp.status_code < 400:
+                    if same_origin and method.upper() == "GET" and resp.status_code < 400:
                         self._referer = resp.url
-                if key and resp.status_code == 200 and len(resp.content) < 1_500_000:
-                    self._cache[key] = resp
                 return resp
             except requests.RequestException as e:
                 last_exc = e
@@ -477,6 +488,99 @@ class HttpClient:
         with self._lock:
             self.stats["errors"] += 1
         self.last_error = f"{type(last_exc).__name__}: {last_exc}"
+        return None
+
+    def request(self, method: str, url: str, **kw) -> Optional[requests.Response]:
+        ev = getattr(self, "stop_event", None)
+        if ev is not None and ev.is_set():
+            return None
+        cacheable = kw.pop("cache", False)
+        key = self._cache_key(method, url, kw) if cacheable else None
+        if key and key in self._cache:
+            with self._lock:
+                self.stats["cache_hits"] = self.stats.get("cache_hits", 0) + 1
+            return self._cache[key]
+
+        kw.setdefault("timeout", self.timeout)
+        allow_redirects = kw.pop("allow_redirects", True)
+        max_redirects = int(kw.pop("max_redirects", 10))
+        initial_origin = _origin_of(url)
+
+        # Preserve explicit custom headers (--header) and avoid overwriting user-supplied Referer
+        call_headers = dict(kw.get("headers") or {})
+        custom_lower = {k.lower() for k in self.custom_headers}
+        if self.custom_headers:
+            merged = dict(self.custom_headers)
+            merged.update(call_headers)
+            call_headers = merged
+        if self.stealth and self._referer and "referer" not in custom_lower \
+                and "referer" not in {h.lower() for h in call_headers}:
+            call_headers["Referer"] = self._referer
+            call_headers.setdefault("Sec-Fetch-Site", "same-origin")
+            call_headers.setdefault("Sec-Fetch-Mode", "navigate")
+
+        cur_method = method
+        cur_url = url
+        cur_kw = dict(kw)
+        if call_headers:
+            cur_kw["headers"] = call_headers
+        history: List[requests.Response] = []
+
+        for hop in range(max_redirects + 1):
+            cur_origin = _origin_of(cur_url)
+            same_origin = (cur_origin == initial_origin)
+            # Never send Authorization/credentials silently over an unverified TLS override
+            if cur_url.lower().startswith("https://") and not self.tls_verify:
+                has_auth = bool(
+                    self.sess.headers.get("Authorization")
+                    or (cur_kw.get("headers") or {}).get("Authorization")
+                )
+                if has_auth and not getattr(self, "allow_secrets_over_insecure_tls", False):
+                    self.last_error = "Blocked sending Authorization header over unverified TLS (verify=False)"
+                    return None
+
+            resp = self._send_single_hop(cur_method, cur_url, same_origin, ev, cur_kw)
+            if resp is None:
+                return None
+
+            loc = resp.headers.get("Location") or resp.headers.get("location")
+            is_redir = bool(allow_redirects and resp.status_code in (301, 302, 303, 307, 308) and loc)
+            if not is_redir:
+                resp.history = history
+                if key and resp.status_code == 200 and len(resp.content) < 1_500_000:
+                    self._cache[key] = resp
+                return resp
+
+            if hop >= max_redirects:
+                with self._lock:
+                    self.stats["errors"] += 1
+                self.last_error = f"Exceeded max_redirects ({max_redirects})"
+                return None
+
+            next_url = urllib.parse.urljoin(cur_url, loc)
+            next_scheme = (urllib.parse.urlsplit(next_url).scheme or "").lower()
+            if next_scheme not in ("http", "https"):
+                self.last_error = f"Blocked redirect to non-HTTP scheme: {next_scheme}"
+                return None
+
+            with self._lock:
+                self.stats["redirects"] += 1
+                if _origin_of(next_url) != initial_origin:
+                    self.stats["cross_origin_redirects_stripped"] += 1
+
+            history.append(resp)
+            # Strip query/data when following redirect location URL directly
+            cur_kw.pop("params", None)
+            if resp.status_code in (301, 302, 303) and cur_method.upper() not in ("GET", "HEAD"):
+                cur_method = "GET"
+                cur_kw.pop("data", None)
+                cur_kw.pop("json", None)
+                if "headers" in cur_kw:
+                    cur_kw["headers"] = {
+                        k: v for k, v in cur_kw["headers"].items()
+                        if k.lower() not in ("content-length", "content-type")
+                    }
+            cur_url = next_url
         return None
 
     def get(self, url: str, **kw):
